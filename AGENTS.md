@@ -153,7 +153,8 @@ A pin's `perUnit` field and the `p.u.` token in its row id are wire format:
 renaming either orphans every saved "% of range" pin.
 A filter context entry's `chosenOn` is wire format too: it is what keeps a
 switched group pin from reading its "Max ≥ 500" as a fact about the new
-variable.
+variable. Its `case` holds the Case's NAME, not its id, so it needs no remap
+on restore; do not "fix" it to an id.
 The Contents inventory's session-input keys (`limits (shared)`,
 `groups:<kind>`, the lookup variants) are wire format as well. A restore
 replaces a session row only when the bundle carried that input and it was
@@ -181,11 +182,21 @@ adopted, so the strip never names a file whose content was not taken up.
 - **A pin's label states only what the pin froze.** An unfiltered group row
   redraws from live membership under the same row id, so its label names no
   member or direction count (`groupRowLabel` in `src/ui/browse-model.ts`).
-- **A Selected-tab switch never goes partway.** Its Variable dropdown lists
-  only what every pin can take, and its % button refuses when one pin cannot
-  be drawn as %, so pins never end up half moved (`src/ui/browse-retarget.ts`).
-  Switched pins land through `replacePins`; `setSelection` is bundle restore
-  only. Asserted by `tests/test_browse.mjs`.
+- **A Selected-tab switch never goes partway.** The tab's "Switch all" row
+  (a control above Case, Variable and Unit) moves every pin at once. The Case
+  and Variable dropdowns offer only what every pin can take; a blocked Case is
+  listed disabled, naming the pins that block it. The % control refuses when
+  one pin cannot be drawn as %. So pins never end up half moved and
+  A → B → A returns the pins you started with (`src/ui/browse-retarget.ts`).
+  The toolbar's Variable and % are hidden on that tab, so one widget never
+  both lists and rewrites. Switched pins land through `replacePins`;
+  `setSelection` is bundle restore only. Asserted by `tests/test_browse.mjs`.
+- **A Slicer IS its column's filter**, the dropdown's `values` ticks in the
+  rail, never a second filter or a scope. Only a `category` column can be one
+  (`isBucketable` for a lookup column, and the Case), not `groupable`, which
+  also asks whether the quantity sums. Hiding the column takes the slicer and
+  its filter with it. Asserted by `tests/test_browse.mjs` and
+  `tests/test_dom_contract.mjs`.
 - **Selection and statistics belong to the browse drawer**, which spans every
   kind. A kind gets its own section only for a control the drawer cannot
   express. Do not add a per-kind rail.

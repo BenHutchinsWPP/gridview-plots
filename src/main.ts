@@ -176,10 +176,14 @@ import { exportHourly } from './app/hourly-export';
 import { openFigureDialog } from './figure/dialog';
 import { confirmLargeDownload } from './ui/confirm-allocation';
 import {
+  caseSwitch,
   percentSwitch,
+  retargetCase,
   retargetPercent,
   retargetVariable,
   variableSwitch,
+  type CaseChoice,
+  type CaseSwitch,
   type KindAnswers,
   type KindRetarget,
   type KindRetargets,
@@ -187,7 +191,13 @@ import {
   type RetargetRow,
   type VariableSwitch,
 } from './ui/browse-retarget';
-import { restorePins, type BrowseRowRef, type SelectionEntry } from './ui/browse-model';
+import { within } from './ui/dom';
+import {
+  restorePins,
+  type BrowseRowRef,
+  type CaseNames,
+  type SelectionEntry,
+} from './ui/browse-model';
 import { PREVIEW_COLOR } from './series/model';
 import { declareGeneratorTabs } from './tables/generator/ui/browse';
 import { createWideIngest, type WideBatch } from './app/ingest-wide';
@@ -440,6 +450,16 @@ function caseLabelOf(caseId: string): string {
   return owner ? caseLabel(owner) : 'a Case no longer loaded';
 }
 
+/** Case names both ways, read from the store at every call, for a frozen
+ * filter chosen in another Case. A Case no longer loaded reads as its name. */
+const caseNames: CaseNames = {
+  nameOf: (caseId) => caseStore.listCases().find((entry) => entry.id === caseId)?.name,
+  labelOfName(name) {
+    const owner = caseStore.listCases().find((entry) => entry.name === name);
+    return owner ? caseLabel(owner) : name;
+  },
+};
+
 /** What a draw reads from this module's state, through accessors so a removed
  * Case can never come back from a snapshot. */
 const drawContext: DrawContext = {
@@ -447,6 +467,7 @@ const drawContext: DrawContext = {
     return query.filters;
   },
   caseLabel: caseLabelOf,
+  caseNames,
   areaCases,
   interfaceRows,
   busRows,
@@ -464,6 +485,7 @@ const exportContext: DrawContext = {
     return query.filters;
   },
   caseLabel: caseLabelOf,
+  caseNames,
   areaCases,
   interfaceRows,
   busRows,
@@ -535,15 +557,23 @@ function pinRetargets(): KindRetargets {
   };
 }
 
-/** The Selected tab's two switches, held while the pins and every table
- * they could move to hold still: the drawer asks on every draw, and a
- * group's answer can scan a whole axis. */
+/** Every loaded Case in load order, as the Case switch offers it. */
+function caseChoices(): CaseChoice[] {
+  return caseStore
+    .listCases()
+    .map((entry) => ({ id: entry.id, name: entry.name, label: caseLabel(entry) }));
+}
+
+/** The Selected tab's switches, held while the pins and every table they
+ * could move to hold still: the drawer asks on every draw, and a group's
+ * answer can scan a whole axis. */
 let selectedSwitches:
   | {
       pins: readonly SelectionEntry[];
       key: string;
       variable: VariableSwitch;
       percent: PercentSwitch;
+      case: CaseSwitch;
     }
   | undefined;
 
@@ -551,7 +581,10 @@ function switchesFor(signature: string) {
   const tables = [...areaRows(), ...busRows(), ...generatorRows(), ...interfaceRows()]
     .map((row) => identityOf(row.data))
     .join(',');
-  const key = `${signature}\u0001${tables}`;
+  // Labels too: a rename in Contents relabels the Case options.
+  const cases = caseChoices();
+  const named = cases.map((entry) => `${entry.id}=${entry.label}`).join(',');
+  const key = `${signature}\u0001${tables}\u0001${named}`;
   if (selectedSwitches?.pins !== browsePinned || selectedSwitches.key !== key) {
     const refs = browsePinned.map((entry) => entry.ref);
     const kinds = pinRetargets();
@@ -560,13 +593,14 @@ function switchesFor(signature: string) {
       key,
       variable: variableSwitch(refs, kinds),
       percent: percentSwitch(refs, kinds),
+      case: caseSwitch(refs, kinds, cases),
     };
   }
   return selectedSwitches;
 }
 
 function renderBrowse(): void {
-  const caseNames = new Map(
+  const scopedCases = new Map(
     caseStore
       .listCases()
       .map((entry) => [entry.id, { name: entry.name, label: caseLabel(entry) }] as const),
@@ -574,7 +608,7 @@ function renderBrowse(): void {
   // Every tab is scoped by the same loaded cases and the same hour filter, so
   // a number in the drawer means the same thing whichever tab it is under.
   const scope = <T extends BrowseKindRow>(rows: readonly T[], kind: string, pairedWith?: string) =>
-    browse.scope(rows, kind, query.cases, query.filters, caseNames, pairedWith, TAB_OFFERS[kind]);
+    browse.scope(rows, kind, query.cases, query.filters, scopedCases, pairedWith, TAB_OFFERS[kind]);
   const area = scope(areaRows(), 'area');
   const areaGroups = scope(areaRows(), 'area-groups', 'area');
   const generator = scope(generatorRows(), 'generator');
@@ -632,6 +666,8 @@ function renderBrowse(): void {
     caseLabel: caseLabelOf,
     selectedVariable: () => switchesFor(collected.signature).variable,
     selectedPercent: () => switchesFor(collected.signature).percent,
+    selectedCase: () => switchesFor(collected.signature).case,
+    caseNames,
   });
 }
 
@@ -859,6 +895,7 @@ async function downloadHourly(download: HourlyDownload): Promise<void> {
       {
         resolve: (ref) => resolveDraw(exportContext, { ref, color: '#000000', dashed: false }),
         caseLabel: caseLabelOf,
+        caseNames,
         progress: (message) => setBusy(message),
         nextFrame,
         confirm: confirmLargeDownload,
@@ -2481,7 +2518,8 @@ function handleLayoutChange(layout: readonly SlotType[]): void {
   syncLayoutToCharts(layout);
 }
 
-const areaSection = mountAreaSection(sections.add('area', 'Area'), {
+const areaRoot = sections.add('area', 'Area');
+const areaSection = mountAreaSection(areaRoot, {
   initialLayout: sessionLayout,
   onLayoutChange: handleLayoutChange,
   onBoxDimChange: (dim) => setQuery({ boxDim: dim }),
@@ -2495,102 +2533,111 @@ const charts = areaSection.charts;
  * and main.ts resolves it. */
 const browseHost = document.getElementById('browse-drawer');
 if (!browseHost) throw new Error('index.html is missing #browse-drawer');
-const browseDrawer = createBrowseDrawer(browseHost, {
-  resolveColor(ref) {
-    if (ref.kind === 'generator' && ref.groupBy) {
-      // Every derived attribute carries its own palette, so no branch is
-      // needed here.
-      return derivedAttribute(ref.groupBy)?.color(String(ref.groupValue ?? ref.entity));
-    }
-    return undefined;
-  },
-  onSelectionChange(pinned, preview) {
-    // A pinned row is a `SeriesSpec`, and the kind that owns the axis
-    // resolves it into a line. The drawn set is still drawn into that kind's
-    // section panes.
-    browsePinned = pinned;
-    browsePreview = preview;
-    render();
-  },
-  onVariableChange(variable) {
-    // A view control: re-list and re-rank, never clear the selection (pins
-    // span variables). It moves the ACTIVE kind's variable and its paired
-    // groups tab's, nothing else.
-    const active = browseDrawer.activeTabId();
-    browse.set(active, variable);
-    const paired = PAIRED_TABS[active];
-    // A paired tab that cannot offer this quantity keeps its own, rather than
-    // silently falling back to its first quantity.
-    if (paired !== undefined && browse.offered(paired, variable)) {
-      browse.set(paired, variable);
-    }
-    render();
-  },
-  onDownloadHourly(download) {
-    void downloadHourly(download);
-  },
-  onAction(tabId, actionId, shown) {
-    if (actionId === 'add-shown-to-group') {
-      // Routed by the tab it was clicked on, never by the rows: two kinds
-      // offer this button and a row's `kind` is the only other thing that
-      // could say which, which would make an empty table unroutable.
-      if (tabId === 'bus') openBusEditorFromBrowse(shown);
-      else if (tabId === 'interface') openInterfaceEditorFromBrowse(shown);
-      else openGroupEditorFromBrowse(shown);
-      return;
-    }
-    if (actionId !== 'edit-groups') return;
-    if (tabId === 'generator-groups') {
-      // The filtering happened on the ENTITY tab, so ask the drawer for that
-      // tab's survivors. Undefined adds no dropdown entry.
-      openGeneratorGroupEditor(generatorTabUnits(browseDrawer.filteredRows('generator'), false));
-      return;
-    }
-    if (tabId === 'bus-groups') {
-      openBusGroupEditor(busTabIds(browseDrawer.filteredRows('bus'), false));
-      return;
-    }
-    if (tabId === 'interface-groups') {
-      openInterfaceGroupEditor(interfaceTabNames(browseDrawer.filteredRows('interface'), false));
-      return;
-    }
-    void showGroupEditor({ present: presentAreas() }).then((csv) => {
-      if (csv === null) return;
-      try {
-        notes.set('session', applyGroupings(csv.value));
-        recordEditorGroups('area', csv);
-      } catch (error) {
-        notes.set('session', [error instanceof Error ? error.message : String(error)]);
+const browseDrawer = createBrowseDrawer(
+  browseHost,
+  {
+    resolveColor(ref) {
+      if (ref.kind === 'generator' && ref.groupBy) {
+        // Every derived attribute carries its own palette, so no branch is
+        // needed here.
+        return derivedAttribute(ref.groupBy)?.color(String(ref.groupValue ?? ref.entity));
+      }
+      return undefined;
+    },
+    onSelectionChange(pinned, preview) {
+      // A pinned row is a `SeriesSpec`, and the kind that owns the axis
+      // resolves it into a line. The drawn set is still drawn into that kind's
+      // section panes.
+      browsePinned = pinned;
+      browsePreview = preview;
+      render();
+    },
+    onVariableChange(variable) {
+      // A view control: re-list and re-rank, never clear the selection (pins
+      // span variables). It moves the ACTIVE kind's variable and its paired
+      // groups tab's, nothing else.
+      const active = browseDrawer.activeTabId();
+      browse.set(active, variable);
+      const paired = PAIRED_TABS[active];
+      // A paired tab that cannot offer this quantity keeps its own, rather than
+      // silently falling back to its first quantity.
+      if (paired !== undefined && browse.offered(paired, variable)) {
+        browse.set(paired, variable);
       }
       render();
-    });
+    },
+    onDownloadHourly(download) {
+      void downloadHourly(download);
+    },
+    onAction(tabId, actionId, shown) {
+      if (actionId === 'add-shown-to-group') {
+        // Routed by the tab it was clicked on, never by the rows: two kinds
+        // offer this button and a row's `kind` is the only other thing that
+        // could say which, which would make an empty table unroutable.
+        if (tabId === 'bus') openBusEditorFromBrowse(shown);
+        else if (tabId === 'interface') openInterfaceEditorFromBrowse(shown);
+        else openGroupEditorFromBrowse(shown);
+        return;
+      }
+      if (actionId !== 'edit-groups') return;
+      if (tabId === 'generator-groups') {
+        // The filtering happened on the ENTITY tab, so ask the drawer for that
+        // tab's survivors. Undefined adds no dropdown entry.
+        openGeneratorGroupEditor(generatorTabUnits(browseDrawer.filteredRows('generator'), false));
+        return;
+      }
+      if (tabId === 'bus-groups') {
+        openBusGroupEditor(busTabIds(browseDrawer.filteredRows('bus'), false));
+        return;
+      }
+      if (tabId === 'interface-groups') {
+        openInterfaceGroupEditor(interfaceTabNames(browseDrawer.filteredRows('interface'), false));
+        return;
+      }
+      void showGroupEditor({ present: presentAreas() }).then((csv) => {
+        if (csv === null) return;
+        try {
+          notes.set('session', applyGroupings(csv.value));
+          recordEditorGroups('area', csv);
+        } catch (error) {
+          notes.set('session', [error instanceof Error ? error.message : String(error)]);
+        }
+        render();
+      });
+    },
+    onSelectedVariableChange(variable) {
+      const next = retargetVariable(browseDrawer.selection(), variable, pinRetargets());
+      // The kind's tabs follow where their scope offers it, so the next tick
+      // matches the pins. An entity tab's id is its kind's name. Set before the
+      // pins land: that is the one render.
+      const kind = next[0]?.ref.kind;
+      for (const tab of kind === undefined ? [] : [kind, PAIRED_TABS[kind]]) {
+        if (tab !== undefined && browse.offered(tab, variable)) browse.set(tab, variable);
+      }
+      browseDrawer.replacePins(next);
+    },
+    onSelectedCaseChange(caseId) {
+      browseDrawer.replacePins(
+        retargetCase(browseDrawer.selection(), caseId, caseChoices(), pinRetargets()),
+      );
+    },
+    onSelectedPercent(on) {
+      // The drawer's mode follows before the pins land, so the next tick
+      // matches them in one render.
+      browseDrawer.setPerUnit(on);
+      browseDrawer.replacePins(retargetPercent(browseDrawer.selection(), on, pinRetargets()));
+    },
+    onTabChange() {
+      // The variable dropdown belongs to the kind on screen, so a tab switch is
+      // a re-render like any other view change. It moves no selection.
+      render();
+    },
+    onPerUnitChange() {
+      render();
+    },
   },
-  onSelectedVariableChange(variable) {
-    const next = retargetVariable(browseDrawer.selection(), variable, pinRetargets());
-    // The kind's tabs follow where their scope offers it, so the next tick
-    // matches the pins. An entity tab's id is its kind's name. Set before the
-    // pins land: that is the one render.
-    const kind = next[0]?.ref.kind;
-    for (const tab of kind === undefined ? [] : [kind, PAIRED_TABS[kind]]) {
-      if (tab !== undefined && browse.offered(tab, variable)) browse.set(tab, variable);
-    }
-    browseDrawer.replacePins(next);
-  },
-  onSelectedPercent(on) {
-    // The drawer's mode follows before the pins land, so the next tick
-    // matches them in one render.
-    browseDrawer.setPerUnit(on);
-    browseDrawer.replacePins(retargetPercent(browseDrawer.selection(), on, pinRetargets()));
-  },
-  onTabChange() {
-    // The variable dropdown belongs to the kind on screen, so a tab switch is
-    // a re-render like any other view change. It moves no selection.
-    render();
-  },
-  onPerUnitChange() {
-    render();
-  },
-});
+  within(areaRoot, '[data-el="slicer-pane"]'),
+);
 
 /** The global chrome, wired ONCE for the whole app. */
 const chrome = createChrome(appChrome, {

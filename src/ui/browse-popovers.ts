@@ -11,12 +11,11 @@
 // its signature moves), and a captured column would offer the previous
 // variable's rows.
 
+import { distinctValues, mountValueChecklist } from './value-checklist';
 import {
   columnVisible,
-  containsAnyToken,
   orderedColumns,
   setColumnVisible,
-  textTokens,
   type BrowseTab,
   type ColumnFilter,
   type ViewState,
@@ -30,6 +29,12 @@ export interface BrowsePopoverDeps {
   readonly setView: (tabId: string, next: ViewState) => void;
   readonly activeId: () => string;
   readonly activeTab: () => BrowseTab | undefined;
+  /** Whether a column shows as a slicer, and the toggle, per tab. Absent: no
+   * "Show as slicer" button. */
+  readonly slicers?: {
+    isSliced(tabId: string, key: string): boolean;
+    setSliced(tabId: string, key: string, on: boolean): void;
+  };
 }
 
 export interface BrowsePopovers {
@@ -135,145 +140,36 @@ export function createBrowsePopovers(deps: BrowsePopoverDeps): BrowsePopovers {
       // Two filters behind one popover: the box is `text` (contains), the
       // ticks are `values` (exact). Any tick wins, and the box then only
       // narrows the list; with none ticked the box is the filter.
-      const input = document.createElement('input');
-      input.type = 'search';
-      input.placeholder = 'Contains or comma-separated list…';
-      input.value = current?.kind === 'text' ? current.text : '';
-      const ticked = new Set<string>(current?.kind === 'values' ? current.values : []);
       const apply = (): void => {
-        if (ticked.size > 0) write({ kind: 'values', values: [...ticked] });
+        const ticked = checklist.ticked();
+        if (ticked.length > 0) write({ kind: 'values', values: [...ticked] });
         else write(input.value.trim() === '' ? null : { kind: 'text', text: input.value });
       };
-      body.appendChild(input);
-
       // The column's distinct values over the rows on screen.
-      const distinctValues: string[] = [];
-      {
-        const seen = new Set<string>();
-        for (let r = 0; r < tab.rows.length; r++) {
-          const v = column.value(r);
-          if (v !== null && v !== undefined) {
-            const s = String(v).trim();
-            if (s !== '' && !seen.has(s)) {
-              seen.add(s);
-              distinctValues.push(s);
-            }
-          }
-        }
-        distinctValues.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-      }
+      const checklist = mountValueChecklist(body, {
+        values: distinctValues(column, tab.rows.length),
+        ticked: current?.kind === 'values' ? current.values : [],
+        text: current?.kind === 'text' ? current.text : '',
+        placeholder: 'Contains or comma-separated list…',
+        onTicks: () => apply(),
+      });
+      const { input } = checklist;
 
-      if (distinctValues.length > 0) {
-        const actionsRow = document.createElement('div');
-        actionsRow.className = 'browse-filter-checklist-actions';
-
-        const leftActions = document.createElement('div');
-        leftActions.style.display = 'flex';
-        leftActions.style.gap = '4px';
-
-        const selectAllBtn = document.createElement('button');
-        selectAllBtn.type = 'button';
-        selectAllBtn.className = 'browse-filter-action-btn';
-        selectAllBtn.textContent = 'Select All';
-
-        const clearBtn = document.createElement('button');
-        clearBtn.type = 'button';
-        clearBtn.className = 'browse-filter-action-btn';
-        clearBtn.textContent = 'Clear';
-
-        leftActions.appendChild(selectAllBtn);
-        leftActions.appendChild(clearBtn);
-
-        const countBadge = document.createElement('span');
-        countBadge.className = 'browse-filter-count';
-
-        actionsRow.appendChild(leftActions);
-        actionsRow.appendChild(countBadge);
-        body.appendChild(actionsRow);
-
-        const listEl = document.createElement('div');
-        listEl.className = 'browse-filter-checklist';
-        body.appendChild(listEl);
-
-        // The narrowed set as last rendered: "Select All" means what is seen.
-        let visibleItems: string[] = distinctValues;
-
-        const renderCount = (): void => {
-          let totalSelected = 0;
-          for (const dv of distinctValues) {
-            if (ticked.has(dv)) totalSelected++;
-          }
-          countBadge.textContent =
-            totalSelected > 0
-              ? `${totalSelected} of ${distinctValues.length} selected`
-              : `${distinctValues.length} items`;
-        };
-
-        const renderChecklist = (): void => {
-          listEl.replaceChildren();
-          // The same rule the table applies to the box, so the list shows
-          // what a box filter keeps.
-          const tokens = textTokens(input.value);
-          visibleItems = distinctValues.filter((val) => containsAnyToken(tokens, val));
-
-          // Capped (distinct lists can run to thousands), and the cap is SAID,
-          // or a missing item would look absent from the study.
-          const limit = 100;
-          const toRender = visibleItems.slice(0, limit);
-
-          for (const val of toRender) {
-            const itemLabel = document.createElement('label');
-            itemLabel.className = 'browse-filter-item';
-
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.checked = ticked.has(val);
-
-            checkbox.addEventListener('change', () => {
-              if (checkbox.checked) ticked.add(val);
-              else ticked.delete(val);
-              apply();
-              // Not `renderChecklist`: a tick lists nothing new, and a rebuild
-              // would scroll the list back to its top.
-              renderCount();
-            });
-
-            const txt = document.createElement('span');
-            txt.textContent = val;
-
-            itemLabel.appendChild(checkbox);
-            itemLabel.appendChild(txt);
-            listEl.appendChild(itemLabel);
-          }
-
-          if (visibleItems.length > toRender.length) {
-            const more = document.createElement('div');
-            more.className = 'browse-filter-more';
-            more.textContent = `${visibleItems.length - toRender.length} more — type to narrow`;
-            listEl.appendChild(more);
-          }
-
-          renderCount();
-        };
-
-        // Typing narrows the list in both modes; only `apply` rebuilds.
-        input.addEventListener('input', renderChecklist);
-
-        // Ticks the LISTED items and keeps every tick outside the narrowing.
-        selectAllBtn.addEventListener('click', () => {
-          for (const val of visibleItems) ticked.add(val);
-          apply();
-          renderChecklist();
+      if (column.category && deps.slicers) {
+        const slicers = deps.slicers;
+        const shown = slicers.isSliced(activeId, column.key);
+        const slicerBtn = document.createElement('button');
+        slicerBtn.type = 'button';
+        slicerBtn.className = 'browse-filter-action-btn browse-filter-slicer';
+        slicerBtn.textContent = shown ? 'Hide slicer' : 'Show as slicer';
+        slicerBtn.title = shown
+          ? 'Take this list out of the Slicers pane. The filter stays.'
+          : 'Keep this list open in the Slicers pane beside the charts';
+        slicerBtn.addEventListener('click', () => {
+          slicers.setSliced(activeId, column.key, !shown);
+          closePopover();
         });
-
-        clearBtn.addEventListener('click', () => {
-          ticked.clear();
-          input.value = '';
-          apply();
-          renderChecklist();
-        });
-
-        renderChecklist();
+        body.appendChild(slicerBtn);
       }
 
       if (commitOnly) {
@@ -287,10 +183,11 @@ export function createBrowsePopovers(deps: BrowsePopoverDeps): BrowsePopovers {
           apply();
         });
       } else {
-        // Only the write; `renderChecklist` repaints on the same event. With
-        // a tick present the box only narrows, so there is nothing to write.
+        // Only the write; the checklist narrows its list on the same event.
+        // With a tick present the box only narrows, so there is nothing to
+        // write.
         input.addEventListener('input', () => {
-          if (ticked.size === 0) apply();
+          if (checklist.ticked().length === 0) apply();
         });
       }
     } else {

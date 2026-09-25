@@ -269,6 +269,7 @@ export function buildBusTab(input: BusBrowseInput): BrowseTab {
   const columns: BrowseColumn[] = [
     {
       key: CASE_COLUMN_KEY,
+      category: true,
       label: 'Case',
       kind: 'text',
       computed: false,
@@ -309,6 +310,8 @@ export function buildBusTab(input: BusBrowseInput): BrowseTab {
       kind: column.kind === 'int' || column.kind === 'float' ? 'number' : 'text',
       computed: false,
       defaultHidden: DEFAULT_OFF_LIST_COLUMNS.has(column.name),
+      category: bucketable,
+      defaultSlicer: column.name === 'PSSEArea',
       groupable: bucketable && canGroup,
       groupDisabledReason: bucketable ? attributeReason : undefined,
       // An int here is an id or code.
@@ -354,6 +357,7 @@ function groupTabRows(
   const columns: BrowseColumn[] = [
     {
       key: CASE_COLUMN_KEY,
+      category: true,
       label: 'Case',
       kind: 'text',
       computed: false,
@@ -606,6 +610,7 @@ function groupByRows(
         : [
             {
               key: CASE_COLUMN_KEY,
+              category: true,
               label: 'Case',
               kind: 'text' as const,
               computed: false,

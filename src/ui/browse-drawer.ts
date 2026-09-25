@@ -20,8 +20,9 @@ import { longNote, wideWithheld, type HourlyLayout } from './hourly-csv';
 import { createBrowsePopovers } from './browse-popovers';
 import { createBrowseDetent, type Detent } from './browse-detent';
 import { createBrowseTable } from './browse-table';
+import { createSlicerPane } from './browse-slicers';
 import { subjectLabel } from '../series/label';
-import type { PercentSwitch, VariableSwitch } from './browse-retarget';
+import type { CaseSwitch, PercentSwitch, VariableSwitch } from './browse-retarget';
 import {
   STAT_COLUMNS,
   builtView,
@@ -29,6 +30,8 @@ import {
   declinedGroupBy,
   dropRescaledBounds,
   cellClassOf,
+  isSliced,
+  setSliced,
   pinnedConstraint,
   createSelection,
   keptRowKeys,
@@ -38,8 +41,10 @@ import {
   type BrowseColumn,
   type BrowseRowRef,
   type BrowseTab,
+  type CaseNames,
   type CellClass,
   type ColumnFilter,
+  type HeaderSwitch,
   type SelectionEntry,
   type ViewState,
 } from './browse-model';
@@ -85,6 +90,10 @@ export interface BrowseDrawerState {
   readonly selectedVariable: () => VariableSwitch;
   /** The Selected tab's "% of range" button, lazily for the same reason. */
   readonly selectedPercent: () => PercentSwitch;
+  /** The Selected tab's Case dropdown, lazily for the same reason. */
+  readonly selectedCase: () => CaseSwitch;
+  /** For a pinned filter chosen in another Case. */
+  readonly caseNames: CaseNames;
 }
 
 export interface BrowseDrawerHandlers {
@@ -97,6 +106,8 @@ export interface BrowseDrawerHandlers {
   onVariableChange(variable: string): void;
   /** A variable picked on the Selected tab: move every pin to it. */
   onSelectedVariableChange(variable: string): void;
+  /** A Case picked on the Selected tab: move every pin to it. */
+  onSelectedCaseChange(caseId: string): void;
   /** A VIEW change, like the variable. The Selected tab reports its own id,
    * which is not a kind. */
   onTabChange(tabId: string): void;
@@ -165,12 +176,19 @@ export interface BrowseDrawer {
 /** The Selected tab's id. It is not a kind, and no adapter may claim it. */
 const SELECTED = 'selected';
 
+/**
+ * `slicerMount` is the Slicers pane in the section's rail. The drawer owns
+ * the tab views a slicer reads and writes, so it paints the pane, though the
+ * pane sits outside it.
+ */
 export function createBrowseDrawer(
   root: HTMLElement,
   handlers: BrowseDrawerHandlers,
+  slicerMount: HTMLElement,
 ): BrowseDrawer {
   const tabBar = within(root, '#browse-tabs');
   const variableSelect = within<HTMLSelectElement>(root, '#browse-variable');
+  const variableField = variableSelect.closest<HTMLElement>('.browse-field') ?? variableSelect;
   const perUnitToggle = within<HTMLButtonElement>(root, '#browse-per-unit');
   const columnsButton = within<HTMLButtonElement>(root, '#browse-columns');
   const downloadButton = within<HTMLButtonElement>(root, '#browse-download');
@@ -206,6 +224,8 @@ export function createBrowseDrawer(
     caseLabel: (caseId) => caseId,
     selectedVariable: () => ({ variables: [], variable: '' }),
     selectedPercent: () => ({ on: false, next: true }),
+    selectedCase: () => ({ cases: [], caseId: '' }),
+    caseNames: { nameOf: () => undefined, labelOfName: (name) => name },
   };
   /** Built tabs, held until the caller's signature changes. */
   const built = new Map<string, BrowseTab>();
@@ -257,9 +277,10 @@ export function createBrowseDrawer(
     draw();
   };
 
+  // On the Selected tab these two are hidden: its "Switch all" row rewrites
+  // the pins, so one widget never means two things.
   variableSelect.addEventListener('change', () => {
-    if (activeId === SELECTED) handlers.onSelectedVariableChange(variableSelect.value);
-    else handlers.onVariableChange(variableSelect.value);
+    handlers.onVariableChange(variableSelect.value);
   });
   /** The mode, and the bounds it rescales dropped: a MW bound against a %
    * cell empties the table. */
@@ -277,11 +298,6 @@ export function createBrowseDrawer(
   };
 
   perUnitToggle.addEventListener('click', () => {
-    if (activeId === SELECTED) {
-      const pins = latest.selectedPercent();
-      if (pins.refusal === undefined) handlers.onSelectedPercent(pins.next);
-      return;
-    }
     applyPerUnit(!perUnit);
     draw();
     handlers.onPerUnitChange?.(perUnit);
@@ -377,8 +393,8 @@ export function createBrowseDrawer(
 
   // ------------------------------------------------------------ the tabs
 
-  /** What the Variable dropdown lists: the active kind's quantities, or on
-   * the Selected tab what every pin can move to. */
+  /** What the variable is: the active kind's quantities, or on the Selected
+   * tab what every pin can move to (the CSV descriptor names it). */
   function shownVariables(): VariableSwitch {
     if (activeId !== SELECTED) return { variables: latest.variables, variable: latest.variable };
     return latest.selectedVariable();
@@ -499,17 +515,22 @@ export function createBrowseDrawer(
     }
 
     const refs = entries.map((entry) => entry.ref);
-    const text = (label: string, read: (ref: BrowseRowRef) => string): BrowseColumn => ({
+    const text = (
+      label: string,
+      read: (ref: BrowseRowRef) => string,
+      category?: true,
+    ): BrowseColumn => ({
       key: `selected.${label}`,
       label,
       kind: 'text',
       computed: false,
+      ...(category ? { category } : {}),
       value: (row) => read(refs[row]),
     });
 
     const columns: BrowseColumn[] = [
-      text('Case', (ref) => latest.caseLabel(ref.caseId)),
-      text('Kind', (ref) => ref.kind),
+      text('Case', (ref) => latest.caseLabel(ref.caseId), true),
+      text('Kind', (ref) => ref.kind, true),
       // The label where the kind has one (a bus id alone is unreadable), and
       // for a bucket the column that made it: `SOUTH` by Zone is not `SOUTH`
       // by Owner.
@@ -544,7 +565,9 @@ export function createBrowseDrawer(
               value: (row: number) => {
                 const ref = refs[row];
                 return (ref.filterContext ?? [])
-                  .map((entry) => `${entry.label}: ${pinnedConstraint(entry, ref)}`)
+                  .map(
+                    (entry) => `${entry.label}: ${pinnedConstraint(entry, ref, latest.caseNames)}`,
+                  )
                   .join('; ');
               },
             },
@@ -578,7 +601,113 @@ export function createBrowseDrawer(
             'the current scope. They stay drawn; their stats are blank because the scope did not rank them.',
         ]
       : [];
-    return { id: SELECTED, label: 'Selected', rows: refs, columns, notes };
+    return {
+      id: SELECTED,
+      label: 'Selected',
+      rows: refs,
+      columns,
+      notes,
+      switches: switches(refs),
+    };
+  }
+
+  /** The "Switch all" row: one control above each column it rewrites. */
+  function switches(refs: readonly BrowseRowRef[]): ReadonlyMap<string, HeaderSwitch> {
+    const byCase = latest.selectedCase();
+    const byVariable = latest.selectedVariable();
+    const byPercent = latest.selectedPercent();
+    // Mixed: some pins % and some not. Shown as such, never as either.
+    const mixed = !byPercent.on && refs.some((ref) => ref.perUnit);
+    const percentOff =
+      byPercent.refusal ??
+      (!byPercent.on && !byPercent.next
+        ? 'A pin cannot be drawn as % of range; choose Own unit to make them uniform.'
+        : undefined);
+    return new Map<string, HeaderSwitch>([
+      [
+        'selected.Case',
+        {
+          options: byCase.cases.map((option) => ({
+            value: option.id,
+            label: option.blocked ? `${option.label} (${option.blocked})` : option.label,
+            ...(option.blocked ? { disabled: option.blocked } : {}),
+          })),
+          value: byCase.caseId,
+          ...(byCase.refusal !== undefined ? { refusal: byCase.refusal } : {}),
+          title: byCase.refusal ?? 'Switch every pinned series to this Case',
+          onChange: (caseId) => handlers.onSelectedCaseChange(caseId),
+        },
+      ],
+      [
+        'selected.Variable',
+        {
+          options: byVariable.variables.map((variable) => ({ value: variable, label: variable })),
+          value: byVariable.variable,
+          ...(byVariable.refusal !== undefined ? { refusal: byVariable.refusal } : {}),
+          title: byVariable.refusal ?? 'Switch every pinned series to this variable',
+          onChange: (variable) => handlers.onSelectedVariableChange(variable),
+        },
+      ],
+      [
+        'selected.Unit',
+        {
+          options: [
+            { value: 'own', label: 'Own unit' },
+            { value: 'pct', label: '% of range', ...(percentOff ? { disabled: percentOff } : {}) },
+            ...(mixed
+              ? [{ value: 'mixed', label: 'Mixed', disabled: 'Pick one for every pin' }]
+              : []),
+          ],
+          value: byPercent.on ? 'pct' : mixed ? 'mixed' : 'own',
+          ...(refs.length === 0 ? { refusal: 'Pin a series to switch it to % of range.' } : {}),
+          title:
+            refs.length === 0
+              ? 'Pin a series to switch it to % of range.'
+              : 'Show every pin as a % of its limit, else of its own peak, or in its own unit',
+          onChange: (value) => {
+            if (value === 'pct' || value === 'own') handlers.onSelectedPercent(value === 'pct');
+          },
+        },
+      ],
+    ]);
+  }
+
+  /** What a slicer lists: the tab's ungrouped form, where its filters are
+   * evaluated (`keptRowKeys`), or the Selected tab itself. With the drawer
+   * closed only a tab already built is read: closing it must never cost a
+   * ranking pass. */
+  function slicedTab(tabId: string, open = true): BrowseTab | undefined {
+    if (tabId === SELECTED) return open ? activeTab() : undefined;
+    if (open) return ungroupedTabFor(tabId);
+    return built.get(`${tabId}||${perUnit && offersRange(tabId) ? 'pu' : 'abs'}`);
+  }
+
+  const slicerPane = createSlicerPane(slicerMount);
+
+  function paintSlicers(open: boolean): void {
+    const tabId = activeId;
+    const tab = latest.tabs.length === 0 ? undefined : slicedTab(tabId, open);
+    const why =
+      latest.tabs.length === 0
+        ? 'Nothing loaded yet.'
+        : 'Open the Browse drawer to slice its tables.';
+    slicerPane.paint(
+      tab,
+      viewOf(tabId),
+      {
+        filter(key, filter) {
+          const view = viewOf(tabId);
+          const next = new Map(view.filters);
+          if (filter === null) next.delete(key);
+          else next.set(key, filter);
+          setView(tabId, { ...view, filters: next });
+        },
+        unslice(key) {
+          if (tab) setView(tabId, setSliced(tab, viewOf(tabId), key, false));
+        },
+      },
+      why,
+    );
   }
 
   const popovers = createBrowsePopovers({
@@ -589,6 +718,16 @@ export function createBrowseDrawer(
     setView,
     activeId: () => activeId,
     activeTab,
+    slicers: {
+      isSliced(tabId, key) {
+        const tab = slicedTab(tabId);
+        return tab !== undefined && isSliced(tab, viewOf(tabId), key);
+      },
+      setSliced(tabId, key, on) {
+        const tab = slicedTab(tabId);
+        if (tab) setView(tabId, setSliced(tab, viewOf(tabId), key, on));
+      },
+    },
   });
 
   columnsButton.addEventListener('click', popovers.toggleColumnsPopover);
@@ -627,6 +766,7 @@ export function createBrowseDrawer(
     const pinned = selection.list().length;
     handleLabel.textContent = pinned > 0 ? `Browse · ${pinned}` : 'Browse';
     const detent = height.detent();
+    paintSlicers(detent !== 'closed');
     if (detent === 'closed') {
       return;
     }
@@ -642,8 +782,11 @@ export function createBrowseDrawer(
       return;
     }
 
-    // The variables loaded for this kind, or on the Selected tab the ones
-    // every pin can move to.
+    // The variables loaded for this kind. The Selected tab's switches sit
+    // in its header instead.
+    const onSelected = activeId === SELECTED;
+    variableField.hidden = onSelected;
+    perUnitToggle.hidden = onSelected;
     const shown = shownVariables();
     variableSelect.replaceChildren();
     for (const variable of shown.variables) {
@@ -654,20 +797,8 @@ export function createBrowseDrawer(
       variableSelect.appendChild(option);
     }
     variableSelect.disabled = shown.refusal !== undefined || shown.variables.length === 0;
-    variableSelect.title =
-      activeId !== SELECTED ? '' : (shown.refusal ?? 'Switch every pinned series to this variable');
 
-    if (activeId === SELECTED) {
-      // The pins' state, not the drawer's mode: the button describes the chart.
-      const pins = latest.selectedPercent();
-      perUnitToggle.disabled = pins.refusal !== undefined;
-      perUnitToggle.classList.toggle('active', pins.on);
-      perUnitToggle.title =
-        pins.refusal ??
-        (pins.next
-          ? 'Show every pin as a % of its limit, else of its own peak'
-          : 'Show every pin in its own unit');
-    } else {
+    if (!onSelected) {
       const canPerUnit = offersRange(activeId);
       perUnitToggle.disabled = !canPerUnit;
       perUnitToggle.classList.toggle('active', perUnit && canPerUnit);

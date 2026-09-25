@@ -1,14 +1,15 @@
 // src/ui/browse-retarget.ts
 //
-// The Selected tab's switch: every pin moved to another variable in one move.
-// Pure data, so it tests under Node.
+// The Selected tab's switches: every pin moved to another variable, another
+// Case or "% of range" in one move. Pure data, so it tests under Node.
 //
 //   * **A rewrite, not a link.** A switch builds new pins from the old ones;
 //     no pin remembers the dropdown, so bundles, restore and row ids are
 //     untouched.
-//   * **Never partway.** A variable is offered only when EVERY pin can take
-//     it. Leaving some pins behind would mix variables and turn the control
-//     off under the analyst's hand.
+//   * **Never partway.** A variable or a Case is offered only when EVERY pin
+//     can take it. Leaving some pins behind would mix them and turn the
+//     control off under the analyst's hand, and dropping the ones that cannot
+//     move would lose them on the way back (A → B → A must return A's pins).
 //   * **The slot is found here, once, for every kind.** A table holding
 //     `metrics` keeps its slot; one holding a single `quantity` per slot moves.
 //     Two slots in one Case holding the variable refuse it: there is no rule
@@ -19,6 +20,7 @@
 //     its own unit, off only when every pin is already %. A pin in MW and the
 //     same pin in % become one pin, the first one's colour and place kept.
 
+import { CASE_GROUP_BY } from '../series/model';
 import {
   dependsOnVariable,
   withRowId,
@@ -28,15 +30,19 @@ import {
 
 /** The pin's filter context with what each variable-dependent filter was
  * chosen on, taken BEFORE the rewrite and never overwritten: the first
- * stamp is the truth however many switches follow. */
-function stamped(ref: BrowseRowRef): Pick<BrowseRowRef, 'filterContext'> {
+ * stamp is the truth however many switches follow. The Case is stamped the
+ * first time the Case moves (`caseName` is the pin's Case before it does),
+ * separately, so a pin that switched variable first still records it. */
+function stamped(ref: BrowseRowRef, caseName?: string): Pick<BrowseRowRef, 'filterContext'> {
   if (!ref.filterContext) return {};
   return {
-    filterContext: ref.filterContext.map((entry) =>
-      entry.chosenOn || !dependsOnVariable(entry.key)
-        ? entry
-        : { ...entry, chosenOn: { variable: ref.variable, unit: ref.unit } },
-    ),
+    filterContext: ref.filterContext.map((entry) => {
+      if (!dependsOnVariable(entry.key)) return entry;
+      let chosen = entry.chosenOn ?? { variable: ref.variable, unit: ref.unit };
+      if (caseName !== undefined && chosen.case === undefined)
+        chosen = { ...chosen, case: caseName };
+      return chosen === entry.chosenOn ? entry : { ...entry, chosenOn: chosen };
+    }),
   };
 }
 
@@ -89,16 +95,18 @@ interface PinTarget {
 const quantitiesOf = (data: QuantityHolder): readonly string[] =>
   data.metrics ?? (data.quantity !== undefined ? [data.quantity] : []);
 
-/** Where `ref` lands on `variable`, or null when it cannot go there. */
+/** Where `ref` lands on `variable` in `caseId` (its own Case unless
+ * named), or null when it cannot go there. */
 export function targetOf(
   kinds: KindRetargets,
   ref: BrowseRowRef,
   variable: string,
+  caseId: string = ref.caseId,
 ): PinTarget | null {
   const kind = kinds[ref.kind];
   if (!kind) return null;
   const holders = kind.rows.filter(
-    (row) => row.caseId === ref.caseId && quantitiesOf(row.data).includes(variable),
+    (row) => row.caseId === caseId && quantitiesOf(row.data).includes(variable),
   );
   if (holders.length !== 1) return null;
   const { slotKey, data } = holders[0];
@@ -189,6 +197,109 @@ export function retargetVariable(
       unit: target.unit,
       axisIndex: target.axisIndex,
       ...(target.label !== undefined ? { label: target.label } : {}),
+    });
+    return { ref: next, color: entry.color };
+  });
+  return firstPerId(moved);
+}
+
+/** A loaded Case as the Case switch offers it. `name` is the key a by-Case
+ * bucket's row id holds; `label` is what the analyst reads. */
+export interface CaseChoice {
+  readonly id: string;
+  readonly name: string;
+  readonly label: string;
+}
+
+/** One option of the Case switch: disabled, with the pins that block it,
+ * when some pin has nowhere to land there. */
+export interface CaseOption {
+  readonly id: string;
+  readonly label: string;
+  readonly blocked?: string;
+}
+
+/** The Selected tab's Case dropdown: what it lists, what it shows, and why it
+ * is off when it is. */
+export interface CaseSwitch {
+  readonly cases: readonly CaseOption[];
+  readonly caseId: string;
+  readonly refusal?: string;
+}
+
+/** How many blocking pins an option names before it counts the rest. */
+const NAMED_BLOCKERS = 3;
+
+const pinName = (ref: BrowseRowRef): string => ref.label ?? String(ref.entity);
+
+/** Every loaded Case in load order, each offered when every pin lands there.
+ * A blocked Case is still listed, disabled and naming its blockers, so what
+ * is withheld is said; a native `<select>` skips it under the arrow keys. */
+export function caseSwitch(
+  pins: readonly BrowseRowRef[],
+  kinds: KindRetargets,
+  cases: readonly CaseChoice[],
+): CaseSwitch {
+  const off = (refusal: string): CaseSwitch => ({ cases: [], caseId: '', refusal });
+  if (pins.length === 0) return off('Pin a series to switch its Case.');
+  const shown = [...new Set(pins.map((ref) => ref.caseId))];
+  if (shown.length > 1) return off('The pins span several Cases; switching needs one.');
+  const current = shown[0];
+  const options = cases.map((entry): CaseOption => {
+    if (entry.id === current) return { id: entry.id, label: entry.label };
+    const stuck = pins.filter((ref) => targetOf(kinds, ref, ref.variable, entry.id) === null);
+    if (stuck.length === 0) return { id: entry.id, label: entry.label };
+    const named = stuck.slice(0, NAMED_BLOCKERS).map(pinName);
+    const rest = stuck.length - named.length;
+    return {
+      id: entry.id,
+      label: entry.label,
+      blocked: `no data: ${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`,
+    };
+  });
+  if (!options.some((option) => option.id === current)) {
+    return off("The pins' Case is no longer loaded.");
+  }
+  return {
+    cases: options,
+    caseId: current,
+    ...(options.length < 2 ? { refusal: 'Only one Case is loaded.' } : {}),
+  };
+}
+
+/** Every pin moved to Case `caseId`, colour and order kept. A by-Case bucket
+ * carries the Case's name in its group value and row id, so it takes the new
+ * name. A pin that cannot move stays; `caseSwitch` offers only what every pin
+ * takes. */
+export function retargetCase(
+  entries: readonly SelectionEntry[],
+  caseId: string,
+  cases: readonly CaseChoice[],
+  kinds: KindRetargets,
+): SelectionEntry[] {
+  const to = cases.find((entry) => entry.id === caseId);
+  if (!to) return [...entries];
+  const moved = entries.map((entry) => {
+    const ref = entry.ref;
+    if (ref.caseId === caseId) return entry;
+    const target = targetOf(kinds, ref, ref.variable, caseId);
+    if (!target) return entry;
+    const from = cases.find((c) => c.id === ref.caseId)?.name;
+    const byCase = ref.groupBy === CASE_GROUP_BY;
+    // A by-Case bucket's label opens with its Case's name (`rowSubject`).
+    const label =
+      byCase && ref.groupValue !== undefined && ref.label?.startsWith(ref.groupValue)
+        ? to.name + ref.label.slice(ref.groupValue.length)
+        : (target.label ?? ref.label);
+    const next = withRowId({
+      ...ref,
+      ...stamped(ref, from),
+      caseId,
+      slotKey: target.slotKey,
+      unit: target.unit,
+      axisIndex: target.axisIndex,
+      ...(label !== undefined ? { label } : {}),
+      ...(byCase ? { entity: to.name, groupValue: to.name } : {}),
     });
     return { ref: next, color: entry.color };
   });

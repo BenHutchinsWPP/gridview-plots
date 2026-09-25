@@ -135,6 +135,7 @@ export function buildInterfaceTab(input: InterfaceBrowseInput): BrowseTab {
   const columns: BrowseColumn[] = [
     {
       key: CASE_COLUMN_KEY,
+      category: true,
       label: 'Case',
       kind: 'text',
       computed: false,
@@ -196,6 +197,7 @@ function groupTabRows(input: InterfaceBrowseInput, notes: string[]): BrowseTab {
   const columns: BrowseColumn[] = [
     {
       key: CASE_COLUMN_KEY,
+      category: true,
       label: 'Case',
       kind: 'text',
       computed: false,

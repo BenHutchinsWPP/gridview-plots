@@ -157,6 +157,22 @@ assert.deepEqual(
     missing.join('\n'),
 );
 
+// The Slicers pane is in the section clone's rail, but the drawer (global
+// chrome) owns the views it shows: main.ts finds it inside the section root
+// and hands it over, so no module resolves it globally.
+assert.ok(defined.has('data-el="slicer-pane"'), 'the section template has the Slicers pane');
+assert.ok(
+  template.indexOf('data-el="slicer-pane"') > template.indexOf('data-el="reset-filters-btn"') &&
+    template.indexOf('data-el="slicer-pane"') < template.indexOf('data-el="chart-area"'),
+  'the Slicers pane sits in the left rail under the time filters',
+);
+assert.match(
+  read('src/main.ts'),
+  /createBrowseDrawer\([\s\S]*?within\(areaRoot, '\[data-el="slicer-pane"\]'\),\s*\);/,
+  'main.ts hands the drawer the Slicers pane found inside the section root',
+);
+console.log('ok - the Slicers pane is in the section rail and handed to the drawer by main.ts');
+
 // ------------------------------------------------------------------- (c)
 /** Every `.ts` file under src/, recursively. */
 function tsFilesUnder(directory) {
@@ -906,26 +922,46 @@ console.log(
 // Ticks are an exact `values` filter and the box a `contains` one. A tick
 // written into the box as text would come back as a substring match: ticking
 // "SAMPLE_HYDRO" would also keep "SAMPLE_HYDRO: Pump 1".
+// The checklist is one renderer (`value-checklist.ts`) under the dropdown and
+// every Slicer, so the box is written in exactly two places there, and each
+// caller hands it its starting text.
 const popovers = read('src/ui/browse-popovers.ts');
+const checklistSource = read('src/ui/value-checklist.ts');
 const textBranch = popovers.slice(
   popovers.indexOf("if (column.kind === 'text') {"),
   popovers.indexOf('// Two bounds on one column'),
 );
-const boxWrites = textBranch.match(/input\.value = [^;]*;/g) ?? [];
+assert.deepEqual(
+  textBranch.match(/input\.value = [^;]*;/g) ?? [],
+  [],
+  'the popover never writes the box itself',
+);
+const boxWrites = checklistSource.match(/input\.value = [^;]*;/g) ?? [];
 assert.deepEqual(
   boxWrites,
-  ["input.value = current?.kind === 'text' ? current.text : '';", "input.value = '';"],
-  'the text box is written only from a text filter and by Clear; a tick must not serialise ' +
-    'into it. Found: ' +
+  ['input.value = options.text;', "input.value = '';"],
+  'the text box is written only from its starting text and by Clear; a tick must not ' +
+    'serialise into it. Found: ' +
     boxWrites.join(' | '),
 );
 assert.ok(
-  popovers.includes("write({ kind: 'values', values: [...ticked] })"),
+  textBranch.includes("text: current?.kind === 'text' ? current.text : ''"),
+  'the dropdown starts the box from a text filter only',
+);
+assert.ok(
+  textBranch.includes("write({ kind: 'values', values: [...ticked] })"),
   'the popover writes ticks as a values filter',
+);
+const slicerSource = read('src/ui/browse-slicers.ts');
+assert.ok(
+  slicerSource.includes("text: '',") &&
+    slicerSource.includes("{ kind: 'values', values: [...ticked] }"),
+  'a Slicer starts with an empty box and writes its ticks as a values filter',
 );
 
 console.log(
-  'ok - filter checklist ticks are an exact values filter, never text written into the box',
+  'ok - filter checklist ticks are an exact values filter, never text written into the box, ' +
+    'in the dropdown and in a Slicer',
 );
 
 // THE STALE COLUMN: the filter button's handler carries the column KEY only,

@@ -76,17 +76,16 @@ Case column.
   ticks apply at once. The extracted renderer must keep both behaviours.
 - **The rail is cloned per section**; the pane must not resolve a global id.
 
-## Open questions
+## Answered questions
 
-1. When a column with a slicer is hidden, does the slicer go too (and the
-   filter clear, as today), or does the slicer keep the column's filter alive?
-2. Are tab views, and so slicer toggles, saved in a `.gvmb`? If so, the
-   toggles are saved too, keyed by column key.
-3. Defaults: which slicers are on when a tab first opens? Proposed: Case on
-   every tab, FuelType on Generator, PSSEArea on Bus.
-4. Should the slicer checklist grey out values the tab's other filters have
-   emptied (Excel does)? It costs one pass over the rows per slicer on every
-   change.
+1. **Hiding a column with a slicer removes the slicer**, and the filter
+   clears as it does today. No filter outlives its column.
+2. **Slicer toggles are not saved in a `.gvmb`**, like the rest of a tab's
+   view (filters, hidden columns). Saving views is its own issue.
+3. **Defaults: Case on every tab, FuelType on Generator, PSSEArea on Bus**,
+   each only where that column exists and is a category.
+4. **No greying of values other filters emptied.** One pass over the rows per
+   slicer on every change; its own issue if wanted.
 
 ## Out of scope
 
