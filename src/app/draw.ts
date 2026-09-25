@@ -26,7 +26,12 @@ import type { InterfaceTable } from '../tables/interface/types';
 import { MEMBER_NOUN as AREA_MEMBERS } from '../tables/area/series';
 import { MEMBER_NOUN as BUS_MEMBERS } from '../tables/bus/series';
 import { MEMBER_NOUN as GENERATOR_MEMBERS } from '../tables/generator/series';
-import { pinnedConstraint, rowSubject, type BrowseRowRef } from '../ui/browse-model';
+import {
+  pinnedConstraint,
+  rowSubject,
+  type BrowseRowRef,
+  type CaseNames,
+} from '../ui/browse-model';
 import type { CaseSeries } from '../ui/charts';
 import type { Filters } from '../model/types';
 
@@ -53,6 +58,8 @@ export interface DrawContext {
   /** A Case's label (`caseLabel`), read at every draw so a rename relabels
    * lines already drawn. */
   caseLabel(caseId: string): string;
+  /** Case names, for a frozen filter chosen in another Case. */
+  caseNames: CaseNames;
   areaCases(): readonly AreaCase[];
   interfaceRows(): readonly TableRow<InterfaceTable>[];
   busRows(): readonly TableRow<BusTable>[];
@@ -158,7 +165,7 @@ function facetsOf(context: DrawContext, ref: BrowseRowRef, subject: string): Ser
       ? {
           filters: ref.filterContext.map((entry) => ({
             label: entry.label,
-            constraint: pinnedConstraint(entry, ref),
+            constraint: pinnedConstraint(entry, ref, context.caseNames),
           })),
         }
       : {}),

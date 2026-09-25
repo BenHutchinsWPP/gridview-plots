@@ -162,8 +162,17 @@ export interface BrowseColumn {
    * rather than carrying data. Painted as plain text, with no sort, group or
    * filter controls. */
   readonly context?: boolean;
-  /** Whether this column supports grouping into collapsed aggregate rows. */
+  /** Whether this column supports grouping into collapsed aggregate rows:
+   * a category AND a quantity that may be summed across it. */
   readonly groupable?: boolean;
+  /** A category: a column whose values name buckets (an enum lookup column,
+   * the Case), so it can be shown as a Slicer. Not `groupable`: filtering
+   * interfaces by a category sums nothing, so Interface columns are
+   * categories that never group. */
+  readonly category?: boolean;
+  /** Shown as a Slicer when a tab first opens. The Case column is one on
+   * every tab without saying so. */
+  readonly defaultSlicer?: boolean;
   /** When grouping is not defensible for this column/tab, why it is refused. */
   readonly groupDisabledReason?: string;
   /** How a number column's cells are rounded; missing means quantity. May vary
@@ -203,6 +212,25 @@ export interface BrowseTab {
    * `visibleRows` skips: a max bound on units is not a max bound on their
    * sum. Absent on an ungrouped tab. */
   readonly consumedFilters?: ReadonlySet<string>;
+  /** Controls that rewrite every row, painted on a header's second line and
+   * keyed by the column they sit above (the Selected tab's "Switch all"). */
+  readonly switches?: ReadonlyMap<string, HeaderSwitch>;
+}
+
+/** One header control: a native `<select>`, so a focused, closed one steps
+ * its options with the arrow keys and skips the disabled ones by itself. */
+export interface HeaderSwitch {
+  readonly options: readonly {
+    readonly value: string;
+    readonly label: string;
+    /** Why this option is off, or undefined when it can be chosen. */
+    readonly disabled?: string;
+  }[];
+  readonly value: string;
+  /** Why the whole control is off, or undefined when it answers. */
+  readonly refusal?: string;
+  readonly title: string;
+  onChange(value: string): void;
 }
 
 /**
@@ -344,6 +372,9 @@ export interface ViewState {
   readonly columnOrder?: readonly string[];
   /** The column key currently grouped by, or null/undefined when listing individual entities. */
   readonly groupBy?: string | null;
+  /** Columns shown as Slicers. Absent means the tab's defaults
+   * (`defaultSlicers`). Not saved in a bundle, like the rest of the view. */
+  readonly slicers?: ReadonlySet<string>;
 }
 
 // ------------------------------------------------------ column visibility
@@ -360,7 +391,7 @@ export function columnVisible(column: BrowseColumn, view: ViewState): boolean {
 }
 
 /** Show or hide one column. Hiding clears its filter, so no hidden column
- * silently constrains the rows. */
+ * silently constrains the rows, and takes its Slicer with it. */
 export function setColumnVisible(view: ViewState, key: string, visible: boolean): ViewState {
   const overrides = new Map(view.columnOverrides ?? []);
   overrides.set(key, visible);
@@ -370,7 +401,53 @@ export function setColumnVisible(view: ViewState, key: string, visible: boolean)
     next.delete(key);
     filters = next;
   }
-  return { ...view, columnOverrides: overrides, filters };
+  let slicers = view.slicers;
+  if (!visible && slicers?.has(key)) {
+    const next = new Set(slicers);
+    next.delete(key);
+    slicers = next;
+  }
+  return { ...view, columnOverrides: overrides, filters, ...(slicers ? { slicers } : {}) };
+}
+
+// ---------------------------------------------------------------- slicers
+//
+// A Slicer IS its column's filter, shown as a standing checklist: there is
+// one value per column, written by the slicer and the dropdown alike, so
+// there is no precedence to explain. A hidden column shows no slicer, since
+// its filter is gone.
+
+/** The keys a tab shows as Slicers when the view has chosen none. */
+export function defaultSlicers(tab: BrowseTab): ReadonlySet<string> {
+  return new Set(
+    tab.columns
+      .filter(
+        (column) => column.category && (column.key === CASE_COLUMN_KEY || column.defaultSlicer),
+      )
+      .map((column) => column.key),
+  );
+}
+
+/** Whether `key` is a Slicer under this view, on screen or not. */
+export function isSliced(tab: BrowseTab, view: ViewState, key: string): boolean {
+  return (view.slicers ?? defaultSlicers(tab)).has(key);
+}
+
+/** The columns shown as Slicers, in column order: categories on screen. */
+export function slicerColumns(tab: BrowseTab, view: ViewState): BrowseColumn[] {
+  const keys = view.slicers ?? defaultSlicers(tab);
+  return orderedColumns(tab, view).filter(
+    (column) => column.category && keys.has(column.key) && columnVisible(column, view),
+  );
+}
+
+/** Show or hide one column as a Slicer. The first choice turns the defaults
+ * into an explicit set, so dropping the Case slicer keeps it dropped. */
+export function setSliced(tab: BrowseTab, view: ViewState, key: string, on: boolean): ViewState {
+  const next = new Set(view.slicers ?? defaultSlicers(tab));
+  if (on) next.add(key);
+  else next.delete(key);
+  return { ...view, slicers: next };
 }
 
 /** Empty the filter map. Sort, group-by and the column arrangement stay. */
@@ -479,6 +556,13 @@ export function headerSignature(tab: BrowseTab, view: ViewState): string {
       column.groupable ? '1' : '0',
       column.groupDisabledReason ?? '',
     );
+    const control = tab.switches?.get(column.key);
+    if (control) {
+      parts.push(control.value, control.refusal ?? '', control.title);
+      for (const option of control.options) {
+        parts.push(option.value, option.label, option.disabled ?? '');
+      }
+    }
   }
   // A separator no key, label or sentence contains.
   return parts.join('\u0000');
@@ -661,8 +745,23 @@ export interface FilterContextEntry {
   readonly constraint: string;
   /** What the filtered column measured when the constraint was chosen, set
    * when a Selected-tab switch moves the pin off it. "Max ≥ 500" on Load
-   * says nothing about Generation. Field name is bundle wire format. */
-  readonly chosenOn?: { readonly variable: string; readonly unit: string };
+   * says nothing about Generation. `case` is the Case's NAME (the key a
+   * by-Case bucket's row id holds, which a rename in Contents leaves alone),
+   * not its id: ids are minted fresh on restore and a caption is not worth
+   * the remap. Field names are bundle wire format. */
+  readonly chosenOn?: {
+    readonly variable: string;
+    readonly unit: string;
+    readonly case?: string;
+  };
+}
+
+/** How a frozen constraint finds the Case it was chosen in. */
+export interface CaseNames {
+  /** A Case's name, by id. */
+  nameOf(caseId: string): string | undefined;
+  /** What the Case with this name reads as now; the name itself when none. */
+  labelOfName(name: string): string;
 }
 
 /** Whether a filter on this column depends on the variable shown: the stats
@@ -677,11 +776,15 @@ export function dependsOnVariable(key: string): boolean {
  * Selected tab and its CSV. */
 export function pinnedConstraint(
   entry: FilterContextEntry,
-  ref: Pick<BrowseRowRef, 'variable' | 'unit'>,
+  ref: Pick<BrowseRowRef, 'variable' | 'unit' | 'caseId'>,
+  cases: CaseNames,
 ): string {
   const chosen = entry.chosenOn;
   if (!chosen) return entry.constraint;
   const parts: string[] = [];
+  if (chosen.case !== undefined && chosen.case !== cases.nameOf(ref.caseId)) {
+    parts.push(`in ${cases.labelOfName(chosen.case)}`);
+  }
   if (chosen.variable !== ref.variable) parts.push(`on ${chosen.variable}`);
   if (chosen.unit !== ref.unit && (chosen.unit === '%' || ref.unit === '%')) {
     parts.push(`in ${chosen.unit}`);

@@ -4704,6 +4704,264 @@ console.log(`\n${checks} checks passed.`);
   ok('a Selected-tab switch moves the tabs, then the pins, in one render');
 }
 
+// ------------------------------------------- the Selected tab's Case switch
+//
+// Every pin moved to another Case at once, offered only where every pin
+// lands, so stepping through Cases never drops a pin and A → B → A returns
+// the pins you started with.
+
+{
+  setGroupings('Name,Grouping\nAREA_AV,Northwest\nAREA_NV,Northwest');
+  const { caseSwitch, retargetCase } = await import('../src/ui/browse-retarget.ts');
+  const { busAnswers } = await import('../src/tables/bus/ui/retarget.ts');
+  const { CASE_GROUP_BY } = await import('../src/series/model.ts');
+  const LOAD = 'Load (MWh)';
+  const GEN = 'Generation (MWh)';
+  const kinds = {
+    area: areaRetarget(
+      [
+        {
+          caseId: 'a',
+          slotKey: 'area',
+          data: areaTable(['AREA_AV', 'AREA_NV'], [LOAD, GEN], () => 1),
+        },
+        {
+          caseId: 'b',
+          slotKey: 'area',
+          data: areaTable(['AREA_AV', 'AREA_NV'], [LOAD, GEN], () => 2),
+        },
+        { caseId: 'c', slotKey: 'area', data: areaTable(['AREA_AV'], [LOAD, GEN], () => 3) },
+      ],
+      (variable, data) => combinesAcrossAreas(variable, [data]),
+    ),
+    bus: retargetOf(
+      busAnswers,
+      ['a', 'b'].map((caseId) => ({
+        caseId,
+        slotKey: 'bus Load',
+        data: {
+          buses: Int32Array.from([101]),
+          names: [caseId === 'a' ? 'ALDER' : 'ALDER_B'],
+          presence: Uint8Array.from([1]),
+          quantity: LOAD,
+        },
+      })),
+      () => true,
+    ),
+  };
+  const cases = [
+    { id: 'a', name: 'Base', label: 'Base' },
+    { id: 'b', name: 'Alt', label: 'Alt (renamed)' },
+    { id: 'c', name: 'Dry', label: 'Dry' },
+  ];
+  const area = (caseId, entity, extra = {}) =>
+    withRowId({
+      kind: 'area',
+      caseId,
+      slotKey: 'area',
+      entity,
+      variable: LOAD,
+      unit: 'MWh',
+      axisIndex: entity === 'AREA_NV' ? 1 : 0,
+      ...extra,
+    });
+  const av = area('a', 'AREA_AV');
+  const nv = area('a', 'AREA_NV');
+
+  // Only safe Cases are offered, and a blocked one names its pins.
+  let offered = caseSwitch([av, nv], kinds, cases);
+  assert.equal(offered.caseId, 'a');
+  assert.equal(offered.refusal, undefined);
+  assert.deepEqual(
+    offered.cases.map((option) => [option.id, option.label, option.blocked]),
+    [
+      ['a', 'Base', undefined],
+      ['b', 'Alt (renamed)', undefined],
+      ['c', 'Dry', 'no data: AREA_NV'],
+    ],
+    'every Case in load order, a blocked one disabled with the pin that blocks it',
+  );
+  const many = ['N1', 'N2', 'N3', 'N4', 'N5'].map((entity) => area('a', entity));
+  assert.equal(
+    caseSwitch(many, kinds, cases).cases[1].blocked,
+    'no data: N1, N2, N3 and 2 more',
+    'a long list of blockers is counted, not listed',
+  );
+
+  // A → B → A returns the same ids and colours.
+  const entries = [
+    { ref: av, color: '#a' },
+    { ref: nv, color: '#b' },
+  ];
+  const onB = retargetCase(entries, 'b', cases, kinds);
+  assert.deepEqual(
+    onB.map((entry) => [entry.ref.caseId, entry.color]),
+    [
+      ['b', '#a'],
+      ['b', '#b'],
+    ],
+  );
+  for (const entry of onB) assert.equal(entry.ref.id, rowIdOf(entry.ref), 'ids are rebuilt');
+  const home = retargetCase(onB, 'a', cases, kinds);
+  assert.deepEqual(
+    home.map((entry) => [entry.ref.id, entry.color]),
+    entries.map((entry) => [entry.ref.id, entry.color]),
+    'A → B → A returns the pins you started with',
+  );
+
+  // A mixed-kind pin set moves: the Case switch needs one Case, not one kind.
+  const bus = withRowId({
+    kind: 'bus',
+    caseId: 'a',
+    slotKey: 'bus Load',
+    entity: 101,
+    label: 'ALDER (101)',
+    variable: LOAD,
+    unit: 'MWh',
+    axisIndex: 0,
+  });
+  offered = caseSwitch([av, bus], kinds, cases);
+  assert.equal(offered.cases[1].blocked, undefined, 'Area and Bus both land in b');
+  assert.equal(offered.cases[2].blocked, 'no data: ALDER (101)', 'c has no bus table');
+  const mixed = retargetCase(
+    [
+      { ref: av, color: '#a' },
+      { ref: bus, color: '#c' },
+    ],
+    'b',
+    cases,
+    kinds,
+  );
+  assert.deepEqual(
+    mixed.map((entry) => entry.ref.caseId),
+    ['b', 'b'],
+  );
+  assert.equal(mixed[1].ref.label, 'ALDER_B (101)', 'a bus reads its name from the new table');
+
+  // A by-Case bucket carries the Case's name in its id, so it takes the new one.
+  const bucket = withRowId({
+    kind: 'bus',
+    caseId: 'a',
+    slotKey: 'bus Load',
+    entity: 'Base',
+    label: 'Base',
+    variable: LOAD,
+    unit: 'MWh',
+    axisIndex: -1,
+    groupBy: CASE_GROUP_BY,
+    groupValue: 'Base',
+  });
+  const [moved] = retargetCase([{ ref: bucket, color: '#d' }], 'b', cases, kinds);
+  assert.equal(moved.ref.groupValue, 'Alt', 'the NAME, which a rename leaves alone');
+  assert.equal(moved.ref.entity, 'Alt');
+  assert.equal(moved.ref.label, 'Alt');
+  assert.equal(moved.ref.id, rowIdOf(moved.ref));
+  assert.ok(moved.ref.id.includes('Case=Alt'), moved.ref.id);
+  assert.equal(
+    retargetCase([moved], 'a', cases, kinds)[0].ref.id,
+    bucket.id,
+    'and back is the same pin',
+  );
+
+  // Pins across two Cases refuse, as does nothing pinned or one Case loaded.
+  assert.match(caseSwitch([av, area('b', 'AREA_AV')], kinds, cases).refusal ?? '', /several Cases/);
+  assert.ok(caseSwitch([], kinds, cases).refusal);
+  assert.match(caseSwitch([av], kinds, cases.slice(0, 1)).refusal ?? '', /one Case/);
+
+  // A filtered group moved A → B reads "chosen in A"; moved back, plain.
+  const names = {
+    nameOf: (caseId) => cases.find((entry) => entry.id === caseId)?.name,
+    labelOfName: (name) => cases.find((entry) => entry.name === name)?.label ?? name,
+  };
+  const group = area('a', 'Northwest', {
+    axisIndex: -1,
+    groupBy: 'Group',
+    groupValue: 'Northwest',
+    members: ['AREA_AV', 'AREA_NV'],
+    filterContext: [
+      { key: 'stat.max', label: 'Max', constraint: '≥ 500' },
+      { key: 'Zone', label: 'Zone', constraint: 'is North' },
+    ],
+  });
+  const read = (ref) => ref.filterContext.map((entry) => pinnedConstraint(entry, ref, names));
+  const [inB] = retargetCase([{ ref: group, color: '#e' }], 'b', cases, kinds);
+  assert.deepEqual(read(inB.ref), ['≥ 500 (chosen in Base)', 'is North']);
+  const [backInA] = retargetCase([inB], 'a', cases, kinds);
+  assert.deepEqual(read(backInA.ref), ['≥ 500', 'is North'], 'back where it was chosen, no note');
+  const renamed = { ...names, labelOfName: (name) => (name === 'Base' ? 'Base 2031' : name) };
+  assert.equal(
+    pinnedConstraint(inB.ref.filterContext[0], inB.ref, renamed),
+    '≥ 500 (chosen in Base 2031)',
+    'the stamped name is shown through the current label',
+  );
+
+  // Variable then Case records both, each once, however many switches follow.
+  const [onGen] = retargetVariable([{ ref: group, color: '#e' }], GEN, kinds);
+  const [genInB] = retargetCase([onGen], 'b', cases, kinds);
+  assert.deepEqual(genInB.ref.filterContext[0].chosenOn, {
+    variable: LOAD,
+    unit: 'MWh',
+    case: 'Base',
+  });
+  const [again] = retargetVariable(retargetCase([genInB], 'a', cases, kinds), LOAD, kinds);
+  const [twice] = retargetCase([again], 'b', cases, kinds);
+  assert.deepEqual(twice.ref.filterContext[0].chosenOn, genInB.ref.filterContext[0].chosenOn);
+  assert.equal(read(genInB.ref)[0], '≥ 500 (chosen in Base, on Load (MWh))');
+  assert.equal(
+    twice.ref.filterContext[1].chosenOn,
+    undefined,
+    'a list attribute is true in every Case',
+  );
+
+  // A stamped Case is wire format: it saves and restores unchanged.
+  const wire = JSON.parse(JSON.stringify(savePins([inB], ['a', 'b'])));
+  const [restored] = restorePins(wire, [
+    { id: 'x', name: 'Base' },
+    { id: 'y', name: 'Alt' },
+  ]);
+  assert.deepEqual(restored.ref.filterContext, inB.ref.filterContext);
+  ok('the Selected tab moves every pin to a Case every pin can take, and back');
+}
+
+{
+  // The Switch all row repaints when anything it shows moves: an option's
+  // label, whether it is off and why, and the value it sits on.
+  const tab = (control) => ({
+    id: 'selected',
+    label: 'Selected',
+    rows: [],
+    notes: [],
+    columns: [
+      { key: 'selected.Case', label: 'Case', kind: 'text', computed: false, value: () => '' },
+    ],
+    switches: new Map([['selected.Case', control]]),
+  });
+  const base = {
+    options: [
+      { value: 'a', label: 'Base' },
+      { value: 'b', label: 'Alt' },
+    ],
+    value: 'a',
+    title: 't',
+    onChange() {},
+  };
+  const sig = (control) => headerSignature(tab(control), NO_VIEW);
+  assert.notEqual(sig(base), sig({ ...base, value: 'b' }), 'the value');
+  assert.notEqual(
+    sig(base),
+    sig({ ...base, options: [base.options[0], { ...base.options[1], disabled: 'no data: X' }] }),
+    'a blocked option',
+  );
+  assert.notEqual(
+    sig(base),
+    sig({ ...base, options: [base.options[0], { ...base.options[1], label: 'Alt 2' }] }),
+    'a renamed Case',
+  );
+  assert.notEqual(sig(base), sig({ ...base, refusal: 'Only one Case is loaded.' }), 'a refusal');
+  assert.equal(sig(base), sig({ ...base, onChange() {} }), 'a new handler alone does not rebuild');
+  ok('the Switch all row is in the header signature');
+}
+
 {
   // Bus, Generator and Interface keep one quantity per slot, so a switch
   // MOVES the pin to another table and reads presence, axis index and a bus
@@ -5018,13 +5276,21 @@ console.log(`\n${checks} checks passed.`);
   const body = main.slice(at, main.indexOf('\n  },', at));
   assert.ok(body.indexOf('browseDrawer.setPerUnit(') >= 0);
   assert.ok(body.indexOf('browseDrawer.setPerUnit(') < body.indexOf('browseDrawer.replacePins('));
+  // The toolbar never rewrites pins: on the Selected tab it is hidden, and
+  // the "Switch all" row's controls are the only ones that do.
   const drawer = readFileSync(new URL('../src/ui/browse-drawer.ts', import.meta.url), 'utf8');
   const click = drawer.slice(drawer.indexOf("perUnitToggle.addEventListener('click'"));
-  assert.ok(
-    click.indexOf('handlers.onSelectedPercent(') < click.indexOf('applyPerUnit('),
-    'on the Selected tab the click hands off before touching the mode',
-  );
-  ok('a Selected-tab % switch moves the mode, then the pins, in one render');
+  const clickBody = click.slice(0, click.indexOf('\n  });'));
+  assert.ok(!clickBody.includes('onSelectedPercent'), 'the toolbar % never moves pins');
+  const change = drawer.slice(drawer.indexOf("variableSelect.addEventListener('change'"));
+  assert.ok(!change.slice(0, change.indexOf('\n  });')).includes('onSelectedVariableChange'));
+  assert.match(drawer, /perUnitToggle\.hidden = onSelected;/);
+  assert.match(drawer, /variableField\.hidden = onSelected;/);
+  const row = drawer.slice(drawer.indexOf('function switches('));
+  for (const handler of ['onSelectedCaseChange', 'onSelectedVariableChange', 'onSelectedPercent']) {
+    assert.ok(row.includes(`handlers.${handler}(`), `the Switch all row reaches ${handler}`);
+  }
+  ok('a Selected-tab % switch moves the mode, then the pins; only the Switch all row rewrites');
 }
 
 {
@@ -5193,4 +5459,98 @@ console.log(`\n${checks} checks passed.`);
   const replace = drawer.slice(drawer.indexOf('replacePins(entries) {'));
   assert.ok(replace.indexOf('dropBounds(SELECTED)') < replace.indexOf('adoptPins('));
   ok('groups tabs list % rows; an unruled metric, a stuck % set and stale bounds are handled');
+}
+
+// ------------------------------------------------------------------ slicers
+//
+// A Slicer IS its column's filter, shown as a standing checklist. Which
+// columns can be sliced is `category`, the lookup's half of the group-by's two
+// owners, not `groupable`, which also asks whether the quantity sums.
+
+{
+  const { defaultSlicers, isSliced, setSliced, slicerColumns } =
+    await import('../src/ui/browse-model.ts');
+  const keysOf = (columns) => columns.map((column) => column.key);
+
+  // Interface columns never group, but filtering interfaces by a category
+  // sums nothing.
+  const iface = buildInterfaceTab({
+    tables: [interfaceTableIn(interfaceTable(['P01', 'P02'], (index) => index))],
+    areas: null,
+  });
+  const ifaceCase = iface.columns.find((column) => column.key === 'case');
+  assert.equal(ifaceCase.category, true, 'the Interface Case column is a category');
+  assert.ok(!ifaceCase.groupable, 'and is not groupable');
+  assert.deepEqual([...defaultSlicers(iface)], ['case'], 'Case is a slicer on every tab');
+
+  // Generator: FuelType by default, an enum list column is a category, and a
+  // free-text or numeric one is not.
+  const gen = buildGeneratorTab({
+    tables: [table(generatorTable(['ALDER', 'BIRCH'], (index) => index))],
+    list: listOf(['ALDER,101,AREA_AV,Gas,200', 'BIRCH,102,AREA_NV,Wind,100']),
+    areas: null,
+  });
+  const genColumn = (key) => gen.columns.find((column) => column.key === key);
+  assert.equal(genColumn('list.FuelType').category, true);
+  assert.ok(!genColumn('list.PSSEMaxCap(MW)').category, 'a number names no bucket');
+  assert.ok(!genColumn('entity').category, 'the unit itself is not a category');
+  assert.equal(genColumn('computed.fuelClean').category, true, 'a derived bucket is one');
+  assert.deepEqual([...defaultSlicers(gen)].sort(), ['case', 'list.FuelType']);
+
+  // Bus: PSSEArea by default, where the list carries it.
+  const busList = buildLookup(
+    parseLookupCsv(
+      [
+        'BUS_GENERAL,,,',
+        'BusID,Name,LoadArea,PSSEArea',
+        '101,B1,AREA_AV,10',
+        '102,B2,AREA_NV,20',
+      ].join('\n'),
+      'BusList.csv',
+    ).rows,
+  );
+  const busTab = buildBusTab({
+    tables: [busTableIn(busTable([101, 102], ['B1', 'B2'], (i) => i))],
+    list: busList,
+    areas: null,
+  });
+  assert.ok(defaultSlicers(busTab).has('list.PSSEArea'), 'PSSEArea opens as a slicer on Bus');
+
+  // Shown only on screen; the first choice makes the defaults explicit, so a
+  // dropped default stays dropped.
+  assert.deepEqual(keysOf(slicerColumns(gen, NO_VIEW)), ['case', 'list.FuelType']);
+  let view = setSliced(gen, NO_VIEW, 'case', false);
+  assert.deepEqual(keysOf(slicerColumns(gen, view)), ['list.FuelType']);
+  assert.equal(isSliced(gen, view, 'case'), false);
+  view = setSliced(gen, view, 'computed.fuelClean', true);
+  assert.deepEqual(keysOf(slicerColumns(gen, view)), ['computed.fuelClean', 'list.FuelType']);
+
+  // Hiding a column takes its slicer and its filter with it.
+  view = {
+    ...view,
+    filters: new Map([['list.FuelType', { kind: 'values', values: ['Gas'] }]]),
+  };
+  const hidden = setColumnVisible(view, 'list.FuelType', false);
+  assert.equal(hidden.filters.has('list.FuelType'), false);
+  assert.equal(isSliced(gen, hidden, 'list.FuelType'), false, 'the slicer goes too');
+  const shown = setColumnVisible(hidden, 'list.FuelType', true);
+  assert.equal(isSliced(gen, shown, 'list.FuelType'), false, 'and does not come back unasked');
+
+  // A default hidden before any choice shows no slicer and no filter.
+  const bare = setColumnVisible(NO_VIEW, 'case', false);
+  assert.deepEqual(keysOf(slicerColumns(gen, bare)), ['list.FuelType']);
+
+  // A slicer's ticks are the column's `values` filter, as the dropdown's are:
+  // the rows it keeps are what the table shows.
+  const filtered = {
+    ...NO_VIEW,
+    filters: new Map([['list.FuelType', { kind: 'values', values: ['Wind'] }]]),
+  };
+  assert.deepEqual(
+    Array.from(visibleRows(gen, filtered), (row) => gen.rows[row].entity),
+    ['BIRCH'],
+  );
+  ok(
+    'slicers: categories, per-kind defaults, explicit after the first choice, gone with the column',
+  );
 }

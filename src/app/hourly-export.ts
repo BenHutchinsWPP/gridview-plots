@@ -17,7 +17,7 @@
 //     between chunks, so the progress line paints and input stays refused.
 
 import type { BrowseRowRef } from '../ui/browse-model';
-import { pinnedConstraint, rowSubject } from '../ui/browse-model';
+import { pinnedConstraint, rowSubject, type CaseNames } from '../ui/browse-model';
 import type { CaseSeries } from '../ui/charts';
 import { RANGE_LABEL } from '../series/range';
 import type { SeriesFacets } from '../series/label';
@@ -50,6 +50,8 @@ export interface HourlyExportHost {
   resolve(ref: BrowseRowRef): CaseSeries | null;
   /** A Case's label (`caseLabel`), for a row whose table is gone. */
   caseLabel(caseId: string): string;
+  /** Case names, for a frozen filter chosen in another Case. */
+  readonly caseNames: CaseNames;
   /** The busy line: input is refused while it is set. */
   progress(message: string): void;
   /** Let the progress paint. */
@@ -80,7 +82,7 @@ export async function exportHourly(
   const entries: HourlyEntry[] = [];
   for (let start = 0; start < refs.length; start += CHUNK) {
     for (const ref of refs.slice(start, start + CHUNK))
-      entries.push(entryOf(ref, host.resolve(ref), host.caseLabel));
+      entries.push(entryOf(ref, host.resolve(ref), host.caseLabel, host.caseNames));
     host.progress(`Resolving series ${entries.length.toLocaleString()} of ${total}…`);
     await host.nextFrame();
   }
@@ -135,6 +137,7 @@ function entryOf(
   ref: BrowseRowRef,
   series: CaseSeries | null,
   caseLabelOf: (caseId: string) => string,
+  caseNames: CaseNames,
 ): HourlyEntry {
   const ratio = ref.perUnit === true;
   if (series?.facets) {
@@ -146,14 +149,18 @@ function entryOf(
     };
   }
   return {
-    facets: facetsOfRef(ref, caseLabelOf),
+    facets: facetsOfRef(ref, caseLabelOf, caseNames),
     refusal: series?.refusal ?? GONE,
     warnings: [],
     ratio,
   };
 }
 
-function facetsOfRef(ref: BrowseRowRef, caseLabelOf: (caseId: string) => string): SeriesFacets {
+function facetsOfRef(
+  ref: BrowseRowRef,
+  caseLabelOf: (caseId: string) => string,
+  caseNames: CaseNames,
+): SeriesFacets {
   return {
     caseLabel: caseLabelOf(ref.caseId),
     kind: ref.kind,
@@ -166,7 +173,7 @@ function facetsOfRef(ref: BrowseRowRef, caseLabelOf: (caseId: string) => string)
       ? {
           filters: ref.filterContext.map((entry) => ({
             label: entry.label,
-            constraint: pinnedConstraint(entry, ref),
+            constraint: pinnedConstraint(entry, ref, caseNames),
           })),
         }
       : {}),

@@ -122,6 +122,7 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
     const columns: BrowseColumn[] = [
       {
         key: CASE_COLUMN_KEY,
+        category: true,
         label: 'Case',
         kind: 'text',
         computed: false,
@@ -295,6 +296,7 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
   const columns: BrowseColumn[] = [
     {
       key: CASE_COLUMN_KEY,
+      category: true,
       label: 'Case',
       kind: 'text',
       computed: false,

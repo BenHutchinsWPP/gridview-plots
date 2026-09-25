@@ -1753,6 +1753,43 @@ body.is-busy {
   margin-left: auto;
 }
 
+/* The Selected tab's "Switch all" row: each header is its title line, then a
+   second line holding the control that rewrites that column for every pin.
+   Every header gets the line, so the controls sit on one row. */
+.browse-grid .browse-head.browse-head-switched {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.browse-grid .browse-head-title {
+  display: flex;
+  align-items: center;
+}
+.browse-grid .browse-head-title > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.browse-grid .browse-head-title > button:first-of-type {
+  margin-left: auto;
+}
+.browse-switch-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  font-weight: 400;
+}
+.browse-switch-name {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.browse-switch {
+  font-size: 12px;
+  max-width: 220px;
+}
+
 /* A header label's click sorts; a hold-and-drag on the header moves the
    column. */
 .browse-sort {
@@ -2547,4 +2584,62 @@ body.is-busy {
   margin-right: auto;
   font-size: 12px;
   align-self: center;
+}
+.browse-filter-checklist-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+/* The Slicers pane: one checklist per sliced column of the active Browse
+   tab, in the rail under the time filters. */
+.slicer-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.slicer-heading,
+.slicer-empty,
+.slicer-note {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+.slicer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.slicer {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 6px;
+}
+.slicer-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.slicer-title {
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.slicer-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.slicer-body input[type='search'] {
+  width: 100%;
+  box-sizing: border-box;
+}
+.slicer-body .browse-filter-checklist {
+  max-height: 180px;
+}
+.browse-filter-slicer {
+  margin-top: 6px;
 }

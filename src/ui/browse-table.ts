@@ -17,6 +17,11 @@
 //     a dot, which Tabulator reads as a nested path.
 //   * A drag makes a cell range, never a text selection: Tabulator's Ctrl+C
 //     copies a live text selection in place of the range (`styles.css`).
+//   * A header control (the Selected tab's "Switch all" row) is a native
+//     `<select>` on the header's second line. It keeps its mouse and key
+//     events from Tabulator, whose sort, column drag and range keys would
+//     otherwise take them, and a change that rebuilds the header hands focus
+//     to the new control, or the next arrow press lands nowhere.
 //   * Tabulator resets the range to the top-left cell and takes focus on
 //     every data load. So a draw whose rows are unchanged (a preview, a tick)
 //     restyles rows in place, and one that does replace them puts the range
@@ -261,17 +266,59 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
     return button;
   }
 
-  function titleOf(tab: BrowseTab, view: ViewState, key: string): HTMLElement {
+  /** A header's second line: its control, and on the first column the row's
+   * name. Every header of a tab with switches gets one, so they align. */
+  function switchLine(tab: BrowseTab, key: string, first: boolean): HTMLElement {
+    const line = document.createElement('span');
+    line.className = 'browse-switch-line';
+    if (first) {
+      const name = document.createElement('span');
+      name.className = 'browse-switch-name';
+      name.textContent = 'Switch all';
+      line.appendChild(name);
+    }
+    const control = tab.switches?.get(key);
+    if (!control) return line;
+    const select = document.createElement('select');
+    select.className = 'browse-switch';
+    select.dataset.column = key;
+    select.title = control.title;
+    select.disabled = control.refusal !== undefined;
+    for (const entry of control.options) {
+      const option = document.createElement('option');
+      option.value = entry.value;
+      option.textContent = entry.label;
+      option.disabled = entry.disabled !== undefined;
+      if (entry.disabled !== undefined) option.title = entry.disabled;
+      option.selected = entry.value === control.value;
+      select.appendChild(option);
+    }
+    for (const type of ['mousedown', 'click', 'keydown'] as const) {
+      select.addEventListener(type, (event) => event.stopPropagation());
+    }
+    select.addEventListener('change', () => control.onChange(select.value));
+    line.appendChild(select);
+    return line;
+  }
+
+  function titleOf(tab: BrowseTab, view: ViewState, key: string, first: boolean): HTMLElement {
     const column = tab.columns.find((c) => c.key === key);
-    const wrap = document.createElement('span');
-    wrap.className = 'browse-head';
-    if (!column) return wrap;
+    const head = document.createElement('span');
+    head.className = 'browse-head';
+    if (!column) return head;
+    // With switches the header is two lines: the title row, then the control.
+    const wrap = tab.switches ? document.createElement('span') : head;
+    if (tab.switches) {
+      head.classList.add('browse-head-switched');
+      wrap.className = 'browse-head-title';
+      head.append(wrap, switchLine(tab, key, first));
+    }
     const label = document.createElement('span');
     wrap.appendChild(label);
     // A context column restates a constraint: no controls under it.
     if (column.context) {
       label.textContent = column.label;
-      return wrap;
+      return head;
     }
     label.className = 'browse-sort';
     label.dataset.column = key;
@@ -309,7 +356,7 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
       host.toggleFilterPopover(key, filterBtn);
     });
     wrap.appendChild(filterBtn);
-    return wrap;
+    return head;
   }
 
   /** Sort arrows and filter marks, repainted in place: a rebuild would drop
@@ -334,7 +381,7 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
       width: widths.get(column.key),
       hozAlign: column.kind === 'number' ? 'right' : 'left',
       cssClass: column.computed ? 'browse-computed' : undefined,
-      titleFormatter: () => titleOf(tab, view, column.key),
+      titleFormatter: () => titleOf(tab, view, column.key, i === 0),
       formatter: (cell) => String((cell.getData() as GridRow)[`d${i}`] ?? ''),
       formatterClipboard: (cell) => {
         const value = cell.getValue();
@@ -343,7 +390,7 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
         return value;
       },
       headerClick: (event) => {
-        if (column.context || (event.target as HTMLElement).closest('button')) return;
+        if (column.context || (event.target as HTMLElement).closest('button, select')) return;
         const now = host.view();
         // Numbers sort DESC first ("which is biggest"); text A-Z.
         const direction: SortState['direction'] =
@@ -421,8 +468,10 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
     const nextSignature = headerSignature(tab, view);
     const rebuilt = nextSignature !== signature;
     if (rebuilt) {
+      const held = focusedSwitch();
       grid.setColumns(columnsOf(tab, view));
       signature = nextSignature;
+      refocusSwitch(held);
     } else {
       markHeader(view);
     }
@@ -451,6 +500,27 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
       }
       if (anchor) restoreRange(anchor);
     });
+  }
+
+  /** The column key of the header control holding focus, if one does. */
+  function focusedSwitch(): string | undefined {
+    const active = document.activeElement;
+    return active instanceof HTMLSelectElement &&
+      active.classList.contains('browse-switch') &&
+      mount.contains(active)
+      ? active.dataset.column
+      : undefined;
+  }
+
+  /** Focus the rebuilt control above the same column. */
+  function refocusSwitch(key: string | undefined): void {
+    if (key === undefined) return;
+    for (const select of mount.querySelectorAll<HTMLSelectElement>('.browse-switch')) {
+      if (select.dataset.column === key && !select.disabled) {
+        select.focus({ preventScroll: true });
+        return;
+      }
+    }
   }
 
   function writeCount(tab: BrowseTab, view: ViewState, order: Int32Array): void {

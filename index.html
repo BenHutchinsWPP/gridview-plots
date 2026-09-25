@@ -176,6 +176,14 @@
 
         <button data-el="reset-filters-btn" class="btn btn-reset">Clear all filters <span class="btn-key">R</span></button>
       </div>
+
+      <!-- SLICERS: the active Browse tab's category filters as standing
+           checklists. Each IS its column's filter, so it narrows the browse
+           tables only, never the charts: src/ui/browse-slicers.ts. -->
+      <div data-el="slicer-section" class="rail-section">
+        <h2 class="rail-section-title">SLICERS</h2>
+        <div data-el="slicer-pane" class="slicer-pane"></div>
+      </div>
     </div>
 
     <!-- Chart Area -->

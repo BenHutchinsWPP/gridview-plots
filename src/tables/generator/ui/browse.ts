@@ -292,6 +292,7 @@ function groupTabRows(ctx: GeneratorTabCtx): BrowseTab {
   const columns: BrowseColumn[] = [
     {
       key: CASE_COLUMN_KEY,
+      category: true,
       label: 'Case',
       kind: 'text',
       computed: false,
@@ -598,6 +599,7 @@ function groupByRows(ctx: GeneratorTabCtx, groupBy: string): BrowseTab | undefin
         : [
             {
               key: CASE_COLUMN_KEY,
+              category: true,
               label: 'Case',
               kind: 'text' as const,
               computed: false,
@@ -759,6 +761,7 @@ function ungroupedRows(ctx: GeneratorTabCtx): BrowseTab {
   const columns: BrowseColumn[] = [
     {
       key: CASE_COLUMN_KEY,
+      category: true,
       label: 'Case',
       kind: 'text',
       computed: false,
@@ -788,6 +791,7 @@ function ungroupedRows(ctx: GeneratorTabCtx): BrowseTab {
         // Only the cleaned fuel is on by default; two fuel columns crowd the
         // statistics.
         defaultHidden: attribute.key !== 'fuelClean',
+        category: true,
         groupable: canGroup,
         groupDisabledReason: attributeReason,
         value: (row) => {
@@ -812,6 +816,8 @@ function ungroupedRows(ctx: GeneratorTabCtx): BrowseTab {
       kind: column.kind === 'int' || column.kind === 'float' ? 'number' : 'text',
       computed: false,
       defaultHidden: !DEFAULT_ON_LIST_COLUMNS.has(column.name),
+      category: bucketable,
+      defaultSlicer: column.name === 'FuelType',
       groupable: bucketable && canGroup,
       groupDisabledReason: bucketable ? attributeReason : undefined,
       // An int here is an id or code, so no thousands separator.
