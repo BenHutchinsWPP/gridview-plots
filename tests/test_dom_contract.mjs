@@ -333,6 +333,21 @@ assert.ok(
   'the carried scroll position is per tab: a different tab is a different list, and the top ' +
     'is the right place to land in it.',
 );
+// The clicked cell survives a reload of the same tab, even two reloads in one
+// moment (a click's preview, then the chart render, on the Selected tab,
+// which is rebuilt on every draw). Tabulator resets the range as a load's
+// data is processed, so a draw while a load is in flight reuses that load's
+// recorded range instead of reading the reset one.
+assert.ok(
+  /loading > 0 \? inFlightAnchor : rangeAnchor\(\)/.test(applyRows) &&
+    applyRows.indexOf('loading++') < replaceAt &&
+    /if \(--loading === 0\) inFlightAnchor = null;/.test(applyRows) &&
+    applyRows.indexOf('if (anchor) restoreRange(anchor);') > replaceAt,
+  'apply records the range once per burst of loads and puts it back after each; reading it ' +
+    'during a load in flight would put back the top-left cell.',
+);
+console.log('ok - a click keeps its cell through overlapping reloads of the same tab');
+
 /** One CSS rule's body, as text: from the selector to the closing brace. */
 function cssBlock(text, selector) {
   const at = text.indexOf(`${selector} {`);

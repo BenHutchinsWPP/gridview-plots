@@ -132,6 +132,13 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
   /** The rows on screen, so a draw that would load the same rows loads none. */
   let shownTab: BrowseTab | null = null;
   let shownOrder: Int32Array | null = null;
+  /** The range to put back, recorded by the first of loads still in
+   * flight. Tabulator resets the range to the top-left cell as a load's data
+   * is processed, before that load settles, so a second draw in the same
+   * moment (a click's preview, then the chart render) would read the reset
+   * range and put back the top-left cell. */
+  let inFlightAnchor: ReturnType<typeof rangeAnchor> = null;
+  let loading = 0;
   /** Row id to the pin/preview state its row was last formatted with. */
   const painted = new Map<string, string>();
   const rowState = (id: string): string => {
@@ -488,10 +495,13 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
     const sameTab = tabId === tab.id;
     const keepTop = sameTab && holder ? holder.scrollTop : 0;
     const keepLeft = sameTab && holder ? holder.scrollLeft : 0;
-    const anchor = sameTab && !rebuilt ? rangeAnchor() : null;
+    const anchor = sameTab && !rebuilt ? (loading > 0 ? inFlightAnchor : rangeAnchor()) : null;
+    inFlightAnchor = anchor;
+    loading++;
     tabId = tab.id;
     painted.clear();
     void grid.replaceData(rowsOf(tab, view, order)).then(() => {
+      if (--loading === 0) inFlightAnchor = null;
       // New columns were measured against the old rows: fit them to these.
       if (rebuilt) grid.redraw(true);
       if (holder) {
