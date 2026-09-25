@@ -219,6 +219,8 @@ export interface RestoredBundle {
    * Older id-keyed `selections` are migrated here. */
   pins: readonly SavedPin[];
   layout?: readonly string[];
+  /** Each chart pane's box dimension, as saved; checked by the caller. */
+  boxDims?: readonly string[];
   /** The drawer's dragged height; undefined when saved on a detent. */
   drawerHeight?: number;
   /** The generator group map, or null. */
@@ -341,6 +343,7 @@ export function restoreBundle(
         manifest.cases.map((entry) => entry.id),
       ),
     layout: manifest.layout,
+    boxDims: manifest.boxDims,
     drawerHeight: manifest.drawerHeight,
     generatorGroups,
     busGroups,

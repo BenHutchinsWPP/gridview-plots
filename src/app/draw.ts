@@ -116,7 +116,9 @@ export function resolveDraws(context: DrawContext, draws: readonly Draw[]): Case
   const out: CaseSeries[] = [];
   for (const one of draws) {
     const entry = resolveDraw(context, one);
-    if (entry) out.push(entry);
+    if (!entry) continue;
+    entry.rowId = one.ref.id;
+    out.push(entry);
   }
   context.lines.sweep();
   nameDrawnSet(out);

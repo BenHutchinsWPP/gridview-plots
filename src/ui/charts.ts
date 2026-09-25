@@ -77,6 +77,9 @@ export interface CaseSeries {
   /** The drawer's transient click-preview, drawn grey and dashed. Part of the
    * pane signature, or a pin replacing a preview would inherit its dashes. */
   dashed?: boolean;
+  /** The browse row this line draws: how the Selected tab finds a pin's
+   * stats when no tab lists the pin under its current view. */
+  rowId?: string;
   /** A "% of range" line: which divisor it used (`src/series/range.ts`). */
   rangeLabel?: string;
   /** The SeriesSpec this line resolves, when resolved from a spec. */
@@ -129,10 +132,12 @@ export interface BoxGroup {
 }
 
 export interface ChartsInput {
-  /** The box pane's dimension. A string because the unions differ per kind. */
-  boxDim: string;
+  /** Each pane's box dimension, by pane. A string because the unions differ
+   * per kind. */
+  boxDims: readonly string[];
   series: CaseSeries[];
-  boxes: BoxGroup[];
+  /** Each pane's boxes, cut on that pane's dimension, by pane. */
+  boxes: readonly BoxGroup[][];
   /** The selection cannot be drawn at all; every pane says so. */
   refusal?: string;
   /**
@@ -221,10 +226,33 @@ const FIGURE_PANES: Partial<Record<SlotType, FigurePane>> = {
   xy: 'xy',
   heatmap: 'heatmap',
 };
-const DOWNLOAD_HOOK = '[data-el="download-1"]';
-const BOX_DIM_SELECT_HOOK = '[data-el="box-dim-select"]';
-const BOX_VALUES_CHECK_HOOK = '[data-el="box-values-check"]';
-const LIMITS_CHECK_HOOK = '[data-el="limits-check"]';
+/** The hourly CSV of a time or stacked pane, per pane. */
+const DOWNLOAD_HOOKS = [
+  '[data-el="download-1"]',
+  '[data-el="download-2"]',
+  '[data-el="download-3"]',
+  '[data-el="download-4"]',
+];
+/** A box pane's own dimension, per pane: two box panes may cut differently. */
+const BOX_DIM_SELECT_HOOKS = [
+  '[data-el="box-dim-select-1"]',
+  '[data-el="box-dim-select-2"]',
+  '[data-el="box-dim-select-3"]',
+  '[data-el="box-dim-select-4"]',
+];
+const BOX_VALUES_CHECK_HOOKS = [
+  '[data-el="box-values-check-1"]',
+  '[data-el="box-values-check-2"]',
+  '[data-el="box-values-check-3"]',
+  '[data-el="box-values-check-4"]',
+];
+/** Limit lines, per time pane. */
+const LIMITS_CHECK_HOOKS = [
+  '[data-el="limits-check-1"]',
+  '[data-el="limits-check-2"]',
+  '[data-el="limits-check-3"]',
+  '[data-el="limits-check-4"]',
+];
 const CHART_AREA_HOOK = '[data-el="chart-area"]';
 
 /**
@@ -285,7 +313,7 @@ export function seriesCapMessage(
  */
 export function createCharts(
   root: HTMLElement,
-  onBoxDimChange: (dim: string) => void,
+  onBoxDimChange: (pane: number, dim: string) => void,
   hooks: ChartsHooks,
   options?: {
     initialLayout?: readonly SlotType[];
@@ -307,12 +335,13 @@ export function createCharts(
   const xySwapBtns = XY_SWAP_HOOKS.map((hook) => within<HTMLButtonElement>(root, hook));
   const xyFitChecks = XY_FIT_HOOKS.map((hook) => within<HTMLInputElement>(root, hook));
   const figureBtns = FIGURE_HOOKS.map((hook) => within<HTMLButtonElement>(root, hook));
-  const download1Btn = within<HTMLButtonElement>(root, DOWNLOAD_HOOK);
-  const boxDimSelect = within<HTMLSelectElement>(root, BOX_DIM_SELECT_HOOK);
-  const boxValuesCheck = within<HTMLInputElement>(root, BOX_VALUES_CHECK_HOOK);
-  // ONE limits switch per session: a limit belongs to the interface, not to
-  // a selection. Visibility depends on render state, so `render` decides it.
-  const limitsCheck = within<HTMLInputElement>(root, LIMITS_CHECK_HOOK);
+  const downloadBtns = DOWNLOAD_HOOKS.map((hook) => within<HTMLButtonElement>(root, hook));
+  const boxDimSelects = BOX_DIM_SELECT_HOOKS.map((hook) => within<HTMLSelectElement>(root, hook));
+  const boxValuesChecks = BOX_VALUES_CHECK_HOOKS.map((hook) =>
+    within<HTMLInputElement>(root, hook),
+  );
+  // Visibility depends on render state, so `render` decides it.
+  const limitsChecks = LIMITS_CHECK_HOOKS.map((hook) => within<HTMLInputElement>(root, hook));
 
   const slotUplotHosts: HTMLElement[] = [];
   // The box and X-Y panes share one canvas host per slot. Showing it clears
@@ -361,7 +390,7 @@ export function createCharts(
     slotPlots,
     slotSignatures,
     slotTimeExtents,
-    limitsCheck,
+    limitsChecks,
     paneSize,
     scaleOf,
     scalesOf,
@@ -375,7 +404,7 @@ export function createCharts(
     slotBoxGeometry,
     slotBoxHits,
     slotHoveredBox,
-    boxValuesCheck,
+    boxValuesChecks,
     paneSize,
     scaleOf,
     scalesOf,
@@ -518,7 +547,7 @@ export function createCharts(
       }));
       // The limits the pane draws: none when its box is unticked, and never
       // the preview's, which leaves the figure with its line.
-      const limits = limitsCheck.checked
+      const limits = limitsChecks[i].checked
         ? (lastInput.limits ?? [])
             .filter((limit) => !limit.preview)
             .map((limit) => ({
@@ -536,13 +565,13 @@ export function createCharts(
           ? {
               // A category per line (the `case` cut) is each line under its
               // own name: no dimension to title the axis or the caption with.
-              dimension: lastInput.boxes.every(
+              dimension: lastInput.boxes[i].every(
                 (group) => group.boxes.length === 1 && group.boxes[0].name === group.label,
               )
                 ? ''
-                : boxDimLabel(),
-              values: boxValuesCheck.checked,
-              groups: lastInput.boxes.map((group) => ({
+                : boxDimLabel(i),
+              values: boxValuesChecks[i].checked,
+              groups: lastInput.boxes[i].map((group) => ({
                 label: group.label,
                 boxes: group.boxes.flatMap((box) => {
                   const line = ordered.findIndex(
@@ -637,21 +666,18 @@ export function createCharts(
     });
   }
 
-  boxDimSelect.addEventListener('change', () => onBoxDimChange(boxDimSelect.value));
-
-  // A full re-render: limit lines are uPlot series, so hiding them rebuilds
-  // the plot.
-  limitsCheck.addEventListener('change', () => {
-    if (lastInput) rebuild(lastInput);
-  });
-
-  boxValuesCheck.addEventListener('change', () => {
-    if (lastInput) {
-      for (let i = 0; i < 4; i++) {
-        if (currentLayout[i] === 'box') boxPlot.draw(i, lastInput);
-      }
-    }
-  });
+  for (let i = 0; i < 4; i++) {
+    boxDimSelects[i].addEventListener('change', () => onBoxDimChange(i, boxDimSelects[i].value));
+    // A full re-render: limit lines are uPlot series, so hiding them rebuilds
+    // the plot.
+    limitsChecks[i].addEventListener('change', () => {
+      if (lastInput) rebuild(lastInput);
+    });
+    boxValuesChecks[i].addEventListener('change', () => {
+      if (lastInput && currentLayout[i] === 'box') boxPlot.draw(i, lastInput);
+    });
+    downloadBtns[i].addEventListener('click', () => downloadHours(i));
+  }
 
   function resetZoom(plot: uPlot | null, extent: [number, number] | null): void {
     if (!plot) return;
@@ -661,8 +687,9 @@ export function createCharts(
     plot.setScale('x', { min, max });
   }
 
-  download1Btn.addEventListener('click', () => {
-    const plot = slotPlots[0];
+  /** The hours a time or stacked pane shows, as CSV. */
+  function downloadHours(slot: number): void {
+    const plot = slotPlots[slot];
     if (!plot || !lastInput) return;
     const drawn = lastInput.series.filter((s) => s.values !== null);
     const { min, max } = plot.scales.x;
@@ -680,7 +707,7 @@ export function createCharts(
     }
 
     saveBlob(new Blob([rows.join('\n') + '\n'], { type: 'text/csv' }), 'time-series.csv');
-  });
+  }
 
   // Each pane's controls depend on the layout and the drawn count, so they
   // are recomputed on every rebuild.
@@ -698,25 +725,15 @@ export function createCharts(
       if (fitLabel) {
         fitLabel.style.display = slotType === 'xy' && drawable.length === 2 ? '' : 'none';
       }
-      if (i === 0) {
-        download1Btn.style.display = slotType === 'time' || slotType === 'stacked' ? '' : 'none';
+      downloadBtns[i].style.display = slotType === 'time' || slotType === 'stacked' ? '' : 'none';
+      const box = slotType === 'box' ? '' : 'none';
+      if (boxDimSelects[i].parentElement) boxDimSelects[i].parentElement!.style.display = box;
+      if (boxValuesChecks[i].parentElement) boxValuesChecks[i].parentElement!.style.display = box;
+      // Hidden until a limits file is loaded.
+      if (limitsChecks[i].parentElement) {
+        limitsChecks[i].parentElement!.style.display =
+          slotType === 'time' && (input.limits?.length ?? 0) > 0 ? '' : 'none';
       }
-      if (i === 2) {
-        if (boxDimSelect.parentElement) {
-          boxDimSelect.parentElement.style.display = slotType === 'box' ? '' : 'none';
-        }
-        if (boxValuesCheck.parentElement) {
-          boxValuesCheck.parentElement.style.display = slotType === 'box' ? '' : 'none';
-        }
-      }
-    }
-
-    // Decided over the whole layout (one session-wide switch), and hidden
-    // until a limits file is loaded.
-    if (limitsCheck.parentElement) {
-      const anyTime = currentLayout.some((slot) => slot === 'time');
-      limitsCheck.parentElement.style.display =
-        anyTime && (input.limits?.length ?? 0) > 0 ? '' : 'none';
     }
   }
 
@@ -741,10 +758,11 @@ export function createCharts(
     }
   }
 
-  /** The box dimension's label, from the select's own option text (one
+  /** A pane's box dimension label, from its select's own option text (one
    * option is the mounting kind's axis word). */
-  function boxDimLabel(): string {
-    return boxDimSelect.selectedOptions[0]?.textContent?.trim() || boxDimSelect.value;
+  function boxDimLabel(slot: number): string {
+    const select = boxDimSelects[slot];
+    return select.selectedOptions[0]?.textContent?.trim() || select.value;
   }
 
   function rebuild(input: ChartsInput): void {
@@ -811,9 +829,6 @@ export function createCharts(
         slotXyPair[i] = null;
         slotXyHits[i] = [];
         slotHeatmapGeometry[i] = null;
-        // Which axis the boxes are cut on. Pane 3 is skipped because its
-        // header already holds the dimension select.
-        if (i !== 2) headerNote(root, i + 1, `by ${boxDimLabel()}`);
         boxPlot.draw(i, input);
       } else if (slotType === 'xy') {
         // Exactly two drawables or a refusal by name: plotting the first two
@@ -1014,7 +1029,9 @@ export function createCharts(
   return {
     render(input) {
       lastInput = input;
-      boxDimSelect.value = input.boxDim;
+      input.boxDims.forEach((dim, i) => {
+        boxDimSelects[i].value = dim;
+      });
       rebuild(input);
     },
     timeWindow() {

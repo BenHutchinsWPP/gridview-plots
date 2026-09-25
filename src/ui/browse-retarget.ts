@@ -10,6 +10,10 @@
 //     can take it. Leaving some pins behind would mix them and turn the
 //     control off under the analyst's hand, and dropping the ones that cannot
 //     move would lose them on the way back (A → B → A must return A's pins).
+//   * **Mixed is not a refusal.** Pins on different Cases, variables, kinds
+//     or units still switch together; the control shows "Mixed" until they
+//     share a value. One pin switches alone through the same rules, given
+//     only itself (`retargetPin`).
 //   * **The slot is found here, once, for every kind.** A table holding
 //     `metrics` keeps its slot; one holding a single `quantity` per slot moves.
 //     Two slots in one Case holding the variable refuse it: there is no rule
@@ -123,8 +127,8 @@ export function targetOf(
   };
 }
 
-/** The Selected tab's Variable dropdown: what it lists, what it shows, and
- * why it is off when it is. */
+/** The Selected tab's Variable dropdown: what it lists, what it shows (''
+ * when the pins differ), and why it is off when it is. */
 export interface VariableSwitch {
   readonly variables: readonly string[];
   readonly variable: string;
@@ -133,36 +137,46 @@ export interface VariableSwitch {
 
 const refused = (refusal: string): VariableSwitch => ({ variables: [], variable: '', refusal });
 
+/** The value every item shares, or undefined when they differ. */
+function shared<T>(values: readonly T[]): T | undefined {
+  return new Set(values).size === 1 ? values[0] : undefined;
+}
+
 export function variableSwitch(
   pins: readonly BrowseRowRef[],
   kinds: KindRetargets,
 ): VariableSwitch {
   if (pins.length === 0) return refused('Pin a series to switch its variable.');
-  const kindNames = [...new Set(pins.map((ref) => ref.kind))];
-  if (kindNames.length > 1) {
-    return refused(`The pins span ${kindNames.join(', ')}; switching needs one kind.`);
-  }
-  const shown = [...new Set(pins.map((ref) => ref.variable))];
-  if (shown.length > 1) return refused('The pins show several variables; switching needs one.');
-  const current = shown[0];
-  const kind = kinds[kindNames[0]];
-  // Every pin must take it, so the first pin's Case lists every candidate.
-  const candidates = new Set<string>([current]);
-  for (const row of kind?.rows ?? []) {
-    if (row.caseId === pins[0].caseId) for (const q of quantitiesOf(row.data)) candidates.add(q);
+  const current = shared(pins.map((ref) => ref.variable));
+  // Every pin must take it, so each pin's own tables list the candidates.
+  const candidates = new Set<string>(current === undefined ? [] : [current]);
+  for (const ref of pins) {
+    for (const row of kinds[ref.kind]?.rows ?? []) {
+      if (row.caseId === ref.caseId) for (const q of quantitiesOf(row.data)) candidates.add(q);
+    }
   }
   // The current one always, so the dropdown shows what is drawn even when a
-  // pin could not be re-taken onto it (an Area member frozen without data).
+  // pin could not be re-taken onto it (an Area member frozen without data). A
+  // pin already on a variable takes it by staying.
   const variables = [...candidates]
     .filter(
       (variable) =>
-        variable === current || pins.every((ref) => targetOf(kinds, ref, variable) !== null),
+        variable === current ||
+        pins.every((ref) => ref.variable === variable || targetOf(kinds, ref, variable) !== null),
     )
     .sort();
+  const others = variables.filter((variable) => variable !== current).length;
   return {
     variables,
-    variable: current,
-    ...(variables.length < 2 ? { refusal: 'No other variable has data for every pin.' } : {}),
+    variable: current ?? '',
+    ...(others === 0
+      ? {
+          refusal:
+            current === undefined
+              ? 'No one variable has data for every pin.'
+              : 'No other variable has data for every pin.',
+        }
+      : {}),
   };
 }
 
@@ -175,6 +189,19 @@ function firstPerId(entries: readonly SelectionEntry[]): SelectionEntry[] {
     seen.add(entry.ref.id);
     return true;
   });
+}
+
+/** One pin moved by `move` (a retarget given only that pin), the others
+ * untouched. A pin that now repeats another merges into the first. */
+export function retargetPin(
+  entries: readonly SelectionEntry[],
+  id: string,
+  move: (one: readonly SelectionEntry[]) => SelectionEntry[],
+): SelectionEntry[] {
+  const at = entries.findIndex((entry) => entry.ref.id === id);
+  if (at < 0) return [...entries];
+  const moved = move([entries[at]])[0] ?? entries[at];
+  return firstPerId(entries.map((entry, i) => (i === at ? moved : entry)));
 }
 
 /** Every pin moved to `variable`, colour and order kept. A pin that cannot
@@ -219,8 +246,8 @@ export interface CaseOption {
   readonly blocked?: string;
 }
 
-/** The Selected tab's Case dropdown: what it lists, what it shows, and why it
- * is off when it is. */
+/** The Selected tab's Case dropdown: what it lists, what it shows ('' when
+ * the pins differ), and why it is off when it is. */
 export interface CaseSwitch {
   readonly cases: readonly CaseOption[];
   readonly caseId: string;
@@ -242,12 +269,13 @@ export function caseSwitch(
 ): CaseSwitch {
   const off = (refusal: string): CaseSwitch => ({ cases: [], caseId: '', refusal });
   if (pins.length === 0) return off('Pin a series to switch its Case.');
-  const shown = [...new Set(pins.map((ref) => ref.caseId))];
-  if (shown.length > 1) return off('The pins span several Cases; switching needs one.');
-  const current = shown[0];
+  const current = shared(pins.map((ref) => ref.caseId));
   const options = cases.map((entry): CaseOption => {
     if (entry.id === current) return { id: entry.id, label: entry.label };
-    const stuck = pins.filter((ref) => targetOf(kinds, ref, ref.variable, entry.id) === null);
+    // A pin already in this Case takes it by staying.
+    const stuck = pins.filter(
+      (ref) => ref.caseId !== entry.id && targetOf(kinds, ref, ref.variable, entry.id) === null,
+    );
     if (stuck.length === 0) return { id: entry.id, label: entry.label };
     const named = stuck.slice(0, NAMED_BLOCKERS).map(pinName);
     const rest = stuck.length - named.length;
@@ -257,12 +285,12 @@ export function caseSwitch(
       blocked: `no data: ${named.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`,
     };
   });
-  if (!options.some((option) => option.id === current)) {
+  if (current !== undefined && !options.some((option) => option.id === current)) {
     return off("The pins' Case is no longer loaded.");
   }
   return {
     cases: options,
-    caseId: current,
+    caseId: current ?? '',
     ...(options.length < 2 ? { refusal: 'Only one Case is loaded.' } : {}),
   };
 }

@@ -96,10 +96,11 @@ lsof -ti:5199 -sTCP:LISTEN | xargs -r kill
 - **Load… (origin-private storage)** is per browser context: Save, then
   click `#load-btn` in the SAME context. In a context with nothing stored,
   Load… falls back to a file picker (`page.waitForEvent('filechooser')`).
-- **Read results** with `selectedRows()`: Case, Kind, Entity, In scope,
-  Average for each pinned row. "In scope: yes" means the pin's row id matched
-  a live row. Then LOOK at the screenshot, because the DOM does not show
-  whether a line was drawn.
+- **Read results** with `selectedRows()`: Case, Kind, Entity, Drawn,
+  Average for each pinned row. "Drawn: yes" means the pin's line resolved;
+  it does not prove the row id matches a live row. To prove that after a
+  restore, open the kind's tab and check the row's box is ticked. Then LOOK
+  at the screenshot for the line itself.
 
 ## Worked example
 

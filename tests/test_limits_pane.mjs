@@ -94,8 +94,8 @@ check('the toggle gates the drawing, and no limit takes an extreme marker', () =
   const time = branchFor('time');
   assert.match(
     time,
-    /limitsCheck\.checked \? \(input\.limits \?\? \[\]\) : \[\]/,
-    'the one session-wide checkbox decides whether any limit is drawn',
+    /limitsChecks\[slot\]\?\.checked \? \(input\.limits \?\? \[\]\) : \[\]/,
+    'each time pane\u2019s own checkbox decides whether it draws any limit',
   );
   assert.match(
     time,

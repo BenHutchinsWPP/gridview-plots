@@ -4,9 +4,9 @@
 //
 //   (a) `ChartsHooks` has no header-note or stats-table members;
 //   (b) every pane header is cleared on each render;
-//   (c) only X-Y, heatmap and box slots write one;
-//   (d) the box pane names its dimension only outside pane 3 (which holds the
-//       control);
+//   (c) only X-Y and heatmap slots write one;
+//   (d) every pane holds its own box dimension control, so no box pane
+//       restates its dimension as a note;
 //   (e) the weighted-mean qualifier is per legend row;
 //   (f) the legend states the full path, not the plots' shorthand;
 //   (g) an empty pane names the missing step (`emptyPaneText`): a file with
@@ -55,16 +55,12 @@ const writes = [...charts.matchAll(/headerNote\(\s*root,\s*i \+ 1,\s*([^\n]*)/g)
 );
 assert.equal(
   writes.length,
-  4,
-  'four headerNote writes: the clear, plus X-Y, heatmap and box. ' + `Found: ${writes.join(' | ')}`,
+  3,
+  'three headerNote writes: the clear, plus X-Y and heatmap. ' + `Found: ${writes.join(' | ')}`,
 );
 assert.ok(
   writes.some((text) => text.startsWith('`X ')),
   'the X-Y slot names which series is on X and which on Y',
-);
-assert.ok(
-  writes.some((text) => text.startsWith('`by ')),
-  'the box slot names the dimension its boxes are cut on',
 );
 assert.match(
   charts,
@@ -73,23 +69,16 @@ assert.match(
 );
 
 // ------------------------------------------------------------------- (d)
-assert.match(
-  charts,
-  /if \(i !== 2\) headerNote\(root, i \+ 1, `by \$\{boxDimLabel\(\)\}`\)/,
-  'the box pane states its dimension except in the pane that owns the control',
-);
-const dimSelects = [...html.matchAll(/data-el="box-dim-select"/g)];
-assert.equal(
-  dimSelects.length,
-  1,
-  'index.html carries exactly one box-dim select, which is what makes the ' +
-    'pane-3 exception above the right one',
-);
-assert.match(
-  html,
-  /<div data-pane="3" class="pane">[\s\S]*?data-el="box-dim-select"[\s\S]*?<\/div>\s*<div data-pane="3-body"/,
-  'that select sits in pane 3',
-);
+for (const n of [1, 2, 3, 4]) {
+  assert.match(
+    html,
+    new RegExp(
+      `<div data-pane="${n}" class="pane">[\\s\\S]*?data-el="box-dim-select-${n}"[\\s\\S]*?<div data-pane="${n}-body"`,
+    ),
+    `pane ${n}'s header holds its own box dimension select`,
+  );
+}
+assert.ok(!charts.includes('`by ${'), 'no box pane restates its dimension as a header note');
 
 // ------------------------------------------------------------------- (e)
 assert.match(

@@ -183,11 +183,13 @@ adopted, so the strip never names a file whose content was not taken up.
   redraws from live membership under the same row id, so its label names no
   member or direction count (`groupRowLabel` in `src/ui/browse-model.ts`).
 - **A Selected-tab switch never goes partway.** The tab's "Switch all" row
-  (a control above Case, Variable and Unit) moves every pin at once. The Case
-  and Variable dropdowns offer only what every pin can take; a blocked Case is
-  listed disabled, naming the pins that block it. The % control refuses when
-  one pin cannot be drawn as %. So pins never end up half moved and
-  A → B → A returns the pins you started with (`src/ui/browse-retarget.ts`).
+  (a control above Case, Variable and Unit) moves every pin at once, and each
+  row's own controls move that pin alone. A control offers only what every
+  pin it moves can take: the header lists a blocked Case disabled, naming the
+  pins that block it, and a row leaves out what its pin cannot take. Pins
+  that differ are not a refusal: the header shows "Mixed" and still switches.
+  So pins never end up half moved and A → B → A returns the pins you started
+  with (`src/ui/browse-retarget.ts`).
   The toolbar's Variable and % are hidden on that tab, so one widget never
   both lists and rewrites. Switched pins land through `replacePins`;
   `setSelection` is bundle restore only. Asserted by `tests/test_browse.mjs`.
@@ -231,6 +233,11 @@ adopted, so the strip never names a file whose content was not taken up.
 - **No line dash equals the limit dash** (`LINE_DASHES`, `LIMIT_DASH` in
   `src/figure/build.ts`): a limit is drawn in its line's colour, so a line in
   that dash would read as a limit. Asserted by `tests/test_figure.mjs`.
+- **The four pane headers are one header with the pane number changed.**
+  Any pane can hold any chart type, so a control written into one pane only
+  is a type that half works. `charts.ts` shows each pane the controls its
+  type uses, and a box pane's `by` is that pane's own, saved in a bundle as
+  `boxDims`. Asserted by `tests/test_dom_contract.mjs`.
 - **A pane's Figure button reads the pane's refusal banner**, after the
   panes paint, instead of restating each pane's refusal rules. A pane that
   refuses without `banner(body, 'refusal', …)` would still offer a figure.

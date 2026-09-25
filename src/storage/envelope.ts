@@ -87,6 +87,9 @@ export interface ManifestV3 {
    * in this manifest. `restoreBundle` converts them to `pins`. */
   selections?: readonly SelectionEntry[];
   layout?: readonly string[];
+  /** Each chart pane's box dimension, by pane. Absent in older bundles, which
+   * restore every pane by Case. */
+  boxDims?: readonly string[];
   /** The drawer's dragged height in pixels; absent on a detent. Optional. */
   drawerHeight?: number;
   /** Generator group map, by GeneratorList name, with its column mapping. */
@@ -219,6 +222,8 @@ export interface BundleContents extends Partial<SessionReference> {
   /** The session's browse drawer selections. */
   readonly selections?: readonly SelectionEntry[];
   readonly layout?: readonly string[];
+  /** Each chart pane's box dimension, by pane. */
+  readonly boxDims?: readonly string[];
   /** The drawer's dragged height in pixels; null when it sits on a detent. */
   readonly drawerHeight?: number | null;
   /** The session's inventory, keyed by live Case id; written by index. */
@@ -243,6 +248,7 @@ export function buildManifest(
     limits = { shared: undefined, cases: new Map<string, LimitTable>() },
     selections = [],
     layout = ['time', 'duration', 'box', 'stacked'],
+    boxDims = [],
     drawerHeight = null,
     inventory,
   } = contents;
@@ -310,6 +316,9 @@ export function buildManifest(
   }
   if (layout.length > 0) {
     manifest.layout = layout;
+  }
+  if (boxDims.length > 0) {
+    manifest.boxDims = boxDims;
   }
   if (drawerHeight !== null) {
     manifest.drawerHeight = drawerHeight;

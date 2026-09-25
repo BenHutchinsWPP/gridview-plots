@@ -617,7 +617,7 @@ ok('a boundary’s limits are named as summed limits, a best case', () => {
   );
 });
 
-ok('lines that share a colour get distinct dashes; print dashes give every line its own', () => {
+ok('lines that share a colour get distinct dashes; distinct colours stay solid', () => {
   const shared = build([
     line(),
     line({ facets: { subject: 'SOUTH_PATH' } }),
@@ -636,8 +636,6 @@ ok('lines that share a colour get distinct dashes; print dashes give every line 
     pathDashes(build(lines).svg).every((dash) => dash === ''),
     'colours alone',
   );
-  const print = pathDashes(build(lines, { printDashes: true }).svg).slice(0, 10);
-  assert.equal(new Set(print).size, 10, `every line its own dash: ${print.join(' | ')}`);
 });
 
 ok('no line dash ever equals the limit dash', () => {
@@ -646,7 +644,7 @@ ok('no line dash ever equals the limit dash', () => {
   assert.ok(!texts.includes(dashText(LIMIT_DASH)));
   const figure = build(
     Array.from({ length: 10 }, (_, i) => line({ facets: { subject: `PATH_${i}` } })),
-    { printDashes: true, limits: [{ color: '#1f77b4', unit: 'MW', values: flat(400) }] },
+    { limits: [{ color: '#1f77b4', unit: 'MW', values: flat(400) }] },
   );
   const limitDashes = pathDashes(figure.svg).filter((dash) => dash === dashText(LIMIT_DASH));
   assert.equal(limitDashes.length, 1, 'only the limit line is drawn in the limit dash');

@@ -124,8 +124,8 @@ export interface LinePaneDeps {
   slotPlots: (uPlot | null)[];
   slotSignatures: string[];
   slotTimeExtents: ([number, number] | null)[];
-  /** The session-wide limits switch, read on every draw. */
-  limitsCheck: HTMLInputElement;
+  /** Each pane's limits switch, read on every draw. */
+  limitsChecks: readonly HTMLInputElement[];
   paneSize(body: HTMLElement): { width: number; height: number };
   scaleOf(unit: string): string;
   scalesOf(series: { unit: string }[]): { scale: string; label: string }[];
@@ -154,7 +154,7 @@ export function createLinePanes(deps: LinePaneDeps): LinePanes {
     slotPlots,
     slotSignatures,
     slotTimeExtents,
-    limitsCheck,
+    limitsChecks,
     paneSize,
     scaleOf,
     scalesOf,
@@ -248,7 +248,7 @@ export function createLinePanes(deps: LinePaneDeps): LinePanes {
 
     // Limits for what is drawn, gated on the checkbox. Appended AFTER the
     // series so `colors[i - 1]` still lines up with `drawable`.
-    const limits = limitsCheck.checked ? (input.limits ?? []) : [];
+    const limits = limitsChecks[slot]?.checked ? (input.limits ?? []) : [];
     for (const limit of limits) {
       const column: (number | null)[] = new Array(HOURS_PER_YEAR);
       for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {

@@ -2132,9 +2132,10 @@ body.is-busy {
   outline: 1px dashed var(--color-text-secondary);
   outline-offset: -1px;
 }
-/* Still drawn, outside the current scope. Dimmed rather than dropped:
-   losing a plot that took five minutes to find is far worse than a stale row. */
-.browse-row.out-of-scope {
+/* Pinned but not drawn (its table gone, its line refused). Dimmed rather
+   than dropped: losing a pin that took five minutes to find is far worse than
+   a stale row. */
+.browse-row.not-drawn {
   opacity: 0.5;
 }
 
@@ -2642,4 +2643,19 @@ body.is-busy {
 }
 .browse-filter-slicer {
   margin-top: 6px;
+}
+
+/* `display: flex` above outranks the `hidden` attribute: the Selected tab
+   hides this field, whose switch sits in the tab's own header. */
+.browse-field[hidden] {
+  display: none;
+}
+
+/* One Selected row's own Case, Variable and Unit switch, in its cell. Sized
+   to the row so the table's row height does not move. */
+.browse-cell-switch {
+  font-size: 12px;
+  max-width: 100%;
+  padding: 0;
+  height: 20px;
 }

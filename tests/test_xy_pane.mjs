@@ -123,10 +123,10 @@ assert.match(
   /'xy'/,
   'the zoom reset is hidden for the X-Y slot: a hand-drawn scatter has no zoom to reset',
 );
-const downloadGate = statement(charts, 'download1Btn.style.display');
+const downloadGate = statement(charts, 'downloadBtns[i].style.display');
 assert.ok(
   !downloadGate.includes("'xy'"),
-  'the pane-1 CSV download stays a time-axis export: it writes Month/Day/HE columns, ' +
+  'a pane\u2019s CSV download stays a time-axis export: it writes Month/Day/HE columns, ' +
     `and a scatter has no hour axis to export. Gate reads: ${downloadGate.trim()}`,
 );
 

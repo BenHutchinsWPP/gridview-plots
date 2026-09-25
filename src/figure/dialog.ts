@@ -133,17 +133,9 @@ export function openFigureDialog(request: FigureDialogRequest): void {
   option(format, 'png', 'PNG, 300 dpi (recommended)');
   option(format, 'jpeg', 'JPG, 300 dpi');
   format.value = 'png';
-  const printDashes = document.createElement('input');
-  printDashes.type = 'checkbox';
   const controls = document.createElement('div');
   controls.className = 'figure-controls';
-  controls.append(
-    field('Size ', size),
-    widthField,
-    heightField,
-    field('Format ', format),
-    field('', printDashes, ' Dashes for black-and-white print'),
-  );
+  controls.append(field('Size ', size), widthField, heightField, field('Format ', format));
 
   const captionBox = document.createElement('textarea');
   captionBox.className = 'figure-caption';
@@ -257,7 +249,6 @@ export function openFigureDialog(request: FigureDialogRequest): void {
         size: chosen,
         measureText,
         edits,
-        printDashes: printDashes.checked,
       });
       svg = figure.svg;
       showTexts(figure);
@@ -336,7 +327,6 @@ export function openFigureDialog(request: FigureDialogRequest): void {
   width.addEventListener('change', rebuild);
   height.addEventListener('change', rebuild);
   format.addEventListener('change', describeFormat);
-  printDashes.addEventListener('change', rebuild);
   captionBox.addEventListener('input', () => {
     edits.caption = captionBox.value;
     schedule();

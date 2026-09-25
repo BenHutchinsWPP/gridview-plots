@@ -4624,14 +4624,30 @@ console.log(`\n${checks} checks passed.`);
   offered = variableSwitch([frozenDry], kinds);
   assert.ok(offered.variables.includes(UNSERVED), 'the current variable is always offered');
 
+  // Mixed is not a refusal: pins on different variables switch together,
+  // and the control shows no one variable until they share one.
+  const onGen = withRowId({ ...nv1, variable: GEN });
+  offered = variableSwitch([av1, onGen], kinds);
+  assert.equal(offered.variable, '', 'mixed shows as none of them');
+  assert.equal(offered.refusal, undefined);
+  assert.ok(offered.variables.includes(LOAD) && offered.variables.includes(GEN));
+  assert.deepEqual(
+    retargetVariable(
+      [
+        { ref: av1, color: '#a' },
+        { ref: onGen, color: '#b' },
+      ],
+      LOAD,
+      kinds,
+    ).map((entry) => entry.ref.variable),
+    [LOAD, LOAD],
+    'a mixed set lands on one variable',
+  );
+  // Mixed kinds too; a pin whose kind has nowhere to go still withholds.
   assert.match(
     variableSwitch([av1, { ...av1, kind: 'bus' }], kinds).refusal ?? '',
-    /one kind/,
-    'mixed kinds refuse, naming why',
-  );
-  assert.match(
-    variableSwitch([av1, { ...nv1, variable: GEN }], kinds).refusal ?? '',
-    /several variables/,
+    /No other variable/,
+    'a pin that can move nowhere leaves nothing to offer, whatever the kinds',
   );
   assert.ok(variableSwitch([], kinds).refusal, 'nothing pinned, nothing to switch');
   assert.ok(
@@ -4863,8 +4879,60 @@ console.log(`\n${checks} checks passed.`);
     'and back is the same pin',
   );
 
-  // Pins across two Cases refuse, as does nothing pinned or one Case loaded.
-  assert.match(caseSwitch([av, area('b', 'AREA_AV')], kinds, cases).refusal ?? '', /several Cases/);
+  // Pins across two Cases switch together: mixed shows as none of them, and
+  // a pin already in the target takes it by staying.
+  const avB = area('b', 'AREA_AV');
+  const spread = caseSwitch([av, avB], kinds, cases);
+  assert.equal(spread.caseId, '');
+  assert.equal(spread.refusal, undefined);
+  assert.deepEqual(
+    spread.cases.map((option) => [option.id, option.blocked]),
+    [
+      ['a', undefined],
+      ['b', undefined],
+      ['c', undefined],
+    ],
+  );
+  assert.deepEqual(
+    retargetCase(
+      [
+        { ref: av, color: '#a' },
+        { ref: avB, color: '#b' },
+      ],
+      'b',
+      cases,
+      kinds,
+    ).map((entry) => entry.ref.caseId),
+    ['b'],
+    'two pins landing on one merge, the first kept',
+  );
+  // One row switches alone: its own options, the others untouched, colour
+  // and place kept.
+  const { retargetPin } = await import('../src/ui/browse-retarget.ts');
+  assert.deepEqual(
+    caseSwitch([nv], kinds, cases).cases.find((option) => option.id === 'c').blocked,
+    'no data: AREA_NV',
+    'a row lists what its own pin cannot take as blocked, for the row to leave out',
+  );
+  const three = [
+    { ref: av, color: '#a' },
+    { ref: nv, color: '#b' },
+    { ref: area('a', 'AREA_XX'), color: '#c' },
+  ];
+  const one = retargetPin(three, nv.id, (only) => retargetCase(only, 'b', cases, kinds));
+  assert.deepEqual(
+    one.map((entry) => [entry.ref.caseId, entry.ref.entity, entry.color]),
+    [
+      ['a', 'AREA_AV', '#a'],
+      ['b', 'AREA_NV', '#b'],
+      ['a', 'AREA_XX', '#c'],
+    ],
+  );
+  assert.deepEqual(
+    retargetPin(three, 'no such pin', (only) => retargetCase(only, 'b', cases, kinds)),
+    three,
+  );
+  // Nothing pinned, or one Case loaded, still refuses.
   assert.ok(caseSwitch([], kinds, cases).refusal);
   assert.match(caseSwitch([av], kinds, cases.slice(0, 1)).refusal ?? '', /one Case/);
 
@@ -5553,4 +5621,36 @@ console.log(`\n${checks} checks passed.`);
   ok(
     'slicers: categories, per-kind defaults, explicit after the first choice, gone with the column',
   );
+}
+
+{
+  // A pin's row on the Selected tab answers to its LINE, not to what a kind
+  // tab lists: ungrouping, another variable or a moved filter leave it drawn
+  // with its numbers. Only a line that is not drawn greys the row, with why.
+  const { pinLines, statValue } = await import('../src/ui/browse-model.ts');
+  const line = (rowId, extra = {}) => ({
+    rowId,
+    values: new Float32Array(1),
+    stats: { n: 8760, mean: 5, min: 1, max: 9, sd: Number.NaN, sum: 0 },
+    quantiles: { p25: 2, p75: 8 },
+    ...extra,
+  });
+  const lines = [
+    line('drawn'),
+    line('refused', { values: null, refusal: 'a group LMP is not a sum' }),
+    line('preview', { dashed: true }),
+  ];
+  const got = pinLines(['drawn', 'refused', 'gone', 'preview'], lines);
+  assert.equal(got.get('drawn').drawn, true);
+  assert.deepEqual(
+    STAT_COLUMNS.map((column) => statValue(got.get('drawn').stats, column.key)),
+    [1, 9, 5, null, 2, 8, 8760],
+    'the stat columns read the drawn line, NaN blank',
+  );
+  assert.deepEqual(got.get('refused'), { drawn: false, reason: 'a group LMP is not a sum' });
+  assert.deepEqual(got.get('gone'), { drawn: false, reason: 'its table is no longer loaded' });
+  assert.equal(got.get('preview').drawn, false, 'the preview line never answers for a pin');
+  const capped = pinLines(['drawn'], [], 'Too many series.');
+  assert.match(capped.get('drawn').reason, /more series are pinned/);
+  ok('a Selected row greys only when its line is not drawn, and says why');
 }

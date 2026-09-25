@@ -80,7 +80,7 @@ export async function selectedRows(page) {
       const cells = [...tr.querySelectorAll('.tabulator-cell')].map((td) => td.innerText.trim());
       const o = {};
       heads.forEach((h, i) => {
-        if (h && ['Case', 'Kind', 'Entity', 'In scope', 'Average'].includes(h)) o[h] = cells[i];
+        if (h && ['Case', 'Kind', 'Entity', 'Drawn', 'Average'].includes(h)) o[h] = cells[i];
       });
       return o;
     });

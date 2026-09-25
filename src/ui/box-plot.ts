@@ -34,7 +34,7 @@ export interface BoxPlotDeps {
   slotBoxGeometry: (BoxGeometry | null)[];
   slotBoxHits: BoxHit[][];
   slotHoveredBox: number[];
-  boxValuesCheck: HTMLInputElement;
+  boxValuesChecks: readonly HTMLInputElement[];
   paneSize(body: HTMLElement): { width: number; height: number };
   scaleOf(unit: string): string;
   scalesOf(series: { unit: string }[]): { scale: string; label: string }[];
@@ -56,7 +56,7 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
     slotBoxGeometry,
     slotBoxHits,
     slotHoveredBox,
-    boxValuesCheck,
+    boxValuesChecks,
     paneSize,
     scaleOf,
     scalesOf,
@@ -144,7 +144,7 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
 
-    const groups: BoxGroup[] = input.boxes.filter((group) =>
+    const groups: BoxGroup[] = (input.boxes[slotIndex] ?? []).filter((group) =>
       group.boxes.some((box) => box.quantiles.n > 0),
     );
     if (groups.length === 0) {
@@ -311,7 +311,7 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
           context.globalAlpha = 1;
         }
 
-        if (boxValuesCheck.checked) {
+        if (boxValuesChecks[slotIndex].checked) {
           context.fillStyle = '#333';
           context.textAlign = 'left';
           const at = centre + boxWidth / 2 + 3;

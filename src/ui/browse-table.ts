@@ -60,6 +60,7 @@ import {
   type SelectionEntry,
   type SelectionStore,
   type SortState,
+  type SwitchControl,
   type ViewState,
 } from './browse-model';
 
@@ -83,7 +84,8 @@ export interface BrowseTableHost {
   mount: HTMLElement;
   countLine: HTMLElement;
   selection: SelectionStore;
-  outOfScope: ReadonlySet<string>;
+  /** Pinned rows whose line is not drawn: greyed. */
+  notDrawn: ReadonlySet<string>;
   view(): ViewState;
   setView(next: ViewState): void;
   /** By KEY: the handler outlives the paint, and the drawer re-resolves the
@@ -98,7 +100,7 @@ export interface BrowseTable {
   clear(): void;
 }
 
-type GridRow = Record<string, unknown> & { _id: string; _ref: BrowseRowRef };
+type GridRow = Record<string, unknown> & { _id: string; _ref: BrowseRowRef; _row: number };
 
 /** The group-by control's glyph: rows gathered under a bracket. An icon, not
  * the word, so a header is not widened by a control on every column. The
@@ -139,11 +141,15 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
    * range and put back the top-left cell. */
   let inFlightAnchor: ReturnType<typeof rangeAnchor> = null;
   let loading = 0;
+  /** A row control that held focus when the first of the loads in flight
+   * began, put back once the last settles: the first load already removed it
+   * when the second reads the focus. */
+  let pendingCell: { key: string; at: number } | undefined;
   /** Row id to the pin/preview state its row was last formatted with. */
   const painted = new Map<string, string>();
   const rowState = (id: string): string => {
     const { selection } = host;
-    return `${selection.isPinned(id)}|${selection.colorOf(id) ?? ''}|${selection.previewed()?.id === id}|${host.outOfScope.has(id)}`;
+    return `${selection.isPinned(id)}|${selection.colorOf(id) ?? ''}|${selection.previewed()?.id === id}|${host.notDrawn.has(id)}`;
   };
 
   const grid = new Tabulator(mount, {
@@ -177,8 +183,8 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
       const el = row.getElement();
       el.classList.add('browse-row');
       el.classList.toggle('previewed', host.selection.previewed()?.id === id);
-      // Still drawn but out of scope, and marked as such.
-      el.classList.toggle('out-of-scope', host.outOfScope.has(id));
+      // Pinned but not drawn, and marked as such.
+      el.classList.toggle('not-drawn', host.notDrawn.has(id));
     },
     columns: [],
     data: [],
@@ -286,8 +292,16 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
     }
     const control = tab.switches?.get(key);
     if (!control) return line;
+    line.appendChild(switchSelect(control, key, 'browse-switch'));
+    return line;
+  }
+
+  /** A switch as a native `<select>`, its events kept from Tabulator: a
+   * click would sort a header or preview a row, a press would start a range
+   * or move the range's cell. */
+  function switchSelect(control: SwitchControl, key: string, className: string): HTMLElement {
     const select = document.createElement('select');
-    select.className = 'browse-switch';
+    select.className = className;
     select.dataset.column = key;
     select.title = control.title;
     select.disabled = control.refusal !== undefined;
@@ -300,12 +314,11 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
       option.selected = entry.value === control.value;
       select.appendChild(option);
     }
-    for (const type of ['mousedown', 'click', 'keydown'] as const) {
+    for (const type of ['mousedown', 'click', 'dblclick', 'keydown'] as const) {
       select.addEventListener(type, (event) => event.stopPropagation());
     }
     select.addEventListener('change', () => control.onChange(select.value));
-    line.appendChild(select);
-    return line;
+    return select;
   }
 
   function titleOf(tab: BrowseTab, view: ViewState, key: string, first: boolean): HTMLElement {
@@ -389,7 +402,15 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
       hozAlign: column.kind === 'number' ? 'right' : 'left',
       cssClass: column.computed ? 'browse-computed' : undefined,
       titleFormatter: () => titleOf(tab, view, column.key, i === 0),
-      formatter: (cell) => String((cell.getData() as GridRow)[`d${i}`] ?? ''),
+      formatter: (cell) => {
+        const data = cell.getData() as GridRow;
+        // Read from the tab now on screen: the header, and so this
+        // formatter, can outlive the tab it was built with.
+        const control = current?.rowSwitches?.get(column.key)?.(data._row);
+        return control
+          ? switchSelect(control, column.key, 'browse-cell-switch')
+          : String(data[`d${i}`] ?? '');
+      },
       formatterClipboard: (cell) => {
         const value = cell.getValue();
         if (value === null || value === undefined) return '';
@@ -419,7 +440,7 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
     for (let i = 0; i < order.length; i++) {
       const rowIndex = order[i];
       const ref = tab.rows[rowIndex];
-      const row: GridRow = { _id: ref.id, _ref: ref };
+      const row: GridRow = { _id: ref.id, _ref: ref, _row: rowIndex };
       for (let c = 0; c < columns.length; c++) {
         const value = columns[c].value(rowIndex);
         row[`c${c}`] = value;
@@ -474,6 +495,8 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
     current = tab;
     const nextSignature = headerSignature(tab, view);
     const rebuilt = nextSignature !== signature;
+    // Read before the columns rebuild: that re-creates every row's cells.
+    pendingCell = focusedCellSwitch() ?? pendingCell;
     if (rebuilt) {
       const held = focusedSwitch();
       grid.setColumns(columnsOf(tab, view));
@@ -509,7 +532,37 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
         holder.scrollLeft = keepLeft;
       }
       if (anchor) restoreRange(anchor);
+      if (loading === 0) {
+        refocusCellSwitch(pendingCell);
+        pendingCell = undefined;
+      }
     });
+  }
+
+  /** The row control holding focus, as its column and its row's place on
+   * screen: a switch rewrites the pin, so its row id changes. */
+  function focusedCellSwitch(): { key: string; at: number } | undefined {
+    const active = document.activeElement;
+    if (!(active instanceof HTMLSelectElement) || !active.classList.contains('browse-cell-switch'))
+      return undefined;
+    const rowEl = active.closest('.tabulator-row');
+    if (!rowEl || !mount.contains(rowEl)) return undefined;
+    const at = grid.getRows().findIndex((row) => row.getElement() === rowEl);
+    return at < 0 ? undefined : { key: active.dataset.column ?? '', at };
+  }
+
+  /** Focus the control in the same column of the row now at that place. */
+  function refocusCellSwitch(held: { key: string; at: number } | undefined): void {
+    if (!held) return;
+    const row = grid.getRows()[held.at];
+    for (const select of row
+      ?.getElement()
+      .querySelectorAll<HTMLSelectElement>('.browse-cell-switch') ?? []) {
+      if (select.dataset.column === held.key && !select.disabled) {
+        select.focus({ preventScroll: true });
+        return;
+      }
+    }
   }
 
   /** The column key of the header control holding focus, if one does. */

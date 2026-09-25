@@ -119,7 +119,7 @@ import type { BusTable } from './tables/bus/types';
 import type { GeneratorTable } from './tables/generator/types';
 import * as interfacePool from './tables/interface/pool';
 import type { Filters } from './model/types';
-import type { AreaQuery, AreaTable, BoxDim } from './tables/area/types';
+import { BOX_DIMS, type AreaQuery, type AreaTable, type BoxDim } from './tables/area/types';
 import {
   byCaseName,
   caseForName,
@@ -138,6 +138,7 @@ import { reindexCase, sameAxis } from './tables/area/axis';
 import {
   seriesCapMessage,
   DEFAULT_SLOTS,
+  type BoxGroup,
   type CaseSeries,
   type DrawnLimit,
   type SlotType,
@@ -171,7 +172,7 @@ import {
 import { LIST_SCHEMAS, schemaFor } from './lookups/schema';
 import { showContentsPanel } from './ui/contents-panel';
 import { createChrome, createSectionHost } from './ui/shell';
-import { createBrowseDrawer, type HourlyDownload } from './ui/browse-drawer';
+import { createBrowseDrawer, type HourlyDownload, type SwitchAnswers } from './ui/browse-drawer';
 import { exportHourly } from './app/hourly-export';
 import { openFigureDialog } from './figure/dialog';
 import { confirmLargeDownload } from './ui/confirm-allocation';
@@ -180,6 +181,7 @@ import {
   percentSwitch,
   retargetCase,
   retargetPercent,
+  retargetPin,
   retargetVariable,
   variableSwitch,
   type CaseChoice,
@@ -193,9 +195,11 @@ import {
 } from './ui/browse-retarget';
 import { within } from './ui/dom';
 import {
+  pinLines,
   restorePins,
   type BrowseRowRef,
   type CaseNames,
+  type PinLine,
   type SelectionEntry,
 } from './ui/browse-model';
 import { PREVIEW_COLOR } from './series/model';
@@ -342,7 +346,7 @@ let query: AreaQuery = Object.freeze({
     seasons: null,
     tou: null,
   }) as Filters,
-  boxDim: 'case' as BoxDim,
+  boxDims: Object.freeze(['case', 'case', 'case', 'case']) as readonly BoxDim[],
 });
 
 function setQuery(patch: Partial<AreaQuery>): void {
@@ -417,6 +421,9 @@ function yearOfCase(caseId: string): number {
  * previews all end in `render()`: one repaint path for the whole app. */
 let browsePinned: readonly SelectionEntry[] = [];
 let browsePreview: BrowseRowRef | null = null;
+
+/** Each pin's line as the last render resolved it, by row id. */
+let browsePinLines = new Map<string, PinLine>();
 
 function allBrowseDraws(): { ref: BrowseRowRef; color: string; dashed: boolean }[] {
   const out = browsePinned.map((entry) => ({ ref: entry.ref, color: entry.color, dashed: false }));
@@ -574,6 +581,8 @@ let selectedSwitches:
       variable: VariableSwitch;
       percent: PercentSwitch;
       case: CaseSwitch;
+      /** One pin's own switches, by row id, filled as its row paints. */
+      row(rowId: string): SwitchAnswers;
     }
   | undefined;
 
@@ -588,12 +597,26 @@ function switchesFor(signature: string) {
   if (selectedSwitches?.pins !== browsePinned || selectedSwitches.key !== key) {
     const refs = browsePinned.map((entry) => entry.ref);
     const kinds = pinRetargets();
+    const rows = new Map<string, SwitchAnswers>();
     selectedSwitches = {
       pins: browsePinned,
       key,
       variable: variableSwitch(refs, kinds),
       percent: percentSwitch(refs, kinds),
       case: caseSwitch(refs, kinds, cases),
+      row(rowId) {
+        let held = rows.get(rowId);
+        if (!held) {
+          const one = refs.filter((ref) => ref.id === rowId);
+          held = {
+            case: caseSwitch(one, kinds, cases),
+            variable: variableSwitch(one, kinds),
+            percent: percentSwitch(one, kinds),
+          };
+          rows.set(rowId, held);
+        }
+        return held;
+      },
     };
   }
   return selectedSwitches;
@@ -667,7 +690,9 @@ function renderBrowse(): void {
     selectedVariable: () => switchesFor(collected.signature).variable,
     selectedPercent: () => switchesFor(collected.signature).percent,
     selectedCase: () => switchesFor(collected.signature).case,
+    selectedRow: (rowId) => switchesFor(collected.signature).row(rowId),
     caseNames,
+    pinLine: (rowId) => browsePinLines.get(rowId),
   });
 }
 
@@ -683,6 +708,11 @@ function render(): void {
   // nothing frees every line buffer.
   if (!capped) series = resolveDraws(drawContext, draws);
   else drawLines.sweep();
+  browsePinLines = pinLines(
+    browsePinned.map((entry) => entry.ref.id),
+    series,
+    capped ?? undefined,
+  );
 
   // Every note of this render, built AFTER the series: warnings such as
   // Area's plain-mean fallback arise while series resolve.
@@ -690,11 +720,18 @@ function render(): void {
   if (capped) batchNotes.unshift(capped);
   sections.sync(caseStore.listCases().length > 0, batchNotes);
 
+  // Each pane's boxes, cut once per distinct dimension.
+  const cut = new Map<BoxDim, BoxGroup[]>();
+  const boxesOn = (dim: BoxDim): BoxGroup[] => {
+    let groups = cut.get(dim);
+    if (!groups) cut.set(dim, (groups = computeBoxes(series, dim, yearOfCase, boxScratch)));
+    return groups;
+  };
   charts.render({
-    boxDim: query.boxDim,
+    boxDims: query.boxDims,
     limits: limitLines(series),
     series,
-    boxes: computeBoxes(series, query.boxDim, yearOfCase, boxScratch),
+    boxes: query.boxDims.map(boxesOn),
     refusal: capped ?? undefined,
     hasCases: caseStore.listCases().length > 0,
   });
@@ -1763,6 +1800,7 @@ async function saveAll(): Promise<void> {
       ...readSessionReference(limitsStore),
       selections: browseDrawer.selection(),
       layout: sessionLayout,
+      boxDims: query.boxDims,
       drawerHeight: browseDrawer.heightPx(),
       inventory: inventory.snapshot(),
     };
@@ -2386,6 +2424,18 @@ function adoptRestoredSession(
   if (loaded.layout && loaded.layout.length === 4) {
     syncLayoutToCharts(loaded.layout as SlotType[]);
   }
+  // Before this field, a bundle saved no box cut, so every pane starts by
+  // Case; a name this build does not know does the same.
+  const boxDims = loaded.boxDims;
+  query = Object.freeze({
+    ...query,
+    boxDims: Object.freeze(
+      [0, 1, 2, 3].map((i) => {
+        const dim = boxDims?.[i] as BoxDim | undefined;
+        return dim !== undefined && BOX_DIMS.includes(dim) ? dim : 'case';
+      }),
+    ),
+  });
   if (typeof loaded.drawerHeight === 'number') {
     browseDrawer.restoreHeight(loaded.drawerHeight);
   }
@@ -2522,7 +2572,8 @@ const areaRoot = sections.add('area', 'Area');
 const areaSection = mountAreaSection(areaRoot, {
   initialLayout: sessionLayout,
   onLayoutChange: handleLayoutChange,
-  onBoxDimChange: (dim) => setQuery({ boxDim: dim }),
+  onBoxDimChange: (pane, dim) =>
+    setQuery({ boxDims: Object.freeze(query.boxDims.map((was, i) => (i === pane ? dim : was))) }),
   onFiltersChange: setFilters,
   onFigure: (capture) => openFigureDialog({ capture, hourFilter: filtersLabel(query.filters) }),
 });
@@ -2607,14 +2658,28 @@ const browseDrawer = createBrowseDrawer(
     },
     onSelectedVariableChange(variable) {
       const next = retargetVariable(browseDrawer.selection(), variable, pinRetargets());
-      // The kind's tabs follow where their scope offers it, so the next tick
-      // matches the pins. An entity tab's id is its kind's name. Set before the
-      // pins land: that is the one render.
-      const kind = next[0]?.ref.kind;
-      for (const tab of kind === undefined ? [] : [kind, PAIRED_TABS[kind]]) {
-        if (tab !== undefined && browse.offered(tab, variable)) browse.set(tab, variable);
+      // Each pinned kind's tabs follow where their scope offers it, so the
+      // next tick matches the pins. An entity tab's id is its kind's name. Set
+      // before the pins land: that is the one render.
+      for (const kind of new Set(next.map((entry) => entry.ref.kind))) {
+        for (const tab of [kind, PAIRED_TABS[kind]]) {
+          if (tab !== undefined && browse.offered(tab, variable)) browse.set(tab, variable);
+        }
       }
       browseDrawer.replacePins(next);
+    },
+    onSelectedRowChange(rowId, field, value) {
+      // One pin, through the same rules as the Switch all row given only
+      // itself. The drawer's modes and the kind tabs stay put: they answer to
+      // the whole selection.
+      const kinds = pinRetargets();
+      const move =
+        field === 'case'
+          ? (one: readonly SelectionEntry[]) => retargetCase(one, value, caseChoices(), kinds)
+          : field === 'variable'
+            ? (one: readonly SelectionEntry[]) => retargetVariable(one, value, kinds)
+            : (one: readonly SelectionEntry[]) => retargetPercent(one, value === 'pct', kinds);
+      browseDrawer.replacePins(retargetPin(browseDrawer.selection(), rowId, move));
     },
     onSelectedCaseChange(caseId) {
       browseDrawer.replacePins(

@@ -9,11 +9,22 @@ import type { Filters, HoursPresent, TouCodes } from '../../model/types';
 
 export type BoxDim = 'case' | 'month' | 'hourOfDay' | 'dayOfWeek' | 'season' | 'area';
 
+/** Every box dimension, for checking one a bundle names. */
+export const BOX_DIMS: readonly BoxDim[] = [
+  'case',
+  'month',
+  'hourOfDay',
+  'dayOfWeek',
+  'season',
+  'area',
+];
+
 export interface AreaQuery {
   /** `Case.id`s, never filenames or names, so a rename rewrites nothing. */
   readonly cases: readonly string[];
   readonly filters: Filters;
-  readonly boxDim: BoxDim;
+  /** Each chart pane's box dimension, by pane: four, one per pane. */
+  readonly boxDims: readonly BoxDim[];
 }
 
 /** Mirrors data/area/aggregation-rules.json; see its `contract`. Branch on

@@ -22,7 +22,15 @@ import { createBrowseDetent, type Detent } from './browse-detent';
 import { createBrowseTable } from './browse-table';
 import { createSlicerPane } from './browse-slicers';
 import { subjectLabel } from '../series/label';
+import { PERCENT } from '../series/range';
 import type { CaseSwitch, PercentSwitch, VariableSwitch } from './browse-retarget';
+
+/** The three switches' answers over some pins. */
+export interface SwitchAnswers {
+  readonly case: CaseSwitch;
+  readonly variable: VariableSwitch;
+  readonly percent: PercentSwitch;
+}
 import {
   STAT_COLUMNS,
   builtView,
@@ -36,6 +44,7 @@ import {
   createSelection,
   keptRowKeys,
   rowSubject,
+  statValue,
   viewChips,
   visibleRows,
   type BrowseColumn,
@@ -44,8 +53,10 @@ import {
   type CaseNames,
   type CellClass,
   type ColumnFilter,
-  type HeaderSwitch,
+  type SwitchControl,
+  type PinLine,
   type SelectionEntry,
+  type StatFields,
   type ViewState,
 } from './browse-model';
 import { saveBlob } from './download';
@@ -92,14 +103,20 @@ export interface BrowseDrawerState {
   readonly selectedPercent: () => PercentSwitch;
   /** The Selected tab's Case dropdown, lazily for the same reason. */
   readonly selectedCase: () => CaseSwitch;
+  /** One pin's own switches, by row id, for its row's controls. */
+  readonly selectedRow: (rowId: string) => SwitchAnswers;
   /** For a pinned filter chosen in another Case. */
   readonly caseNames: CaseNames;
+  /** A pin's line on the charts, by row id (`pinLines`): its stats when no
+   * tab lists the pin under its current view, and why it is not drawn when it
+   * is not. Undefined before the pin's first render. */
+  readonly pinLine: (rowId: string) => PinLine | undefined;
 }
 
 export interface BrowseDrawerHandlers {
   /**
    * The pinned series (in pin order) or the preview changed. Never fired by a
-   * re-scope: a drawn series that falls out of scope stays drawn.
+   * re-scope: a pinned series stays drawn whatever the tabs list.
    */
   onSelectionChange(pinned: readonly SelectionEntry[], preview: BrowseRowRef | null): void;
   /** A VIEW control: re-list and re-rank, never clear the selection. */
@@ -108,6 +125,9 @@ export interface BrowseDrawerHandlers {
   onSelectedVariableChange(variable: string): void;
   /** A Case picked on the Selected tab: move every pin to it. */
   onSelectedCaseChange(caseId: string): void;
+  /** A Case, variable or unit (`pct` / `own`) picked in one Selected row:
+   * move that pin alone. */
+  onSelectedRowChange(rowId: string, field: 'case' | 'variable' | 'unit', value: string): void;
   /** A VIEW change, like the variable. The Selected tab reports its own id,
    * which is not a kind. */
   onTabChange(tabId: string): void;
@@ -225,12 +245,18 @@ export function createBrowseDrawer(
     selectedVariable: () => ({ variables: [], variable: '' }),
     selectedPercent: () => ({ on: false, next: true }),
     selectedCase: () => ({ cases: [], caseId: '' }),
+    selectedRow: () => ({
+      case: { cases: [], caseId: '' },
+      variable: { variables: [], variable: '' },
+      percent: { on: false, next: true },
+    }),
     caseNames: { nameOf: () => undefined, labelOfName: (name) => name },
+    pinLine: () => undefined,
   };
   /** Built tabs, held until the caller's signature changes. */
   const built = new Map<string, BrowseTab>();
-  /** Pinned rows the current scope does not list, set by the Selected tab. */
-  let outOfScope = new Set<string>();
+  /** Pinned rows whose line is not drawn, set by the Selected tab. */
+  let notDrawn = new Set<string>();
 
   const viewOf = (tabId: string): ViewState =>
     views.get(tabId) ?? { sort: null, filters: new Map<string, ColumnFilter>() };
@@ -501,8 +527,9 @@ export function createBrowseDrawer(
   // -------------------------------------------------------- Selected tab
   //
   // The register of what is drawn, and the only grid where kinds meet: its
-  // columns are kind-neutral, and its stats are read from each row's kind tab
-  // by the shared `STAT_COLUMNS` keys.
+  // columns are kind-neutral. A pin's stats are its kind tab's row, by the
+  // shared `STAT_COLUMNS` keys, when that tab lists it; otherwise its drawn
+  // line's. A row is greyed only when its line is not drawn, and says why.
 
   function buildSelectedTab(tabs: readonly BrowseTab[]): BrowseTab {
     const entries = selection.list();
@@ -515,6 +542,16 @@ export function createBrowseDrawer(
     }
 
     const refs = entries.map((entry) => entry.ref);
+    /** Why a pin's line is not drawn, or undefined when it is (or has not
+     * rendered yet). */
+    const notDrawnWhy = (ref: BrowseRowRef): string | undefined => {
+      const line = latest.pinLine(ref.id);
+      return line && !line.drawn ? line.reason : undefined;
+    };
+    const drawnStats = (ref: BrowseRowRef): StatFields | undefined => {
+      const line = latest.pinLine(ref.id);
+      return line?.drawn ? line.stats : undefined;
+    };
     const text = (
       label: string,
       read: (ref: BrowseRowRef) => string,
@@ -547,11 +584,14 @@ export function createBrowseDrawer(
       text('Variable', (ref) => ref.variable),
       text('Unit', (ref) => ref.unit),
       {
-        key: 'selected.scope',
-        label: 'In scope',
+        key: 'selected.drawn',
+        label: 'Drawn',
         kind: 'text',
         computed: false,
-        value: (row) => (listed.has(refs[row].id) ? 'yes' : 'out of scope'),
+        value: (row) => {
+          const why = notDrawnWhy(refs[row]);
+          return why === undefined ? 'yes' : `no: ${why}`;
+        },
       },
       // The filters a pinned group was built under, frozen at tick time. Shown
       // only when some pin carries context.
@@ -583,22 +623,32 @@ export function createBrowseDrawer(
         cellClass: (row: number): CellClass => {
           const at = listed.get(refs[row].id);
           const column = at?.tab.columns.find((candidate) => candidate.key === stat.key);
-          return column ? cellClassOf(column, at!.row) : 'quantity';
+          if (column) return cellClassOf(column, at!.row);
+          // As a kind tab classes its stats: the hours a count, a % pin a ratio.
+          if (stat.key === 'stat.n') return 'count';
+          return refs[row].perUnit ? 'ratio' : 'quantity';
         },
         value: (row: number) => {
           const at = listed.get(refs[row].id);
           const column = at?.tab.columns.find((candidate) => candidate.key === stat.key);
-          return column ? column.value(at!.row) : null;
+          if (column) return column.value(at!.row);
+          const stats = drawnStats(refs[row]);
+          const value = stats ? statValue(stats, stat.key) : null;
+          // A drawn % line reads 100 at its divisor; a tab's % stat is the
+          // ratio, which is what the cell's ratio class paints.
+          return value !== null && refs[row].perUnit && stat.key !== 'stat.n'
+            ? value / PERCENT
+            : value;
         },
       })),
     ];
 
-    outOfScope = new Set(refs.filter((ref) => !listed.has(ref.id)).map((ref) => ref.id));
-    const missing = outOfScope.size;
+    notDrawn = new Set(refs.filter((ref) => notDrawnWhy(ref) !== undefined).map((ref) => ref.id));
+    const missing = notDrawn.size;
     const notes = missing
       ? [
-          `${missing} of ${refs.length} selected series ${missing === 1 ? 'is' : 'are'} outside ` +
-            'the current scope. They stay drawn; their stats are blank because the scope did not rank them.',
+          `${missing} of ${refs.length} selected series ${missing === 1 ? 'is' : 'are'} not ` +
+            'drawn; the Drawn column says why.',
         ]
       : [];
     return {
@@ -608,68 +658,145 @@ export function createBrowseDrawer(
       columns,
       notes,
       switches: switches(refs),
+      rowSwitches: rowSwitches(refs),
     };
   }
 
-  /** The "Switch all" row: one control above each column it rewrites. */
-  function switches(refs: readonly BrowseRowRef[]): ReadonlyMap<string, HeaderSwitch> {
-    const byCase = latest.selectedCase();
-    const byVariable = latest.selectedVariable();
-    const byPercent = latest.selectedPercent();
+  /** The Case, Variable and Unit controls over some pins: the "Switch all"
+   * row over every pin, or one row's over its own. A row lists only what its
+   * pin can take; the header also lists what some pin blocks, disabled and
+   * naming the pins, and shows "Mixed" while the pins differ. */
+  function switchControls(
+    refs: readonly BrowseRowRef[],
+    answers: SwitchAnswers,
+    row: boolean,
+    on: {
+      case(caseId: string): void;
+      variable(variable: string): void;
+      percent(on: boolean): void;
+    },
+  ): Map<string, SwitchControl> {
+    const { case: byCase, variable: byVariable, percent: byPercent } = answers;
+    const whom = row ? 'this series' : 'every pinned series';
+    const mixedOption = {
+      value: '',
+      label: 'Mixed',
+      disabled: 'The pins differ; pick one for all',
+    };
+    const valid = <T extends { disabled?: string }>(options: T[]): T[] =>
+      row ? options.filter((option) => option.disabled === undefined) : options;
     // Mixed: some pins % and some not. Shown as such, never as either.
-    const mixed = !byPercent.on && refs.some((ref) => ref.perUnit);
+    const percentMixed = !byPercent.on && refs.some((ref) => ref.perUnit);
     const percentOff =
       byPercent.refusal ??
       (!byPercent.on && !byPercent.next
         ? 'A pin cannot be drawn as % of range; choose Own unit to make them uniform.'
         : undefined);
-    return new Map<string, HeaderSwitch>([
+    return new Map<string, SwitchControl>([
       [
         'selected.Case',
         {
-          options: byCase.cases.map((option) => ({
-            value: option.id,
-            label: option.blocked ? `${option.label} (${option.blocked})` : option.label,
-            ...(option.blocked ? { disabled: option.blocked } : {}),
-          })),
+          options: [
+            ...(byCase.caseId === '' && byCase.cases.length > 0 ? [mixedOption] : []),
+            ...valid(
+              byCase.cases.map((option) => ({
+                value: option.id,
+                label: option.blocked ? `${option.label} (${option.blocked})` : option.label,
+                ...(option.blocked ? { disabled: option.blocked } : {}),
+              })),
+            ),
+          ],
           value: byCase.caseId,
           ...(byCase.refusal !== undefined ? { refusal: byCase.refusal } : {}),
-          title: byCase.refusal ?? 'Switch every pinned series to this Case',
-          onChange: (caseId) => handlers.onSelectedCaseChange(caseId),
+          title: byCase.refusal ?? `Switch ${whom} to this Case`,
+          onChange: (caseId) => {
+            if (caseId !== '') on.case(caseId);
+          },
         },
       ],
       [
         'selected.Variable',
         {
-          options: byVariable.variables.map((variable) => ({ value: variable, label: variable })),
+          options: [
+            ...(byVariable.variable === '' && byVariable.variables.length > 0 ? [mixedOption] : []),
+            ...byVariable.variables.map((variable) => ({ value: variable, label: variable })),
+          ],
           value: byVariable.variable,
           ...(byVariable.refusal !== undefined ? { refusal: byVariable.refusal } : {}),
-          title: byVariable.refusal ?? 'Switch every pinned series to this variable',
-          onChange: (variable) => handlers.onSelectedVariableChange(variable),
+          title: byVariable.refusal ?? `Switch ${whom} to this variable`,
+          onChange: (variable) => {
+            if (variable !== '') on.variable(variable);
+          },
         },
       ],
       [
         'selected.Unit',
         {
-          options: [
+          options: valid([
             { value: 'own', label: 'Own unit' },
             { value: 'pct', label: '% of range', ...(percentOff ? { disabled: percentOff } : {}) },
-            ...(mixed
+            ...(percentMixed
               ? [{ value: 'mixed', label: 'Mixed', disabled: 'Pick one for every pin' }]
               : []),
-          ],
-          value: byPercent.on ? 'pct' : mixed ? 'mixed' : 'own',
+          ]),
+          value: byPercent.on ? 'pct' : percentMixed ? 'mixed' : 'own',
           ...(refs.length === 0 ? { refusal: 'Pin a series to switch it to % of range.' } : {}),
           title:
             refs.length === 0
               ? 'Pin a series to switch it to % of range.'
-              : 'Show every pin as a % of its limit, else of its own peak, or in its own unit',
+              : row
+                ? (percentOff ?? 'Show this series as a % of its limit, else of its own peak')
+                : 'Show every pin as a % of its limit, else of its own peak, or in its own unit',
           onChange: (value) => {
-            if (value === 'pct' || value === 'own') handlers.onSelectedPercent(value === 'pct');
+            if (value === 'pct' || value === 'own') on.percent(value === 'pct');
           },
         },
       ],
     ]);
+  }
+
+  /** The "Switch all" row: one control above each column it rewrites. */
+  function switches(refs: readonly BrowseRowRef[]): ReadonlyMap<string, SwitchControl> {
+    return switchControls(
+      refs,
+      {
+        case: latest.selectedCase(),
+        variable: latest.selectedVariable(),
+        percent: latest.selectedPercent(),
+      },
+      false,
+      {
+        case: (caseId) => handlers.onSelectedCaseChange(caseId),
+        variable: (variable) => handlers.onSelectedVariableChange(variable),
+        percent: (on) => handlers.onSelectedPercent(on),
+      },
+    );
+  }
+
+  /** One row's own controls, by column key, for the Selected tab's cells. */
+  function rowSwitches(
+    refs: readonly BrowseRowRef[],
+  ): ReadonlyMap<string, (row: number) => SwitchControl | undefined> {
+    const memo = new Map<number, Map<string, SwitchControl>>();
+    const at = (row: number): Map<string, SwitchControl> => {
+      let held = memo.get(row);
+      if (!held) {
+        const id = refs[row].id;
+        held = switchControls([refs[row]], latest.selectedRow(id), true, {
+          case: (caseId) => handlers.onSelectedRowChange(id, 'case', caseId),
+          variable: (variable) => handlers.onSelectedRowChange(id, 'variable', variable),
+          percent: (on) => handlers.onSelectedRowChange(id, 'unit', on ? 'pct' : 'own'),
+        });
+        memo.set(row, held);
+      }
+      return held;
+    };
+    return new Map(
+      ['selected.Case', 'selected.Variable', 'selected.Unit'].map((key) => [
+        key,
+        (row: number) => (refs[row] ? at(row).get(key) : undefined),
+      ]),
+    );
   }
 
   /** What a slicer lists: the tab's ungrouped form, where its filters are
@@ -749,8 +876,8 @@ export function createBrowseDrawer(
     mount: gridMount,
     countLine,
     selection,
-    get outOfScope() {
-      return outOfScope;
+    get notDrawn() {
+      return notDrawn;
     },
     view: () => viewOf(activeId),
     setView: (next) => setView(activeId, next),

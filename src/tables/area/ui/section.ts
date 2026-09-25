@@ -116,10 +116,18 @@ function createAreaSection(root: HTMLElement, handlers: AreaSectionHandlers): Ar
 
   const chartArea = within(root, '[data-el="chart-area"]');
 
-  // The box plot's kind-specific dimension, filled with this kind's axis.
-  const kindDim = within<HTMLOptionElement>(root, '[data-el="box-dim-kind"]');
-  kindDim.value = 'area';
-  kindDim.textContent = 'area';
+  // The box plot's kind-specific dimension, filled with this kind's axis in
+  // every pane.
+  for (const hook of [
+    '[data-el="box-dim-kind-1"]',
+    '[data-el="box-dim-kind-2"]',
+    '[data-el="box-dim-kind-3"]',
+    '[data-el="box-dim-kind-4"]',
+  ]) {
+    const kindDim = within<HTMLOptionElement>(root, hook);
+    kindDim.value = 'area';
+    kindDim.textContent = 'area';
+  }
 
   // ------------------------------------------------------------ chip grids
   const monthChips = createChipGrid(
@@ -260,7 +268,7 @@ const CHART_HOOKS: ChartsHooks = { scaleOf, scalesOf };
 export function mountAreaSection(
   root: HTMLElement,
   handlers: AreaSectionHandlers & {
-    onBoxDimChange(dim: BoxDim): void;
+    onBoxDimChange(pane: number, dim: BoxDim): void;
     initialLayout?: readonly SlotType[];
     onLayoutChange?: (layout: readonly SlotType[]) => void;
     onFigure?: (capture: FigureCapture) => void;
@@ -268,10 +276,15 @@ export function mountAreaSection(
 ): AreaSectionHandle {
   return {
     rail: createAreaSection(root, handlers),
-    charts: createCharts(root, (dim) => handlers.onBoxDimChange(dim as BoxDim), CHART_HOOKS, {
-      initialLayout: handlers.initialLayout,
-      onLayoutChange: handlers.onLayoutChange,
-      onFigure: handlers.onFigure,
-    }),
+    charts: createCharts(
+      root,
+      (pane, dim) => handlers.onBoxDimChange(pane, dim as BoxDim),
+      CHART_HOOKS,
+      {
+        initialLayout: handlers.initialLayout,
+        onLayoutChange: handlers.onLayoutChange,
+        onFigure: handlers.onFigure,
+      },
+    ),
   };
 }

@@ -125,8 +125,6 @@ export interface FigureInput extends FigureCapture {
    * `axis.color`, `caption`).
    * Never remembered: the next figure starts from the app's own labels. */
   readonly edits?: Readonly<Record<string, string>>;
-  /** Every line its own dash pattern, for a greyscale printout. */
-  readonly printDashes?: boolean;
 }
 
 /** One piece of figure text, by the id an edit names it with. */
@@ -259,10 +257,10 @@ export const LINE_PT = 1.25;
 export const LIMIT_DASH: readonly number[] = [1.5, 2.5];
 
 /**
- * Line dashes, solid first: the nth line of one colour takes the nth, and with
- * print dashes the nth line of the figure does. **None may equal
- * `LIMIT_DASH`**: a limit is drawn in its line's colour, so a line in that
- * dash would read as a limit. Ten, as many as the pane can draw.
+ * Line dashes, solid first: the nth line of one colour takes the nth.
+ * **None may equal `LIMIT_DASH`**: a limit is drawn in its line's colour, so
+ * a line in that dash would read as a limit. Ten, as many as the pane can
+ * draw.
  */
 export const LINE_DASHES: readonly (readonly number[])[] = [
   [],
@@ -301,7 +299,7 @@ export function buildFigure(input: FigureInput): Figure {
   const sideOf = (unit: string) => scales.findIndex((s) => s.scale === scaleOf(unit));
   const sides = lines.map((entry) => sideOf(entry.unit));
   const values = lines.map((entry) => entry.values as ArrayLike<number>);
-  const strokes = lineStrokes(lines, input.printDashes ?? false);
+  const strokes = lineStrokes(lines);
   // A limit is read against its line's axis; one on no drawn scale, or with
   // no value in the window, is not drawn and not named.
   const limits = (pane.drawsLimits ? (input.limits ?? []) : []).filter((limit) => {
@@ -553,14 +551,14 @@ export function buildFigure(input: FigureInput): Figure {
 
 /**
  * Each line's stroke. Lines that share a colour are told apart by dash, in
- * pane order; with `printDashes` every line is, for a greyscale printout.
+ * pane order.
  */
-function lineStrokes(lines: readonly FigureLine[], printDashes: boolean): StrokeStyle[] {
+function lineStrokes(lines: readonly FigureLine[]): StrokeStyle[] {
   const seen = new Map<string, number>();
-  return lines.map((entry, i) => {
+  return lines.map((entry) => {
     const nth = seen.get(entry.color) ?? 0;
     seen.set(entry.color, nth + 1);
-    const dash = LINE_DASHES[(printDashes ? i : nth) % LINE_DASHES.length];
+    const dash = LINE_DASHES[nth % LINE_DASHES.length];
     return { color: entry.color, width: LINE_PT, ...(dash.length > 0 ? { dash } : {}) };
   });
 }

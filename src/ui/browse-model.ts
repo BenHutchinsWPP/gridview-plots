@@ -214,12 +214,15 @@ export interface BrowseTab {
   readonly consumedFilters?: ReadonlySet<string>;
   /** Controls that rewrite every row, painted on a header's second line and
    * keyed by the column they sit above (the Selected tab's "Switch all"). */
-  readonly switches?: ReadonlyMap<string, HeaderSwitch>;
+  readonly switches?: ReadonlyMap<string, SwitchControl>;
+  /** Controls that rewrite one row, painted in its cell in place of the
+   * text, by column key. */
+  readonly rowSwitches?: ReadonlyMap<string, (row: number) => SwitchControl | undefined>;
 }
 
-/** One header control: a native `<select>`, so a focused, closed one steps
- * its options with the arrow keys and skips the disabled ones by itself. */
-export interface HeaderSwitch {
+/** One switch: a native `<select>`, so a focused, closed one steps its
+ * options with the arrow keys and skips the disabled ones by itself. */
+export interface SwitchControl {
   readonly options: readonly {
     readonly value: string;
     readonly label: string;
@@ -276,6 +279,75 @@ const STAT_FIELDS: Readonly<Record<string, keyof StatFields>> = {
   'stat.p75': 'p75',
   'stat.n': 'n',
 };
+
+/**
+ * What a pin's line is on the charts: drawn, with the stats of exactly what
+ * is drawn under the hour filter, or not drawn and why. The Selected tab
+ * greys a row only for the second; a pin its kind's tab does not list under
+ * the current view (another variable, a group-by undone, a filter moved) is
+ * still drawn and still has numbers.
+ */
+export type PinLine =
+  | { readonly drawn: true; readonly stats: StatFields }
+  | { readonly drawn: false; readonly reason: string };
+
+/** A resolved line, as much of it as a pin's answer reads. */
+export interface ResolvedLine {
+  readonly rowId?: string;
+  readonly dashed?: boolean;
+  readonly values: Float32Array | null;
+  readonly refusal?: string;
+  readonly stats: { n: number; mean: number; min: number; max: number; sd: number };
+  readonly quantiles: { p25: number; p75: number };
+}
+
+/**
+ * Each pin's line after a render. `capped` is the series cap's refusal when
+ * the render drew nothing; a pin with no line at all had its table removed.
+ */
+export function pinLines(
+  pinIds: readonly string[],
+  lines: readonly ResolvedLine[],
+  capped?: string,
+): Map<string, PinLine> {
+  const byId = new Map<string, ResolvedLine>();
+  for (const line of lines)
+    if (!line.dashed && line.rowId !== undefined) byId.set(line.rowId, line);
+  const out = new Map<string, PinLine>();
+  for (const id of pinIds) {
+    const line = byId.get(id);
+    if (capped !== undefined) {
+      out.set(id, { drawn: false, reason: 'more series are pinned than the charts draw' });
+    } else if (!line) {
+      out.set(id, { drawn: false, reason: 'its table is no longer loaded' });
+    } else if (line.values === null) {
+      out.set(id, { drawn: false, reason: line.refusal ?? 'refused' });
+    } else {
+      const { stats, quantiles } = line;
+      out.set(id, {
+        drawn: true,
+        stats: {
+          n: stats.n,
+          mean: stats.mean,
+          min: stats.min,
+          max: stats.max,
+          sd: stats.sd,
+          p25: quantiles.p25,
+          p75: quantiles.p75,
+        },
+      });
+    }
+  }
+  return out;
+}
+
+/** One stat column's value in a stats object; NaN is blank. */
+export function statValue(stats: StatFields, key: string): number | null {
+  const field = STAT_FIELDS[key];
+  if (field === undefined) return null;
+  const value = stats[field];
+  return Number.isNaN(value) ? null : value;
+}
 
 /** The hours count is always a count, whatever the tab's class. */
 function statCellClass(stat: { key: string }, cellClass: CellClass): CellClass {

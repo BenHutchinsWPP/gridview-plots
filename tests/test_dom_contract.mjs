@@ -157,6 +157,26 @@ assert.deepEqual(
     missing.join('\n'),
 );
 
+// Any pane can hold any chart type, so the four pane headers are one
+// header with the pane number changed: a control written into one pane only
+// is a chart type that works in that pane only.
+{
+  const headers = [1, 2, 3, 4].map((n) => {
+    const at = template.indexOf(`<div data-pane="${n}" class="pane">`);
+    assert.ok(at >= 0, `the template has pane ${n}`);
+    const body = template.indexOf(`<div data-pane="${n}-body"`, at);
+    return template
+      .slice(at, body)
+      .replace(new RegExp(`(-|press |pane=")${n}\\b`, 'g'), '$1N')
+      .replace(/\s+/g, ' ');
+  });
+  for (const n of [2, 3, 4]) {
+    assert.equal(headers[n - 1], headers[0], `pane ${n}'s header is pane 1's with its number`);
+  }
+  assert.ok(!/<option[^>]* selected/.test(headers[0]), 'the layout, not the markup, picks a type');
+  console.log('ok - the four pane headers are identical but for the pane number');
+}
+
 // The Slicers pane is in the section clone's rail, but the drawer (global
 // chrome) owns the views it shows: main.ts finds it inside the section root
 // and hands it over, so no module resolves it globally.
@@ -347,6 +367,22 @@ assert.ok(
     'during a load in flight would put back the top-left cell.',
 );
 console.log('ok - a click keeps its cell through overlapping reloads of the same tab');
+// A row's switch keeps focus through the change it makes: the change can
+// move the Switch all row, which rebuilds the columns and so every row's
+// cells, so the focused control is read BEFORE that rebuild.
+assert.ok(
+  applyRows.indexOf('pendingCell = focusedCellSwitch()') >= 0 &&
+    applyRows.indexOf('pendingCell = focusedCellSwitch()') < applyRows.indexOf('grid.setColumns('),
+  'apply reads the focused row switch before it rebuilds the columns',
+);
+console.log('ok - a row switch keeps focus through the change it makes');
+// The Selected tab hides the toolbar's Variable field; its `display: flex`
+// would outrank the hidden attribute without a rule of its own.
+assert.ok(
+  /\.browse-field\[hidden\]\s*\{\s*display:\s*none;/.test(css),
+  'a hidden .browse-field is not displayed',
+);
+console.log('ok - the toolbar Variable field hides on the Selected tab');
 
 /** One CSS rule's body, as text: from the selector to the closing brace. */
 function cssBlock(text, selector) {

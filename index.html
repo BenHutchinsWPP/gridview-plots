@@ -188,11 +188,26 @@
 
     <!-- Chart Area -->
     <div data-el="chart-area" class="chart-grid">
-      <!-- Pane 1: Slot 1 -->
+      <!-- Four panes with IDENTICAL headers but for the pane number
+           (tests/test_dom_contract.mjs): any pane can hold any chart type, so
+           every control a type needs is in every header, and
+           src/ui/charts.ts shows the ones the pane's type uses.
+             * The chart type is set from the layout, so no option is marked
+               selected here.
+             * Download writes the hours a time or stacked pane shows.
+             * limits: per pane, drawn on a time pane only, hidden until a
+               limits file is loaded.
+             * by / values: each box pane's own cut, saved in a bundle. The
+               last option is the table kind's own dimension, named by the
+               section that mounts the panes ("area"), because one template
+               serves every kind.
+             * X ⇄ Y and fit: an X-Y pane with exactly two series drawn. A fit
+               is off by default: a trend line over hourly data is a claim
+               the pane would make on its own. -->
       <div data-pane="1" class="pane">
         <div class="pane-header">
           <select data-el="slot-type-1" class="pane-slot-type" title="Chart type">
-            <option value="time" selected>Time series</option>
+            <option value="time">Time series</option>
             <option value="duration">Duration curve</option>
             <option value="box">Box &amp; whisker</option>
             <option value="stacked">Stacked line</option>
@@ -201,32 +216,32 @@
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
-          <button type="button" data-el="download-1" class="pane-btn" title="Download the hours currently shown, as CSV">Download</button>
+          <button type="button" data-el="download-1" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV">Download</button>
           <button type="button" data-el="figure-1" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
-          <button type="button" data-el="zoom-reset-1" class="pane-btn" title="Reset the zoom on this chart">Reset zoom</button>
-          <!-- One session-wide switch, not one per pinned row: a limit belongs
-               to the interface, not to the user's selection of it. Hidden by
-               charts.ts until a limits file is loaded. -->
-          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check" checked /> limits</label>
-          <!-- The X-Y slot's axis swap: which of the two selected series is x.
-               One per pane header, because any pane can be the X-Y slot, and
-               shown only while that pane is it with exactly two series drawn. -->
+          <button type="button" data-el="zoom-reset-1" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
+          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-1" checked /> limits</label>
+          <label class="pane-control" style="display: none;">by
+            <select data-el="box-dim-select-1">
+              <option value="case">case</option>
+              <option value="month">month</option>
+              <option value="hourOfDay">hour of day</option>
+              <option value="dayOfWeek">day of week</option>
+              <option value="season">season</option>
+              <option data-el="box-dim-kind-1"></option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-1" /> values</label>
           <button type="button" data-el="xy-swap-1" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
-          <!-- The X-Y slot's least-squares fit. Per pane and off by default:
-               a trend line drawn over hourly data the analyst has not asked
-               to be read as a trend is a claim the pane makes on its own. -->
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-1" /> fit</label>
           <span class="pane-icon" title="Expand this pane (or press 1)">⤢</span>
         </div>
         <div data-pane="1-body" class="pane-body"></div>
       </div>
-
-      <!-- Pane 2: Slot 2 -->
       <div data-pane="2" class="pane">
         <div class="pane-header">
           <select data-el="slot-type-2" class="pane-slot-type" title="Chart type">
             <option value="time">Time series</option>
-            <option value="duration" selected>Duration curve</option>
+            <option value="duration">Duration curve</option>
             <option value="box">Box &amp; whisker</option>
             <option value="stacked">Stacked line</option>
             <option value="xy">X–Y plot</option>
@@ -234,66 +249,87 @@
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
+          <button type="button" data-el="download-2" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV">Download</button>
           <button type="button" data-el="figure-2" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
-          <button type="button" data-el="zoom-reset-2" class="pane-btn" title="Reset the zoom on this chart">Reset zoom</button>
+          <button type="button" data-el="zoom-reset-2" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
+          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-2" checked /> limits</label>
+          <label class="pane-control" style="display: none;">by
+            <select data-el="box-dim-select-2">
+              <option value="case">case</option>
+              <option value="month">month</option>
+              <option value="hourOfDay">hour of day</option>
+              <option value="dayOfWeek">day of week</option>
+              <option value="season">season</option>
+              <option data-el="box-dim-kind-2"></option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-2" /> values</label>
           <button type="button" data-el="xy-swap-2" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-2" /> fit</label>
           <span class="pane-icon" title="Expand this pane (or press 2)">⤢</span>
         </div>
         <div data-pane="2-body" class="pane-body"></div>
       </div>
-
-      <!-- Pane 3: Slot 3 -->
       <div data-pane="3" class="pane">
         <div class="pane-header">
           <select data-el="slot-type-3" class="pane-slot-type" title="Chart type">
             <option value="time">Time series</option>
             <option value="duration">Duration curve</option>
-            <option value="box" selected>Box &amp; whisker</option>
+            <option value="box">Box &amp; whisker</option>
             <option value="stacked">Stacked line</option>
             <option value="xy">X–Y plot</option>
             <option value="heatmap">Diurnal heatmap</option>
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
+          <button type="button" data-el="download-3" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV">Download</button>
           <button type="button" data-el="figure-3" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
-          <button type="button" data-el="zoom-reset-3" class="pane-btn" title="Reset the zoom on this chart" style="display: none;">Reset zoom</button>
-          <label class="pane-control">by
-            <select data-el="box-dim-select">
+          <button type="button" data-el="zoom-reset-3" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
+          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-3" checked /> limits</label>
+          <label class="pane-control" style="display: none;">by
+            <select data-el="box-dim-select-3">
               <option value="case">case</option>
               <option value="month">month</option>
               <option value="hourOfDay">hour of day</option>
               <option value="dayOfWeek">day of week</option>
               <option value="season">season</option>
-              <!-- The table kind's OWN box dimension: the Area section names
-                   it "area", the Interface section "interface". Kind-neutral
-                   here, because one template is cloned for both. -->
-              <option data-el="box-dim-kind"></option>
+              <option data-el="box-dim-kind-3"></option>
             </select>
           </label>
-          <label class="pane-control"><input type="checkbox" data-el="box-values-check" /> values</label>
+          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-3" /> values</label>
           <button type="button" data-el="xy-swap-3" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-3" /> fit</label>
           <span class="pane-icon" title="Expand this pane (or press 3)">⤢</span>
         </div>
         <div data-pane="3-body" class="pane-body"></div>
       </div>
-
-      <!-- Pane 4: Slot 4 -->
       <div data-pane="4" class="pane">
         <div class="pane-header">
           <select data-el="slot-type-4" class="pane-slot-type" title="Chart type">
             <option value="time">Time series</option>
             <option value="duration">Duration curve</option>
             <option value="box">Box &amp; whisker</option>
-            <option value="stacked" selected>Stacked line</option>
+            <option value="stacked">Stacked line</option>
             <option value="xy">X–Y plot</option>
             <option value="heatmap">Diurnal heatmap</option>
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
+          <button type="button" data-el="download-4" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV">Download</button>
           <button type="button" data-el="figure-4" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
-          <button type="button" data-el="zoom-reset-4" class="pane-btn" title="Reset the zoom on this chart">Reset zoom</button>
+          <button type="button" data-el="zoom-reset-4" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
+          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-4" checked /> limits</label>
+          <label class="pane-control" style="display: none;">by
+            <select data-el="box-dim-select-4">
+              <option value="case">case</option>
+              <option value="month">month</option>
+              <option value="hourOfDay">hour of day</option>
+              <option value="dayOfWeek">day of week</option>
+              <option value="season">season</option>
+              <option data-el="box-dim-kind-4"></option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-4" /> values</label>
           <button type="button" data-el="xy-swap-4" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-4" /> fit</label>
           <span class="pane-icon" title="Expand this pane (or press 4)">⤢</span>

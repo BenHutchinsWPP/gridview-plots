@@ -700,6 +700,17 @@ check('four-slot chart layout round-trips intact with bundle', () => {
   assert.deepEqual(bundle.layout, customLayout);
 });
 
+check('each pane’s box dimension round-trips, and an older bundle carries none', () => {
+  const dims = ['case', 'month', 'season', 'area'];
+  const { manifest, cubes } = buildManifest([studyCase()], { boxDims: dims });
+  const wire = JSON.parse(JSON.stringify(manifest));
+  assert.deepEqual(wire.boxDims, dims);
+  assert.deepEqual(restoreBundle(wire, toCaseBlocks(wire, cubes)).boxDims, dims);
+  const { wire: older, bundle } = roundTrip([studyCase()], GROUPINGS_CSV);
+  assert.equal(older.boxDims, undefined, 'no field is written when none is given');
+  assert.equal(bundle.boxDims, undefined, 'and the restore starts every pane by Case');
+});
+
 check('the drawer’s dragged height round-trips, and a detent bundle carries none', () => {
   const original = studyCase();
   const dragged = roundTrip([original], GROUPINGS_CSV, new Map(), [], undefined, 611);
@@ -837,8 +848,8 @@ function adopt(store, restored) {
   });
 }
 
-/** The ids the live tabs list for one restored Case -- what the Selected tab's
- * "In scope" column matches a pin against. */
+/** The ids the live tabs list for one restored Case -- what the Selected tab
+ * matches a pin against to read its stats from the tab. */
 function liveIds(store, caseId) {
   const mask = new Uint8Array(HOURS).fill(1);
   const owner = store.listCases().find((entry) => entry.id === caseId);
