@@ -1,0 +1,136 @@
+{
+  "contract": "The fuel vocabulary, as DATA because it is the domain owner's list and changes with her sheet rather than with this app. Each entry is one cleaned fuel: the `group` it falls in for the five-bucket column, the `color` it is drawn in, and every `spelling` that resolves to it. Spellings are matched on the NORMALISED cell -- trimmed, lower-cased, runs of whitespace collapsed -- and must be unique across the whole file; `src/tables/generator/fuel.ts` refuses to load if one repeats, because a duplicate spelling would silently pick whichever entry was read last. A spelling listed nowhere here still resolves through that file's pattern cascade; only a value that matches neither reads as Unrecognised. `group` must be one of the five in FUEL_GROUPS -- Solar, Wind, Hydro, Storage, Thermal. The Unknown/Unlisted/Unrecognised states are not fuels and are not listed here.",
+  "provenance": "Seeded from the domain owner's `Fuel Type Groupings` sheet (37 rows), under standard names: her `Sun` is Solar and her `Water` is Hydro here. Two changes were made to it deliberately, each marked `note` below.",
+  "fuels": [
+    {
+      "clean": "Solar",
+      "group": "Solar",
+      "color": "#f1c40f",
+      "spellings": ["pv", "pv-nt", "pv-t", "pv-tracking", "solar", "sun"]
+    },
+    {
+      "clean": "Wind",
+      "group": "Wind",
+      "color": "#16a085",
+      "spellings": ["wt", "wind", "wnd", "wtg"]
+    },
+    {
+      "clean": "Hydro",
+      "group": "Hydro",
+      "color": "#2980b9",
+      "spellings": ["hy", "water", "hydro", "wat", "ror", "run-of-river"]
+    },
+    {
+      "clean": "Pumped Storage",
+      "group": "Storage",
+      "color": "#3f51b5",
+      "spellings": ["psh", "ps-hydro", "pumped storage", "pumpedstorage", "pumped hydro"],
+      "note": "Most pumped units are caught by the marker scan in fuel.ts rather than by a spelling here, because their FuelType says plain hydro and only SubType, Technology or the unit's name gives them away."
+    },
+    {
+      "clean": "Battery Storage",
+      "group": "Storage",
+      "color": "#8e44ad",
+      "spellings": ["ba", "mwh", "electricity", "battery", "bess", "es"],
+      "note": "`mwh` is the domain owner's rule: the modeller writes the storage quantity's unit where a fuel name goes."
+    },
+    {
+      "clean": "Nuclear",
+      "group": "Thermal",
+      "color": "#c0392b",
+      "spellings": ["nuc", "nuclear", "uranium"]
+    },
+    {
+      "clean": "Natural Gas",
+      "group": "Thermal",
+      "color": "#e67e22",
+      "spellings": ["ng", "natgas", "natural gas", "methane", "lng"]
+    },
+    {
+      "clean": "Combined Cycle",
+      "group": "Thermal",
+      "color": "#d35400",
+      "spellings": ["cc", "combined cycle"],
+      "note": "Kept apart from Natural Gas because her sheet keeps it apart. It is a prime mover rather than a fuel, which is why the five-bucket column is the one to read when that distinction is not wanted."
+    },
+    {
+      "clean": "Coal",
+      "group": "Thermal",
+      "color": "#34495e",
+      "spellings": ["sub", "subbituminous coal", "rc", "coal", "lig", "lignite"]
+    },
+    {
+      "clean": "Bituminous Coal",
+      "group": "Thermal",
+      "color": "#2c3e50",
+      "spellings": ["bit", "bituminous coal"]
+    },
+    {
+      "clean": "Petroleum Coke",
+      "group": "Thermal",
+      "color": "#5d4037",
+      "spellings": ["pc", "pet coke", "petroleum coke"]
+    },
+    {
+      "clean": "Distillate Fuel Oil",
+      "group": "Thermal",
+      "color": "#795548",
+      "spellings": ["dfo", "df", "oil", "diesel", "distillate", "distillate fuel oil"]
+    },
+    {
+      "clean": "Residual Fuel Oil",
+      "group": "Thermal",
+      "color": "#8d6e63",
+      "spellings": ["rfo", "residual fuel oil"],
+      "note": "NOT on her sheet. Residual oil is a different fuel from distillate and reading it as distillate would be a wrong answer rather than a missing one."
+    },
+    {
+      "clean": "Biomass",
+      "group": "Thermal",
+      "color": "#27ae60",
+      "spellings": [
+        "bio",
+        "biomass",
+        "biomass waste",
+        "obg",
+        "obs",
+        "wds",
+        "wood",
+        "wood waste",
+        "msw"
+      ],
+      "note": "`wds` is CORRECTED from her sheet, which maps it to Water. WDS is Wood/Wood Waste Solids in the EIA vocabulary, and a wood boiler summed into the hydro fleet is a wrong answer. If her sheet is right and this is wrong, this one spelling moves back and the fixture beside it moves with it."
+    },
+    {
+      "clean": "Black Liquor",
+      "group": "Thermal",
+      "color": "#6d4c41",
+      "spellings": ["blq", "black liquor"]
+    },
+    {
+      "clean": "Landfill Gas",
+      "group": "Thermal",
+      "color": "#1e8449",
+      "spellings": ["lfg", "landfill gas"]
+    },
+    {
+      "clean": "Geothermal",
+      "group": "Thermal",
+      "color": "#b9770e",
+      "spellings": ["geo", "geothermal"]
+    },
+    {
+      "clean": "Waste Heat",
+      "group": "Thermal",
+      "color": "#a04000",
+      "spellings": ["wh", "waste heat", "heat recovery"]
+    },
+    {
+      "clean": "Hydrogen",
+      "group": "Thermal",
+      "color": "#00acc1",
+      "spellings": ["h2", "hydrogen", "hydrogen fuel cell"],
+      "note": "Its own fuel, and listed BEFORE nothing in particular -- the reason it exists is that `hydrogen` contains `hydro`, so a pattern that read it as water would stack hydrogen into the hydro band with nothing said."
+    }
+  ]
+}

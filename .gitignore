@@ -1,0 +1,30 @@
+# Exports are inputs, not source; tests build their fixtures in memory.
+*.csv
+/local/
+/archive/
+
+# Generated locally by scripts/make-perf-data.mjs, scripts/make-sample-data.mjs
+# and scripts/bench-ingest.mjs.
+/sample-data/
+
+# Agent state. skills/ and settings.json are the exceptions: shared project
+# tooling and the repo's agent settings, such as no attribution trailer on
+# commits.
+/.claude/*
+!/.claude/skills/
+!/.claude/settings.json
+
+# Build and tool output. The parser/<shape>/block.wasm binaries are committed
+# on purpose (a Pages deploy has no wasm toolchain); public/*.wasm is their
+# prebuild copy.
+node_modules/
+dist/
+.vite/
+.fallow/
+public/*.wasm
+
+# Editor and OS
+*.code-workspace
+.vscode/
+.idea/
+.DS_Store

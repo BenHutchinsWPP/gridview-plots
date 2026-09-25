@@ -1,0 +1,82 @@
+name: Deploy to GitHub Pages
+
+# Build and test run on every push and PR. Publishing runs only on a manual
+# dispatch: deploying is a decision a person makes, not a side effect of a push.
+#
+# Both parser/*/block.wasm binaries are committed, so CI needs no wasm
+# toolchain. Nothing checks a binary against its .c: rebuild and commit it in
+# the same change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    concurrency:
+      # Per job: a newer PR push supersedes the old run, but a main build may
+      # be feeding a dispatched deploy and must not be cancelled.
+      group: build-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          # >= 22.6: tests import src/*.ts through Node's type stripping.
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Without the parser the page still loads and only fails on a drop.
+      - name: Verify the parser shipped
+        run: test -s dist/long-block.wasm && test -s dist/wide-block.wasm
+
+      - if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    concurrency:
+      # Queue, never cancel: a half-finished Pages deploy can leave the site
+      # inconsistent.
+      group: pages
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+
+      - id: deploy
+        uses: actions/deploy-pages@v5

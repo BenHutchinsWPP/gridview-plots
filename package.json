@@ -1,0 +1,28 @@
+{
+  "name": "gridview-plots",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync-wasm": "node scripts/sync-wasm.mjs",
+    "predev": "node scripts/sync-wasm.mjs",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "prebuild": "node scripts/sync-wasm.mjs",
+    "pretest": "node scripts/sync-wasm.mjs",
+    "test": "prettier --check . && tsc --noEmit && node scripts/run-tests.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "tabulator-tables": "^6.5.3",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@types/tabulator-tables": "^6.3.6",
+    "prettier": "^3.9.6",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.0"
+  }
+}

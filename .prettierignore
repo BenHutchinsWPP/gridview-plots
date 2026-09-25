@@ -1,0 +1,11 @@
+# Gitignored paths are skipped already (Prettier 3 reads .gitignore).
+package-lock.json
+parser/**/*.wasm
+
+# Hand-laid, and prettier makes each worse rather than consistent: markdown
+# tables get padded to their widest cell, index.html's section template gets
+# its attributes and text nodes rewrapped, and reindenting data/ hides the one
+# rule that changed.
+*.md
+index.html
+data/

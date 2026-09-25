@@ -1,0 +1,66 @@
+{
+  "contract": "A wide generator export is ONE quantity for every generator it lists, named on the file's title line: \"Generator Hourly 'Generation (MWh)' Data for Year 2035\". `temporal` says how HOURS combine. `class` says how GENERATORS combine, and `spatialOf` in src/tables/generator/rules.ts reads it: EXTENSIVE and RATE sum across generators, INTENSIVE refuses, and so does a unit with no rule. That decides whether a grouped generator row sums or refuses and which quantities the Generator Groups tab offers, whether the group is a lookup join or an injection group the user authored. Editing `class` changes what that tab shows. Resolution: exact match on `unit` (case-sensitive), else no rule -- an unrecognised unit gets MEAN and no total, never a guess. `quantities` records the columns this exporter has been seen to emit; `isPolysemous` and `quantityNote` in src/tables/generator/rules.ts read it, and tests/test_kernels_generator.mjs fails any entry that neither resolves to a unit ruled on above nor is flagged `polysemous`.",
+  "units": [
+    {
+      "unit": "MWh",
+      "class": "EXTENSIVE",
+      "temporal": "SUM"
+    },
+    {
+      "unit": "MW",
+      "class": "RATE",
+      "temporal": "MEAN",
+      "note": "MW is a rate. Summed over a filtered set of hours it is neither MW nor MWh, so no total is offered."
+    },
+    {
+      "unit": "$",
+      "class": "EXTENSIVE",
+      "temporal": "SUM"
+    },
+    {
+      "unit": "k$",
+      "class": "EXTENSIVE",
+      "temporal": "SUM"
+    },
+    {
+      "unit": "$/MWh",
+      "class": "INTENSIVE",
+      "temporal": "MEAN",
+      "note": "The LMP at the generator's bus is a price: intensive, and not summable over hours."
+    },
+    {
+      "unit": "MMBtu",
+      "class": "EXTENSIVE",
+      "temporal": "SUM"
+    },
+    {
+      "unit": "h",
+      "class": "EXTENSIVE",
+      "temporal": "SUM"
+    },
+    {
+      "unit": "%",
+      "class": "INTENSIVE",
+      "temporal": "MEAN"
+    }
+  ],
+  "quantities": [
+    { "quantity": "LMP ($/MWh)" },
+    { "quantity": "Generation (MWh)" },
+    {
+      "quantity": "Fuel Cost ($) /ES Storage",
+      "polysemous": true,
+      "note": "One column whose meaning depends on the unit's technology: fuel cost for a thermal unit, storage state for an energy-storage unit. Carried verbatim, never split at ingest; a pane that totals it says what it is totalling."
+    },
+    {
+      "quantity": "Startup Fuel Consumpt./ Spillage/ PumpLine",
+      "polysemous": true,
+      "note": "Startup fuel for a thermal unit, spillage for hydro, pump line for pumped storage."
+    },
+    {
+      "quantity": "Sec. Fuel Consmpt. / Pumping Cost",
+      "polysemous": true,
+      "note": "Secondary fuel consumption for a thermal unit, pumping cost for pumped storage."
+    }
+  ]
+}

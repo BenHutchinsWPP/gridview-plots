@@ -1,0 +1,13 @@
+{
+  "printWidth": 100,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "semi": true,
+  "arrowParens": "always",
+  "overrides": [
+    {
+      "files": "*.css",
+      "options": { "printWidth": 100 }
+    }
+  ]
+}

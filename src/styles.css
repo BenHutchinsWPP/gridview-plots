@@ -1,0 +1,2550 @@
+/* Light theme palette — tuned for projection */
+:root {
+  --rail-width: 320px;
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f8f8f8;
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #666666;
+  --color-border: #e0e0e0;
+  --color-border-light: #f0f0f0;
+  --color-accent: #0066cc;
+  --color-accent-hover: #0052a3;
+  /* The one picked/hovered tint, the accent at projector strength. Shared by
+     every surface that marks a row or a grip under the pointer, so "this one"
+     reads the same wherever it appears. */
+  --color-selection: #e3eefb;
+  --color-selection-hover: #d3e4f8;
+  --color-chart-grid: #e8e8e8;
+
+  /* Categorical colors for cases (projector-safe) */
+  --color-case-1: #1f77b4;
+  --color-case-2: #ff7f0e;
+  --color-case-3: #2ca02c;
+  --color-case-4: #d62728;
+  --color-case-5: #9467bd;
+  --color-case-6: #8c564b;
+  --color-case-7: #e377c2;
+  --color-case-8: #7f7f7f;
+  --color-case-9: #bcbd22;
+  --color-case-10: #17becf;
+
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-size-base: 13px;
+  --font-size-small: 12px;
+  --font-size-title: 14px;
+}
+
+/* One theme, light, tuned for projection. A dark-mode
+   toggle is a preference nobody asked for; a palette that survives a
+   washed-out conference-room projector is a requirement everyone has. */
+
+/* Reset and base styles */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font-family: var(--font-family);
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+}
+
+/* The busy bar and its spinner: the one thing on screen that says a load is
+   still running.
+
+   Indeterminate on purpose. A drop is header reads, one dialog per kind, then
+   a parse per kind, and the only honest total -- blocks parsed -- is known for
+   one batch at a time and says nothing about the dialogs still to come. A
+   percentage that restarted at every dialog would be a worse lie than no
+   percentage. The busy SENTENCE carries the detail ("Parsing bus block 3 of
+   12…"); the bar carries the one bit the sentence cannot, which is that
+   anything is happening at all.
+
+   Fixed rather than a grid row: `.app-grid` is three fixed rows, and a fourth
+   child would be placed into one of them. */
+.busy-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 3000;
+  overflow: hidden;
+  background: var(--color-selection);
+  pointer-events: none;
+}
+
+.busy-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 35%;
+  background: var(--color-accent);
+  animation: busy-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes busy-slide {
+  from {
+    left: -35%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
+.status-spinner {
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  flex: none;
+  border: 2px solid var(--color-selection-hover);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: busy-spin 0.7s linear infinite;
+}
+
+@keyframes busy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A load can run for minutes over a big drop, so the motion is not decoration
+   anyone can be asked to sit through. Reduced motion keeps the bar and the
+   dot -- the signal -- and drops the travel. */
+@media (prefers-reduced-motion: reduce) {
+  .busy-bar::after {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.6;
+  }
+
+  .status-spinner {
+    animation: none;
+  }
+}
+
+body.is-busy {
+  cursor: progress;
+}
+
+/* A load refuses input: `#app-root` is inert under this (src/ui/shell.ts).
+   Below `.modal-backdrop`, because the load's own dialogs must stay live.
+   The card fades in late so a short save or restore does not flash. */
+.busy-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.55);
+  cursor: progress;
+  animation: busy-overlay-in 0.2s ease-out 0.15s both;
+}
+
+.busy-overlay[hidden] {
+  display: none;
+}
+
+.busy-overlay-card {
+  display: flex;
+  align-items: center;
+  max-width: min(560px, 90vw);
+  padding: 14px 20px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+
+@keyframes busy-overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Main app grid */
+.app-grid {
+  display: grid;
+  grid-template-columns: var(--rail-width, 320px) minmax(0, 1fr);
+  grid-template-rows: 48px 1fr 28px;
+  height: 100%;
+  gap: 0;
+}
+
+.app-grid.rail-collapsed {
+  --rail-width: 0px;
+}
+
+.app-grid.rail-collapsed .gv-section .left-rail {
+  display: none;
+}
+
+/* Topbar */
+.topbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border);
+  gap: 16px;
+}
+
+.topbar-left {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-rail-toggle {
+  font-size: 11px;
+  padding: 4px 8px;
+  font-weight: 500;
+}
+
+.app-title {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+
+.topbar-center {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
+}
+
+.topbar-right {
+  flex-grow: 1;
+  text-align: right;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.memory-readout {
+  font-family: 'Monaco', 'Menlo', monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* The readout opens the Contents panel; the border on hover says it is a
+   button without making it look like one of the topbar's actions. */
+.memory-readout:hover {
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+}
+
+/* Buttons */
+.btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background: var(--color-bg-secondary);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.gv-section .btn-reset {
+  width: 100%;
+  margin-top: 14px;
+  padding: 9px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gv-section .btn-key {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 4px;
+  margin-left: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  color: var(--color-text-secondary);
+}
+
+/* ---------------------------------------------------------------- sections
+
+   Everything below that belongs to ONE table kind's section is prefixed with
+   `.gv-section`, because two mounted sections are two clones of the same
+   `#section-template` and the two source apps' rules for these same class
+   names diverge. A kind-specific override goes on `.gv-section-<kind>`;
+   inventing one speculatively would be a rule with nothing to override.
+
+   A section lives in `#sections` and is its own two-column grid: the rail,
+   then the pane grid. It cannot be a `display: contents` item of `.app-grid`
+   -- a second section would resolve to that grid's one middle cell and sit on
+   top of the first.
+
+   A section whose kind has no tables loaded is `hidden`, never unmounted
+  , and a collapsed one shrinks to its summary bar. */
+.sections {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  /* The positioning context for `.sections-notes`, which floats over the
+     rail's bottom corner rather than taking a share of the panes' height.
+     This element, not `.gv-section`, because the notes show whether or not a
+     section is on screen -- see ui/shell.ts. */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* One section's wrapper: a <details> built by ui/shell.ts's registry, not by
+   the template, because it is the registry -- not the section -- that owns
+   showing, hiding and collapsing. */
+.gv-section-details {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  border-bottom: none;
+  overflow: hidden;
+}
+
+/* The `<details>` box does NOT pass its height to what is inside it. Every
+   current engine wraps a details' content in a `::details-content` box of its
+   own, and that box is a plain block: content-sized, no `min-height: 0`, no
+   clip. The chain from `html` down to `.chart-grid` runs through it, so
+   without this rule the grid's height is whatever its panes add up to --
+   and a pane's canvas is sized FROM the pane. That is a loop with more than
+   one stable state: expanding a pane sizes its canvas to the whole grid, and
+   on the way back the canvas holds the pane open at the height it was given,
+   the grid doubles, and the observer re-measures the doubled pane and agrees
+   with it. Nothing returns to normal because everything is consistent.
+   `[open]` because a closed section's content box is skipped entirely and
+   must not be handed a height. */
+.gv-section-details[open]::details-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* `hidden` has to beat the `display: flex` above, or a hidden section would
+   still be laid out -- the one property `sync` writes would do nothing. */
+.gv-section-details[hidden] {
+  display: none;
+}
+
+/* Collapsed: the summary bar only, and no share of the leftover height. */
+.gv-section-details:not([open]) {
+  flex: 0 0 auto;
+}
+
+.gv-section-summary {
+  display: none;
+}
+
+/* Nothing loaded at all: no section is relevant, so the registry's own
+   message is the only thing in #sections. */
+.sections-empty {
+  margin: auto;
+  padding: 24px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+/* Every batch note and series warning, whether or not a section is on screen
+   -- see ui/shell.ts for why that is the whole point of this element.
+
+   It is ABSOLUTE, so it costs the panes no height: as a flex child beside the
+   section it took up to a fifth of the window and held it until the next drop.
+   The corner is the RAIL's, not the chart grid's, and the width is the rail's
+   too -- so nothing about this card, open or collapsed, is ever over a plot.
+   The floor in that `max` is for the collapsed rail, where `--rail-width` is
+   0 and the card has nowhere to be but the chart's bottom-left margin.
+   Below the drawer's z-index, because a drawer the user opened on purpose is
+   what they are looking at. */
+.sections-notes {
+  position: absolute;
+  z-index: 15;
+  bottom: 12px;
+  left: 12px;
+  max-width: max(200px, calc(var(--rail-width, 320px) - 24px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--color-bg-secondary);
+  color: var(--color-text-primary);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 24%);
+  overflow: hidden;
+  user-select: text;
+}
+
+/* `display: flex` above beats the `hidden` attribute, so without this a sync
+   that cleared the notes would leave an empty card floating over the rail --
+   the same trap `.gv-section-details[hidden]` carries a rule for. */
+.sections-notes[hidden] {
+  display: none;
+}
+
+/* The header, and the collapse control: one button, because a count the user
+   can read and a hit target that hides what it counts are the same affordance.
+   Collapsed, the card IS this button -- a bubble and a number. */
+.sections-notes-toggle {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.sections-notes-toggle:hover {
+  color: var(--color-accent);
+}
+
+/* Sized in `em` so the bubble tracks the count beside it rather than needing a
+   second edit when the font size moves. */
+.sections-notes-icon {
+  flex: none;
+  width: 1.15em;
+  height: 1.15em;
+}
+
+.sections-notes-body {
+  /* One element holding every note, newline-separated -- see ui/shell.ts. */
+  white-space: pre-line;
+  margin: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: 0 10px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  overflow-wrap: anywhere;
+  scrollbar-width: thin;
+}
+
+/* Collapsed is the bubble and the count, and nothing else. `display: none`
+   rather than a height animation: the body scrolls, and an animated
+   max-height on a scrolling box is how a note ends up half-visible with no
+   way to tell it is cut off. */
+.sections-notes[data-collapsed='true'] .sections-notes-body {
+  display: none;
+}
+
+.gv-section {
+  display: grid;
+  grid-template-columns: var(--rail-width, 320px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Left Rail */
+.gv-section .left-rail {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 0;
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 0;
+  background: var(--color-bg-secondary);
+  scrollbar-width: thin;
+}
+
+.gv-section .rail-section {
+  padding: 0 12px 16px;
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.gv-section .rail-section:last-child {
+  border-bottom: none;
+}
+
+.gv-section .rail-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+/* Disabled means "this filter is already unset" -- the button stays in place
+ * rather than disappearing, so the row does not reflow on every click. */
+.gv-section .filter-clear:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.gv-section .chip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(40px, 1fr));
+  gap: 4px;
+  min-height: 24px;
+}
+
+/* Chart Area */
+.gv-section .chart-grid {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: repeat(2, minmax(240px, 1fr));
+  gap: 1px;
+  background: var(--color-border);
+  padding: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+}
+
+/* The innermost clip of the height chain. A pane's chart is a fixed-size
+   canvas -- it paints at exactly the numbers it was handed, not at whatever
+   the pane measures now -- so every box from `html` down has to clip, or a
+   canvas drawn for a larger pane escapes its pane toward the window's bottom
+   edge. `.pane-body` clips the canvases it hosts; the pane itself clips what
+   that cannot fix -- a pane shorter than its own unshrinkable header pushes
+   the body's box past the pane's bottom edge. */
+.gv-section .pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-primary);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.gv-section .pane-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  height: 28px;
+}
+
+.gv-section .pane-icon {
+  cursor: pointer;
+  margin-left: 8px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.gv-section .pane-icon:hover {
+  opacity: 1;
+}
+
+.gv-section .pane-control {
+  margin-left: auto;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.gv-section .pane-body {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* Status Bar */
+.status-bar {
+  grid-column: 1 / -1;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  background: var(--color-bg-secondary);
+  border-top: 1px solid var(--color-border);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+#status-text {
+  font-family: 'Monaco', 'Menlo', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-secondary);
+}
+
+/* Focus mode (fullscreen pane) */
+.gv-section .pane.focused {
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  height: 100%;
+  min-height: 0;
+}
+
+.gv-section .chart-grid.focus-mode {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  overflow: hidden;
+}
+
+/* Chips */
+.gv-section .chip {
+  padding: 3px 0;
+  font-size: 11px;
+  line-height: 1.4;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+}
+
+.gv-section .chip-active {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #ffffff;
+}
+
+.gv-section [data-el='month-chips'] {
+  grid-template-columns: repeat(6, 1fr);
+}
+.gv-section [data-el='day-of-month-chips'] {
+  grid-template-columns: repeat(8, 1fr);
+}
+.gv-section [data-el='hour-chips'] {
+  grid-template-columns: repeat(12, 1fr);
+}
+.gv-section [data-el='day-chips'] {
+  grid-template-columns: repeat(7, 1fr);
+}
+.gv-section [data-el='season-chips'] {
+  grid-template-columns: repeat(4, 1fr);
+}
+.gv-section [data-el='tou-chips'] {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+/* Pane headers and inline warnings */
+.gv-section .pane-header > span:first-child {
+  flex-shrink: 0;
+}
+.pane-slot-type {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.pane-slot-type:hover {
+  border-color: var(--color-accent);
+}
+
+.gv-section .pane-note {
+  flex: 1;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  padding-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Header actions: drag-zoom is undone here as well as by a double-click. */
+.gv-section .pane-btn {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  margin-left: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.gv-section .pane-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.gv-section .pane-control input[type='checkbox'] {
+  vertical-align: -1px;
+  margin-right: 2px;
+}
+
+.gv-section .pane-control select {
+  font-size: 11px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border-radius: 3px;
+}
+
+/* Warnings render inline, in the pane they concern */
+/* The banner stack is an OVERLAY, and that is load-bearing rather than
+   cosmetic. A pane's canvas is sized from the pane's own box, so anything
+   in FLOW inside `.pane-body` adds height that the next measurement reads
+   back: one note under a chart made the body taller, which made the canvas
+   taller, which made the body taller again. It needed a content-sized track
+   above it to run away (see the 1024px breakpoint), but a note that cannot
+   move the box it is measured against removes the fuel as well as the road.
+   Out of flow, and `pointer-events: none` so a note never eats a hover the
+   chart under it was going to answer. */
+.gv-section .pane-banners {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.gv-section .pane-banner {
+  margin: 8px;
+  padding: 8px 10px;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 1.45;
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+}
+
+/* The pane's hand-drawn canvas: whichever of the box plot and the X-Y
+   scatter this slot is showing paints here. */
+.gv-section .pane-canvas {
+  display: block;
+}
+
+/* The y-axis value under the cursor, pinned to the axis it belongs to. */
+.gv-section .axis-tag {
+  position: absolute;
+  z-index: 11;
+  transform: translateY(-50%);
+  pointer-events: none;
+  padding: 0 4px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: #ffffff;
+  background: var(--color-text-primary);
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
+/* Hover readout on the two uPlot panes. Values only: the case-to-colour
+ * mapping is learned once from the Legend pane, so this box
+ * repeats the colours but is not a second legend. */
+.gv-section .chart-tip {
+  position: absolute;
+  top: 6px;
+  z-index: 10;
+  pointer-events: none;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 5px 7px;
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  white-space: nowrap;
+}
+
+.gv-section .chart-tip-x {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.gv-section .chart-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gv-section .chart-tip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.gv-section .chart-tip-row b {
+  margin-left: auto;
+  font-weight: 600;
+}
+
+.gv-section .chart-tip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.gv-section [data-pane='4-body'] {
+  overflow-y: auto;
+}
+
+/* Focus mode hides the other three panes rather than shrinking them */
+.gv-section .chart-grid.focus-mode .pane:not(.focused) {
+  display: none;
+}
+
+/* Drop target — the whole window is one */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.88);
+  border: 3px dashed var(--color-accent);
+  color: var(--color-accent);
+  font-size: 18px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.drop-overlay.visible {
+  display: flex;
+}
+
+/* Column picker */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.modal {
+  width: min(680px, 90vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 20px;
+  border-radius: 6px;
+  background: var(--color-bg-primary);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+/* The confirmation dialogs have three short lines and no list; at the picker
+   width they read as an empty box. */
+.modal-narrow {
+  width: min(420px, 90vw);
+}
+
+.modal h2 {
+  font-size: 16px;
+}
+
+.modal-subtitle,
+.modal-readout {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+}
+
+.modal-readout {
+  font-family: 'Monaco', 'Menlo', monospace;
+  color: var(--color-text-primary);
+}
+
+.modal-toolbar {
+  display: flex;
+  gap: 8px;
+}
+
+/* Column picker folders. <details> does the open/close; this only styles it. */
+.picker-folder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  margin-top: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-secondary);
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.picker-count {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal-list details > .modal-row {
+  padding-left: 18px;
+}
+
+/* Calculated columns. Not in any export's header, so the folder is marked
+ * rather than reading as another block of source data. */
+.picker-calculated {
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-bg-secondary);
+  border-radius: 3px;
+}
+
+.picker-calculated > .picker-folder {
+  color: var(--color-accent);
+}
+
+.picker-calculated > .modal-row .modal-row-name {
+  font-style: italic;
+}
+
+/* Grouping editor: groups | members of the selected group | the area axis.
+ * Membership is many-to-many, so an area lives on the right until it is
+ * dragged in and stays available to every other group afterwards. */
+.modal-wide {
+  width: min(980px, 94vw);
+}
+
+/* The groupings-mapping pane: radio groups and label+select rows stacked in
+ * one column, so the two questions read top to bottom in the order they are
+ * answered. */
+.mapping-group,
+.mapping-column {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mapping-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+/* The pane shows one entity's column pane, and one key form's rows, through
+   `hidden` -- which the flex layout above outranks. Without this every pane is
+   on screen at once and Load is pushed below the modal. */
+.mapping-column[hidden],
+.mapping-row[hidden] {
+  display: none;
+}
+
+.mapping-row-label {
+  width: 170px;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+.groups-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1.2fr;
+  gap: 10px;
+  min-height: 320px;
+}
+
+.groups-column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.groups-head {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.groups-list {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 4px;
+  min-height: 240px;
+  max-height: 46vh;
+}
+
+.groups-dropping {
+  border-color: var(--color-accent);
+  background: var(--color-bg-secondary);
+}
+
+.groups-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: grab;
+  user-select: none;
+}
+
+.groups-item:hover {
+  background: var(--color-bg-secondary);
+}
+.groups-item > span:first-child {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.groups-group {
+  cursor: pointer;
+}
+
+.groups-selected {
+  background: var(--color-accent);
+  color: #ffffff;
+}
+
+.groups-selected:hover {
+  background: var(--color-accent);
+}
+.groups-selected .groups-badge {
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.groups-badge {
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+}
+
+/* The identifiers a name does not carry -- a generator's bus number and unit
+ * ID. Muted and after the name, because it is what the eye falls back to when
+ * two names read alike, not what it reads first. `flex-shrink: 0` and no
+ * ellipsis: a truncated bus number is a WRONG bus number, so a long name
+ * gives way instead (its own span already ellipsises). */
+.groups-detail {
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* An area a group claims but nothing can plot: either not in this build, or
+ * carrying no data in the cases that are loaded. */
+.groups-item-missing {
+  color: var(--color-case-4);
+}
+
+.groups-flag {
+  font-size: 10px;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+/* The per-member setting an interface group needs: which direction a path
+   counts in. Sits on the member row itself because that is where the pair it
+   belongs to is -- one interface may count forward in one boundary and
+   reversed in another. `active` is the non-default state, tinted so a
+   boundary built out of reversed paths is visible at a glance rather than
+   read one tooltip at a time. */
+.groups-mark {
+  margin-left: auto;
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 18px;
+  flex-shrink: 0;
+}
+
+.groups-mark.active {
+  background: var(--color-selection);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.groups-empty {
+  padding: 8px 6px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--color-text-secondary);
+}
+
+.groups-newrow {
+  display: flex;
+  gap: 6px;
+}
+
+/* .modal-filter is flex:1 for the horizontal toolbars it was written for;
+ * in a vertical column that stretches it into a tall empty box. */
+.groups-column > .modal-filter {
+  flex: 0 0 auto;
+}
+
+.modal-filter {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+}
+
+/* A disabled .modal-filter is a COMPUTED value, not a dead control: in the
+ * import dialog's two bulk modes the per-file Case box is disabled and then
+ * filled with the name the plan derived, so it is the live preview of where
+ * the file lands. That is why this greys the chrome -- filled ground, muted
+ * border, not-allowed cursor -- and leaves the TEXT at full contrast. The
+ * usual `opacity: 0.5` would fade the one part the user is reading.
+ *
+ * The border stays at full strength on purpose. Muting it to
+ * --color-border-light (#f0f0f0) over this ground (#f8f8f8) erases the box
+ * rather than greying it, and a field with no outline reads as a field that
+ * is not there -- the opposite of the "filled in for you" this means. */
+.modal-filter:disabled {
+  background: var(--color-bg-secondary);
+  cursor: not-allowed;
+}
+
+/* Set on the LABEL of a .modal-filter:disabled, by whoever disabled it. The
+ * greyed box alone is a small change in one control among a row of them; the
+ * caption going with it is what the eye catches. Fading the caption is safe
+ * where fading the box was not -- the caption is a fixed word, not the
+ * computed value being previewed. */
+.modal-label-computed {
+  opacity: 0.55;
+}
+
+.modal-list {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 4px;
+  min-height: 200px;
+}
+
+.modal-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.modal-row:hover {
+  background: var(--color-bg-secondary);
+}
+.modal-row-name {
+  flex: 1;
+}
+
+/* A caption and its control. The display lives HERE and not in an inline
+   style, because an inline display beats the `hidden` attribute and the
+   import dialog shows two of these by mode. */
+.modal-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.modal-field[hidden] {
+  display: none;
+}
+
+/* The import dialog's file list: which file, which Case, what was read out
+   of it -- one column each, so a batch of twelve is scanned down a column
+   rather than read one stacked block at a time. The fourth track is the
+   remove button, which is why it is `auto` and the other three are
+   fractions of what is left. */
+.import-head,
+.import-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr) minmax(0, 1.6fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.import-head {
+  position: sticky;
+  /* The list's own padding, so the header covers it rather than letting a
+     row scroll through the gap above. */
+  top: -4px;
+  z-index: 1;
+  background: var(--color-bg-primary);
+  padding: 4px 6px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* The tint is set per row in the dialog, from the registry's one kind-to-
+   colour mapping. The transparent default is what keeps a row whose kind has
+   no tint on the same left edge as its neighbours -- and the header on the
+   same edge as both. */
+.import-head,
+.import-row {
+  border-left: 3px solid transparent;
+}
+
+/* These rows are read, not picked: the pointer cursor `.modal-row` carries
+   for the pickers would promise a click that does nothing here. */
+.import-row {
+  cursor: default;
+}
+
+.import-cell {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-case {
+  min-width: 0;
+}
+
+/* A warning under a row spans it, rather than sitting in one column. */
+.import-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.import-note:empty {
+  display: none;
+}
+.modal-row-tag {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 8px;
+  background: var(--color-border-light);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+}
+
+.modal-row-remove {
+  border: none;
+  background: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: auto;
+  transition:
+    color 0.15s,
+    background-color 0.15s;
+}
+
+.modal-row-remove:hover {
+  color: var(--color-case-4);
+  background-color: rgba(220, 38, 38, 0.08);
+}
+
+/* The Figure dialog's preview is the exported file shown as an image, on the
+   white it is exported on, so what is seen is what Word gets. */
+.figure-preview {
+  display: flex;
+  justify-content: center;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  background: #ffffff;
+  overflow: auto;
+}
+
+.figure-preview img {
+  width: 100%;
+  max-width: 900px;
+  height: auto;
+}
+
+.figure-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.figure-inch {
+  width: 5em;
+}
+
+/* The preview and its controls scroll inside the modal; the buttons stay. */
+.figure-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* Scrolled, not squeezed: a shrunk preview would misstate the figure. */
+.figure-body > * {
+  flex-shrink: 0;
+}
+
+.figure-caption-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.figure-caption {
+  flex: 1;
+  font: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.figure-texts summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.figure-text-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+/* Beside the buttons it explains, pushed to the left of the row. */
+.figure-copy-note {
+  margin-right: auto;
+  align-self: center;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: var(--color-accent-hover);
+  color: #ffffff;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Print styles */
+@media print {
+  .topbar,
+  .gv-section .left-rail,
+  .status-bar {
+    display: none;
+  }
+
+  .gv-section .chart-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+
+  .gv-section .pane:nth-child(n + 2) {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ FIND
+   The browse drawer. It lives in the same grid cell as .sections and
+   is pinned to the bottom of it, so it OVERLAYS what is behind rather than
+   compressing it -- the plan's half detent exists so a chart and the table
+   are on screen at once, and a drawer that pushed the charts up would defeat
+   its own purpose. Height comes from data-detent, which selects the default
+   for --browse-drawer-height: a drag writes that variable in pixels on the
+   drawer (src/ui/browse-drawer.ts), and snapping to a detent clears it so
+   the detent's own share of the cell applies and keeps tracking window
+   resizes.
+
+   Closed, the drawer is not a bar: the element collapses to the browse
+   handle, the one child the closed detent leaves visible, packed to the
+   bottom-right of the chart cell so it overlays axis margin rather than a
+   plot and stays clear of the pane headers' buttons. Overlaying instead of
+   reserving is the point -- .sections pads nothing for it, and the four-pane
+   grid keeps its full height. */
+
+.browse-drawer {
+  grid-row: 2;
+  grid-column: 2;
+  align-self: end;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  box-sizing: border-box;
+  position: relative;
+  background: var(--color-bg-secondary);
+  border-top: 1px solid var(--color-border);
+  box-shadow: 0 -4px 16px rgb(0 0 0 / 12%);
+}
+
+.browse-drawer[data-detent='closed'] {
+  height: auto;
+  width: auto;
+  justify-self: end;
+  background: none;
+  border-top: none;
+  box-shadow: none;
+}
+.browse-drawer[data-detent='half'] {
+  height: var(--browse-drawer-height, 50%);
+}
+.browse-drawer[data-detent='full'] {
+  height: var(--browse-drawer-height, 85%);
+}
+/* Closed leaves the handle and nothing else; tabs on the handle would make it
+   a full-width bar again. */
+.browse-drawer[data-detent='closed'] .browse-bar,
+.browse-drawer[data-detent='closed'] .browse-scroll,
+.browse-drawer[data-detent='closed'] .browse-count,
+.browse-drawer[data-detent='closed'] .browse-notes,
+.browse-drawer[data-detent='closed'] .browse-notes-row,
+.browse-drawer[data-detent='closed'] .browse-resize {
+  display: none;
+}
+
+/* The open drawer's drag grip: the full-width top edge, six pixels deep --
+   enough to grab, not enough to reach the bar's controls, which sit lower in
+   their 36px row. The hover tint is what says it is a grip; the drag range's
+   ceiling keeps the pane headers above it reachable (src/ui/drawer-height.ts
+   states the range, and tests/test_dom_contract.mjs pins its mirrored lengths to
+   this file). */
+.browse-resize {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 6px;
+  cursor: row-resize;
+  touch-action: none;
+  z-index: 2;
+}
+
+.browse-resize:hover,
+.browse-resize:active {
+  background: var(--color-selection);
+}
+
+/* The closed drawer's whole surface, hidden the rest of the time. It has to
+   read as a tab sticking up from the bottom edge -- chevron, label,
+   background, border -- because a collapsed drawer that does not look
+   clickable is a feature nobody finds again. Its bottom sits flush on the
+   status bar's top border, so it carries no border of its own there. */
+.browse-handle {
+  display: none;
+}
+
+.browse-drawer[data-detent='closed'] .browse-handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 16px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-small);
+  line-height: 1;
+  padding: 6px 14px;
+  /* The handle is the closed end of the resize drag; without this a touch
+     drag on it becomes a page scroll and dies as a pointercancel instead of
+     sizing the drawer. */
+  touch-action: none;
+}
+
+.browse-drawer[data-detent='closed'] .browse-handle:hover {
+  background: var(--color-bg-primary);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.browse-handle-chevron {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.browse-bar {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  padding: 0 8px;
+}
+
+.browse-tabs {
+  display: flex;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: thin;
+}
+
+.browse-tab {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px 4px 0 0;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 10px;
+}
+.browse-tab:hover {
+  color: var(--color-text-primary);
+}
+.browse-tab.active {
+  background: var(--color-bg-primary);
+  border-color: var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.browse-bar-right {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.browse-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.browse-variable {
+  max-width: 220px;
+}
+.browse-per-unit[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.browse-per-unit.active {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
+}
+
+.browse-detent {
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 10px;
+}
+.browse-detent[disabled] {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.browse-notes-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  gap: 12px;
+  min-height: 0;
+}
+
+.browse-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* A display rule beats the hidden attribute's own; restate it. */
+.browse-chips[hidden] {
+  display: none;
+}
+
+.browse-chip {
+  padding: 1px 8px;
+  font-size: 11px;
+  border: 1px solid var(--color-accent);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.browse-chip:hover {
+  background: var(--color-accent);
+  color: var(--color-bg-primary);
+}
+
+.browse-notes {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.browse-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.browse-action {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+.browse-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  /* The table scrolls its own body; this only sizes it. */
+  overflow: hidden;
+}
+
+/* The drawer's table (`src/ui/browse-table.ts`). Its rows carry
+   `.browse-row`, so hover, preview and scope marks read as they do anywhere
+   in the drawer. */
+.browse-grid {
+  height: 100%;
+}
+.browse-scroll .browse-grid {
+  font-size: 12px;
+}
+/* A drag is a cell range, never a text selection: Tabulator's Ctrl+C copies
+   a live text selection in place of the range. */
+.browse-grid .browse-row {
+  user-select: none;
+}
+
+/* A COMPUTED number is painted differently from a stored one, everywhere it
+   appears. A derived figure mistaken for a value the export carried is the
+   one way this table can mislead someone who trusts it. */
+.browse-computed {
+  color: var(--color-accent);
+  font-style: italic;
+}
+
+/* A header is its label, then its controls pinned to the right edge, so
+   every column's filter arrow sits in the same place. */
+.browse-grid .browse-head {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+.browse-grid .browse-head > :first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.browse-grid .browse-head > button:first-of-type {
+  margin-left: auto;
+}
+
+/* A header label's click sorts; a hold-and-drag on the header moves the
+   column. */
+.browse-sort {
+  cursor: pointer;
+  font-weight: 600;
+}
+.browse-sort-arrow {
+  display: inline-block;
+  width: 1.1em;
+  text-align: center;
+}
+
+.browse-groupby {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  line-height: 0;
+  padding: 1px;
+  margin-left: 2px;
+  vertical-align: middle;
+}
+.browse-groupby svg {
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.browse-groupby:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--color-text-secondary);
+}
+.browse-groupby.active {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
+}
+.browse-groupby:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Inline column filter button */
+.browse-col-filter-btn {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+  margin-left: 4px;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+.browse-col-filter-btn:hover {
+  background: var(--color-border-light);
+  color: var(--color-text-primary);
+}
+.browse-col-filter-btn.active {
+  color: var(--color-accent);
+  background: var(--color-bg-primary);
+  border-color: var(--color-accent);
+}
+
+/* Floating Popover */
+.browse-filter-popover {
+  position: absolute;
+  z-index: 100;
+  width: 220px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+.browse-filter-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-light);
+  font-weight: 600;
+  background: var(--color-bg-secondary);
+  border-radius: 6px 6px 0 0;
+}
+.browse-filter-popover-close {
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.browse-filter-popover-close:hover {
+  color: var(--color-case-4);
+}
+.browse-filter-popover-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.browse-filter-popover-body input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  font-size: 12px;
+}
+.browse-filter-popover-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.browse-filter-popover-row label {
+  width: 32px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+}
+.browse-filter-popover-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--color-border-light);
+  display: flex;
+  justify-content: flex-end;
+}
+.browse-filter-popover-clear {
+  background: none;
+  border: 1px solid var(--color-border);
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+}
+.browse-filter-popover-clear:hover {
+  border-color: var(--color-case-4);
+  color: var(--color-case-4);
+}
+.browse-filter-checklist-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+}
+.browse-filter-action-btn {
+  background: none;
+  border: 1px solid var(--color-border);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+}
+.browse-filter-action-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-text-primary);
+}
+.browse-filter-count {
+  font-size: 10px;
+  color: var(--color-text-secondary);
+}
+.browse-filter-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-light);
+  border-radius: 3px;
+  padding: 4px 6px;
+  background: var(--color-bg-secondary);
+}
+/* `flex: 0 0 auto` is the scrollbar. A column flex child shrinks below its
+   content by default, so a list of forty units squeezed forty rows into the
+   180px the checklist is allowed and clipped every label to a sliver of text
+   rather than overflowing -- `overflow-y: auto` never fired, because nothing
+   overflowed. Each row keeps its own height and the list scrolls. The same
+   holds for the column chooser's rows below. */
+.browse-filter-item {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* What the render cap left out, said on the list rather than in silence. */
+.browse-filter-more {
+  flex: 0 0 auto;
+  padding: 2px 0;
+  font-size: 10px;
+  font-style: italic;
+  color: var(--color-text-secondary);
+}
+.browse-filter-item input {
+  flex: none;
+  width: auto;
+  margin: 0;
+}
+
+/* The column chooser. Same popover shape as the filter one, with a
+   scrolling checklist instead of inputs: a tab can carry thirty-odd columns
+   and every one of them needs a row. */
+.browse-columns-popover {
+  position: absolute;
+  z-index: 100;
+  width: 260px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+.browse-columns-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-light);
+  font-weight: 600;
+  background: var(--color-bg-secondary);
+  border-radius: 6px 6px 0 0;
+}
+.browse-columns-popover-close {
+  background: none;
+  border: none;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.browse-columns-popover-close:hover {
+  color: var(--color-case-4);
+}
+.browse-columns-popover-body {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.browse-columns-popover-item {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.browse-columns-popover-item input {
+  flex: none;
+}
+
+/* The download menu: one item per file the drawer writes. It drops below
+   its button, right-aligned so it never runs off the drawer's edge. */
+.browse-download-wrap {
+  position: relative;
+}
+.browse-download-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 100;
+  min-width: 220px;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+.browse-download-menu[hidden] {
+  display: none;
+}
+.browse-download-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: none;
+  border: none;
+  padding: 6px 12px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+.browse-download-item:hover:not(:disabled) {
+  background: var(--color-selection);
+}
+.browse-download-item:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-secondary);
+}
+.browse-download-note {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  white-space: normal;
+  max-width: 260px;
+}
+.browse-download-note:empty {
+  display: none;
+}
+
+.browse-row {
+  cursor: pointer;
+}
+.browse-row:hover {
+  background: var(--color-selection);
+}
+/* The click-preview: grey and dashed on the chart, and marked here so the row
+   and the line agree about which one is being looked at. */
+.browse-row.previewed {
+  outline: 1px dashed var(--color-text-secondary);
+  outline-offset: -1px;
+}
+/* Still drawn, outside the current scope. Dimmed rather than dropped:
+   losing a plot that took five minutes to find is far worse than a stale row. */
+.browse-row.out-of-scope {
+  opacity: 0.5;
+}
+
+.browse-tick {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.browse-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.browse-count {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+/* -------------------------------------------------------- Legend pane slot */
+
+/* The legend host fills the pane body and scrolls. A study with many series
+   overflows without it, and an overflow that clips silently is worse than a
+   scrollbar the user can see. */
+.pane-legend-host {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 8px 12px;
+}
+
+.pane-legend-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  color: var(--color-text-primary);
+}
+
+.pane-legend-table thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+  padding: 0 6px 4px 0;
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.pane-legend-table thead th:not(:first-child) {
+  text-align: right;
+}
+
+.pane-legend-table tbody tr:hover {
+  background: var(--color-border-light);
+}
+
+.pane-legend-table tbody td {
+  padding: 3px 6px 3px 0;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--color-border-light);
+  white-space: nowrap;
+}
+
+/* Series identity cell: swatch beside a two-line block. The swatch is
+   top-aligned rather than centred, so it stays level with the subject it
+   names however many lines the block below runs to. */
+.pane-legend-name {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  /* No max-width. This cell carries the whole path to the series and the
+     numeric columns beside it are narrow and fixed-width; capping it at 240px
+     spent the pane's width on whitespace and ellipsed the part a reader came
+     here to read. */
+  overflow: hidden;
+}
+
+.pane-legend-ident {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* The SUBJECT: the entity or bucket this line is. Addressed by its own class
+   rather than as the cell's first span, because the context line below it is
+   a sibling and a positional selector would move the truncation onto it. */
+.pane-legend-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Where the subject was found -- Case, kind, quantity -- plus whatever
+   qualifies the numbers (the "% of range" divisor, the filters a bucket was built under, the
+   column a mean was weighted by). Muted and one line: it is the answer to
+   "which one is this", which the reader wants under the name and not instead
+   of it. It ellipses, and carries the same text as its own tooltip so the
+   tail is still reachable. */
+.pane-legend-context {
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  display: inline-block;
+}
+
+/* Numeric cells: right-aligned, monospace for column alignment */
+.pane-legend-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+  padding-right: 12px;
+}
+
+.pane-legend-unit {
+  text-align: right;
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+/* Responsive media queries */
+@media (max-width: 1024px) {
+  .gv-section .chart-grid {
+    grid-template-columns: 1fr;
+    /* `1fr`, never `auto`. A pane's canvas is sized FROM the pane's own box
+       (the ResizeObserver in charts.ts measures `.pane-body` and hands the
+       numbers to setSize), so a track sized to its CONTENT closes a loop:
+       the canvas grows the pane, the pane grows the track, the track grows
+       the canvas, one frame at a time until the tab is unusable. `1fr`
+       resolves against this container's own definite height and cannot be
+       pushed by what is inside a pane. The 240px minimum still scrolls the
+       grid on a short window, which is what this breakpoint is for. */
+    grid-template-rows: repeat(4, minmax(240px, 1fr));
+  }
+
+  .gv-section .chart-grid.focus-mode {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  :root {
+    --rail-width: 260px;
+  }
+}
+
+/* The Contents panel. The pivot scrolls inside the modal under a sticky
+   header, so a study with many Cases still fits; the modal scrolls too, for
+   the file list a count opens below it. */
+.contents-modal {
+  width: min(1100px, 96vw);
+  overflow-y: auto;
+}
+
+.contents-pivot-wrap {
+  overflow: auto;
+  max-height: 46vh;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+}
+
+.contents-pivot {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.contents-pivot th,
+.contents-pivot td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border-light);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.contents-pivot thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.contents-case {
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.contents-case-name {
+  display: inline-flex;
+  flex-direction: column;
+  vertical-align: top;
+}
+
+.contents-case-input {
+  width: 14em;
+  font: inherit;
+}
+
+.contents-case-original {
+  font-size: 0.85em;
+}
+
+.contents-case-refusal {
+  color: var(--color-negative, #b3261e);
+  font-size: 0.85em;
+  white-space: normal;
+  max-width: 14em;
+}
+
+.contents-case-refusal:empty {
+  display: none;
+}
+
+.contents-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 6px;
+  border-radius: 2px;
+  vertical-align: baseline;
+}
+
+.contents-info {
+  color: var(--color-text-secondary);
+  cursor: help;
+}
+
+/* A cell's count opens its files below the pivot; the pressed one is the
+   cell those files belong to. */
+.contents-count {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.contents-count:hover {
+  text-decoration: underline;
+}
+
+.contents-count[aria-pressed='true'] {
+  font-weight: 600;
+}
+
+.contents-case-shown {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.contents-case-shown[hidden] {
+  display: none;
+}
+
+.contents-case-edit {
+  padding: 0 2px;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.contents-case-edit:hover:not(:disabled) {
+  color: var(--color-text-primary);
+}
+
+.contents-not-loaded {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+/* One cell's files, whole: here a filename wraps rather than ellipses, since
+   the part that tells two exports apart is often at the end. */
+.contents-cell-detail {
+  font-size: 12px;
+}
+
+.contents-cell-detail h3 {
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.contents-cell-detail dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+}
+
+.contents-cell-detail dt {
+  color: var(--color-text-secondary);
+}
+
+.contents-cell-detail .contents-file {
+  max-width: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+/* The bundle's one editable field, above everything it describes. */
+.contents-about {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.contents-about textarea {
+  resize: vertical;
+  font: inherit;
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+/* The session strip: one row per input that serves every Case. */
+.contents-strip {
+  align-self: flex-start;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.contents-strip th,
+.contents-strip td {
+  padding: 2px 12px 2px 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.contents-strip th {
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+/* A filename is capped and ellipsed; its `title` carries the whole name. */
+.contents-file {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: var(--color-accent);
+  cursor: pointer;
+  vertical-align: bottom;
+}
+
+.contents-file:hover {
+  text-decoration: underline;
+}
+
+.contents-muted,
+.contents-file.contents-muted {
+  color: var(--color-text-secondary);
+}
+
+.contents-detail {
+  min-height: 60px;
+  font-size: 12px;
+}
+
+.contents-detail h3 {
+  font-size: 13px;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+
+.contents-detail dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+}
+
+.contents-detail dt {
+  color: var(--color-text-secondary);
+}
+
+.contents-notes {
+  margin: 6px 0 0 18px;
+  color: var(--color-text-primary);
+}
+
+.contents-log {
+  font-size: 12px;
+}
+
+.contents-log summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.contents-log ol {
+  max-height: 220px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.contents-log li {
+  padding: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.contents-event {
+  font-weight: 600;
+}
+
+.contents-file-plain {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.contents-copy-status {
+  margin-right: auto;
+  font-size: 12px;
+  align-self: center;
+}

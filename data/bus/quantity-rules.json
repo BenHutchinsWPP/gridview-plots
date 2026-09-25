@@ -1,0 +1,52 @@
+{
+  "contract": "A wide bus export is ONE quantity for every bus it carries, named on the file's title line: \"Bus Hourly 'LMP ($/MWh)' Data for Year 2035\". So the rule is a property of the FILE, not of a column, and it is resolved from the unit in that title. Two rules are resolved from that unit. `temporal` says how HOURS combine. `class` says how BUSES combine: EXTENSIVE and RATE sum across a bus axis, INTENSIVE does not -- a bus export carries one quantity per file, so an intensive quantity's weight is in another table and `spatialOf` in src/tables/bus/rules.ts refuses rather than weighting across slots. There is still no `series` key and no `weight` key: the spatial rule is `class`, not a second field to keep in step with it. SUM means a period total over the filtered hours is meaningful; MEAN means it is not, and the stats table shows no total at all rather than a plausible wrong one. Resolution: exact match on `unit` (case-sensitive), else no rule -- an unrecognised unit gets MEAN and no total, never a guess. `quantities` is a RECORD of the columns this exporter has been seen to emit, and nothing in src/ reads it. Its job is to fail a test: tests/test_kernels_bus.mjs asserts every entry resolves to a unit this file carries a rule for, so a newly-observed column whose unit is unknown is caught when it is written down rather than discovered as a quantity missing from a groups dropdown. Add a column here when you meet one; if the test then fails, add its unit above rather than deleting the entry.",
+  "units": [
+    {
+      "unit": "$/MWh",
+      "class": "INTENSIVE",
+      "temporal": "MEAN",
+      "note": "An LMP is a price: the sum of hourly prices is not a price. The figure over the kept hours is the unweighted mean of those hours. Combining BUSES is refused for the same reason -- the load that would weight it is in another table."
+    },
+    {
+      "unit": "MW",
+      "class": "RATE",
+      "temporal": "MEAN",
+      "note": "MW is a rate. Summed over a filtered set of hours it is neither MW nor MWh, so no total is offered."
+    },
+    {
+      "unit": "MWh",
+      "class": "EXTENSIVE",
+      "temporal": "SUM"
+    },
+    {
+      "unit": "$",
+      "class": "EXTENSIVE",
+      "temporal": "SUM"
+    },
+    {
+      "unit": "k$",
+      "class": "EXTENSIVE",
+      "temporal": "SUM"
+    },
+    {
+      "unit": "kV",
+      "class": "INTENSIVE",
+      "temporal": "MEAN"
+    },
+    {
+      "unit": "%",
+      "class": "INTENSIVE",
+      "temporal": "MEAN"
+    }
+  ],
+  "quantities": [
+    "LMP ($/MWh)",
+    "LMP - Energy ($/MWh)",
+    "LMP - Congestion ($/MWh)",
+    "LMP - Loss ($/MWh)",
+    "Load (MW)",
+    "Load Payment ($)",
+    "Unserved Load (MWh)",
+    "Unserved Load Cost ($)"
+  ]
+}

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GridView Plots</title>
+  <!-- Inline, so there is no second request and no 404 on every page load.
+       Four bars in the ten-case palette's first colour: a duration curve. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23fff'/%3E%3Crect x='2' y='3' width='2' height='10' fill='%231f77b4'/%3E%3Crect x='6' y='6' width='2' height='7' fill='%231f77b4'/%3E%3Crect x='10' y='8' width='2' height='5' fill='%231f77b4'/%3E%3C/svg%3E" />
+  <script type="module" src="/src/main.ts"></script>
+</head>
+<body>
+  <!-- Global chrome only. Everything that belongs to ONE table kind's
+       section lives in #section-template below and is cloned once per mounted
+       section, so two sections never share an id. -->
+  <div id="app-root" class="app-grid">
+    <!-- The one signal that a load is still running. A drop is a sequence of
+         waits broken by dialogs -- read the headers, ask what to keep, parse,
+         ask again -- and with only the status sentence to say so (hidden
+         outright on a narrow window, see the media query in styles.css) the
+         gaps between those dialogs looked like an app that had finished, so
+         the next dialog arrived as a popup out of nowhere. The bar rides the
+         top of the whole app, above whichever section is on screen. -->
+    <div id="busy-bar" class="busy-bar" hidden aria-hidden="true"></div>
+
+    <!-- Topbar -->
+    <div id="topbar" class="topbar">
+      <div class="topbar-left">
+        <button type="button" id="rail-toggle-btn" class="btn btn-rail-toggle" title="Toggle filters sidebar (or press [)">◀ Filters</button>
+        <h1 class="app-title">GridView Plots</h1>
+      </div>
+      <div class="topbar-center">
+        <button id="add-cases-btn" class="btn btn-add">+ Add cases</button>
+        <button id="save-btn" class="btn btn-save">Save</button>
+        <button id="load-btn" class="btn btn-load" title="Open a saved .gvmb bundle (or a legacy .gvap/.gvip)">Load…</button>
+      </div>
+      <div class="topbar-right">
+        <button type="button" id="memory-readout" class="memory-readout" title="What is loaded, and from which file">0 MB · 0 cases · 0 files ⓘ</button>
+      </div>
+    </div>
+
+    <!-- Mounted sections are inserted here by ui/shell.ts's section registry,
+         one cloned #section-template each, wrapped in a collapsible <details>
+         and stacked. A container rather than bare children of .app-grid: two
+         sections both placed in the grid's one middle cell would sit on top
+         of each other.
+
+         The registry mounts every section ONCE, at startup, and then only
+         toggles `hidden` on its <details> -- a section is never removed
+         from here and re-created, because a re-created section is a new
+         section with none of the user's state in it. -->
+    <div id="sections" class="sections"></div>
+
+    <!-- FIND: the browse drawer. Global chrome, so it keeps its ids: there
+         is exactly ONE drawer
+         for the whole app, spanning every kind, which is the opposite of a
+         section and the reason it is not in the template below.
+
+         It sits in the same grid cell as #sections and OVERLAYS it rather than
+         compressing it -- the core loop is "sort by max, click, look at the
+         shape, click the next one", and that needs a chart and the table on
+         screen together. Three detents (closed / half / full) are driven from
+         data-detent by src/ui/browse-drawer.ts, and a drag writes
+         --browse-drawer-height for any height between them: the detent
+         attribute selects that variable's default, so snapping back to a
+         named height is the variable clearing. -->
+    <div id="browse-drawer" class="browse-drawer" data-detent="closed">
+      <!-- The open drawer's drag grip: a strip along the top edge. The closed
+           handle below is the same drag's other end -- click to open, drag to
+           size. -->
+      <div id="browse-resize" class="browse-resize" title="Drag to resize the drawer"></div>
+      <!-- The closed detent's whole surface. A full-width bar spent a strip of
+           chart height on an affordance needed only while closed; a tab that
+           overlays the chart's bottom edge costs none, so the four-pane grid
+           keeps that height. It reopens to the tab that was active at close,
+           which is why it carries no tabs of its own. -->
+      <button type="button" id="browse-handle" class="browse-handle" title="Open the browse drawer">
+        <span class="browse-handle-chevron" aria-hidden="true">⌃</span>
+        <span id="browse-handle-label">Browse</span>
+      </button>
+      <div class="browse-bar">
+        <!-- Kind tabs on the left, filled per loaded kind, plus Selected. -->
+        <div id="browse-tabs" class="browse-tabs"></div>
+        <div class="browse-bar-right">
+          <label class="browse-field">Variable
+            <select id="browse-variable" class="browse-variable"></select>
+          </label>
+          <!-- Enabled only on a tab that offers it: see `offersRange` in
+               src/ui/browse-drawer.ts. -->
+          <button type="button" id="browse-per-unit" class="btn browse-per-unit">% of range</button>
+          <!-- The column chooser: which columns this tab shows. The kind names the
+               set a tab opens with; the per-tab choice lives here, and a
+               hidden column is out of the table, out of the CSV, and its
+               filter is cleared -- see src/ui/browse-model.ts. -->
+          <button type="button" id="browse-columns" class="btn browse-columns" title="Choose which columns this tab shows. Hidden columns leave the table and the CSV, and their filters are cleared.">Columns</button>
+          <!-- Exports what the tab shows -- its rows in sort order, under its
+               variable, filters, group-by, hour filter and % of range -- with
+               what the numbers depend on noted at the top, so the provenance
+               travels with them. A menu, one item per file shape: see
+               src/ui/hourly-csv.ts for why two layouts and never a switch. -->
+          <div class="browse-download-wrap">
+            <button type="button" id="browse-download" class="btn browse-download" aria-haspopup="menu" aria-expanded="false" title="Download what this tab shows as CSV: its table of statistics, or the hourly series of every row, with the filters that produced them noted at the top">Download ▾</button>
+            <div id="browse-download-menu" class="browse-download-menu" role="menu" hidden>
+              <button type="button" role="menuitem" class="browse-download-item" data-download="stats">Table (stats)</button>
+              <button type="button" role="menuitem" class="browse-download-item" data-download="wide">Hourly series (wide)<span class="browse-download-note" data-note="wide"></span></button>
+              <button type="button" role="menuitem" class="browse-download-item" data-download="long">Hourly series (long)<span class="browse-download-note" data-note="long"></span></button>
+            </div>
+          </div>
+          <button type="button" id="browse-collapse" class="browse-detent" title="Shrink the drawer">⌄</button>
+          <button type="button" id="browse-expand" class="browse-detent" title="Grow the drawer">⌃</button>
+        </div>
+      </div>
+      <div id="browse-notes-row" class="browse-notes-row">
+        <!-- View-state chips (filters, group-by), each clearing its own:
+             `viewChips` in src/ui/browse-model.ts. -->
+        <div id="browse-chips" class="browse-chips"></div>
+        <p id="browse-notes" class="browse-notes" hidden></p>
+        <div id="browse-actions" class="browse-actions"></div>
+      </div>
+      <div class="browse-scroll">
+        <!-- Painted by Tabulator: src/ui/browse-table.ts. -->
+        <div id="browse-grid" class="browse-grid"></div>
+      </div>
+      <div id="browse-count" class="browse-count"></div>
+    </div>
+
+    <!-- Status Bar -->
+    <div id="status-bar" class="status-bar">
+      <span id="status-spinner" class="status-spinner" hidden aria-hidden="true"></span>
+      <span id="status-text"></span>
+    </div>
+  </div>
+
+  <!-- One section's body: the rail and the pane grid. Cloned once per mounted
+       section under a .gv-section root; every hook inside is a `data-`
+       attribute, never an id, because ids would collide the moment a second
+       section is mounted. Lookups go through within(root, …)
+       (src/ui/dom.ts) and are checked against this block by
+       test_dom_contract.mjs. -->
+  <template id="section-template">
+    <!-- Left Rail -->
+    <div data-el="left-rail" class="left-rail">
+      <!-- FILTERS Section -->
+      <div data-el="filters-section" class="rail-section">
+        <h2 class="rail-section-title">FILTERS</h2>
+
+        <div class="filter-group">
+          <label class="filter-label">Month<button type="button" class="filter-clear" data-filter="months" title="Clear the month filter">clear</button></label>
+          <div data-el="month-chips" class="chip-grid"></div>
+        </div>
+
+        <div class="filter-group">
+          <label class="filter-label">Day of Month<button type="button" class="filter-clear" data-filter="daysOfMonth" title="Clear the day-of-month filter">clear</button></label>
+          <div data-el="day-of-month-chips" class="chip-grid"></div>
+        </div>
+
+        <div class="filter-group">
+          <label class="filter-label">Hour<button type="button" class="filter-clear" data-filter="hoursOfDay" title="Clear the hour filter">clear</button></label>
+          <div data-el="hour-chips" class="chip-grid"></div>
+        </div>
+
+        <div class="filter-group">
+          <label class="filter-label">Day<button type="button" class="filter-clear" data-filter="daysOfWeek" title="Clear the day filter">clear</button></label>
+          <div data-el="day-chips" class="chip-grid"></div>
+        </div>
+
+        <div class="filter-group">
+          <label class="filter-label">Season<button type="button" class="filter-clear" data-filter="seasons" title="Clear the season filter">clear</button></label>
+          <div data-el="season-chips" class="chip-grid"></div>
+        </div>
+
+        <div class="filter-group">
+          <label class="filter-label">TOU<button type="button" class="filter-clear" data-filter="tou" title="Clear the tou filter">clear</button></label>
+          <div data-el="tou-chips" class="chip-grid"></div>
+        </div>
+
+        <button data-el="reset-filters-btn" class="btn btn-reset">Clear all filters <span class="btn-key">R</span></button>
+      </div>
+    </div>
+
+    <!-- Chart Area -->
+    <div data-el="chart-area" class="chart-grid">
+      <!-- Pane 1: Slot 1 -->
+      <div data-pane="1" class="pane">
+        <div class="pane-header">
+          <select data-el="slot-type-1" class="pane-slot-type" title="Chart type">
+            <option value="time" selected>Time series</option>
+            <option value="duration">Duration curve</option>
+            <option value="box">Box &amp; whisker</option>
+            <option value="stacked">Stacked line</option>
+            <option value="xy">X–Y plot</option>
+            <option value="heatmap">Diurnal heatmap</option>
+            <option value="legend">Legend</option>
+          </select>
+          <span class="pane-note"></span>
+          <button type="button" data-el="download-1" class="pane-btn" title="Download the hours currently shown, as CSV">Download</button>
+          <button type="button" data-el="figure-1" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
+          <button type="button" data-el="zoom-reset-1" class="pane-btn" title="Reset the zoom on this chart">Reset zoom</button>
+          <!-- One session-wide switch, not one per pinned row: a limit belongs
+               to the interface, not to the user's selection of it. Hidden by
+               charts.ts until a limits file is loaded. -->
+          <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check" checked /> limits</label>
+          <!-- The X-Y slot's axis swap: which of the two selected series is x.
+               One per pane header, because any pane can be the X-Y slot, and
+               shown only while that pane is it with exactly two series drawn. -->
+          <button type="button" data-el="xy-swap-1" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
+          <!-- The X-Y slot's least-squares fit. Per pane and off by default:
+               a trend line drawn over hourly data the analyst has not asked
+               to be read as a trend is a claim the pane makes on its own. -->
+          <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-1" /> fit</label>
+          <span class="pane-icon" title="Expand this pane (or press 1)">⤢</span>
+        </div>
+        <div data-pane="1-body" class="pane-body"></div>
+      </div>
+
+      <!-- Pane 2: Slot 2 -->
+      <div data-pane="2" class="pane">
+        <div class="pane-header">
+          <select data-el="slot-type-2" class="pane-slot-type" title="Chart type">
+            <option value="time">Time series</option>
+            <option value="duration" selected>Duration curve</option>
+            <option value="box">Box &amp; whisker</option>
+            <option value="stacked">Stacked line</option>
+            <option value="xy">X–Y plot</option>
+            <option value="heatmap">Diurnal heatmap</option>
+            <option value="legend">Legend</option>
+          </select>
+          <span class="pane-note"></span>
+          <button type="button" data-el="figure-2" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
+          <button type="button" data-el="zoom-reset-2" class="pane-btn" title="Reset the zoom on this chart">Reset zoom</button>
+          <button type="button" data-el="xy-swap-2" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
+          <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-2" /> fit</label>
+          <span class="pane-icon" title="Expand this pane (or press 2)">⤢</span>
+        </div>
+        <div data-pane="2-body" class="pane-body"></div>
+      </div>
+
+      <!-- Pane 3: Slot 3 -->
+      <div data-pane="3" class="pane">
+        <div class="pane-header">
+          <select data-el="slot-type-3" class="pane-slot-type" title="Chart type">
+            <option value="time">Time series</option>
+            <option value="duration">Duration curve</option>
+            <option value="box" selected>Box &amp; whisker</option>
+            <option value="stacked">Stacked line</option>
+            <option value="xy">X–Y plot</option>
+            <option value="heatmap">Diurnal heatmap</option>
+            <option value="legend">Legend</option>
+          </select>
+          <span class="pane-note"></span>
+          <button type="button" data-el="figure-3" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
+          <button type="button" data-el="zoom-reset-3" class="pane-btn" title="Reset the zoom on this chart" style="display: none;">Reset zoom</button>
+          <label class="pane-control">by
+            <select data-el="box-dim-select">
+              <option value="case">case</option>
+              <option value="month">month</option>
+              <option value="hourOfDay">hour of day</option>
+              <option value="dayOfWeek">day of week</option>
+              <option value="season">season</option>
+              <!-- The table kind's OWN box dimension: the Area section names
+                   it "area", the Interface section "interface". Kind-neutral
+                   here, because one template is cloned for both. -->
+              <option data-el="box-dim-kind"></option>
+            </select>
+          </label>
+          <label class="pane-control"><input type="checkbox" data-el="box-values-check" /> values</label>
+          <button type="button" data-el="xy-swap-3" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
+          <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-3" /> fit</label>
+          <span class="pane-icon" title="Expand this pane (or press 3)">⤢</span>
+        </div>
+        <div data-pane="3-body" class="pane-body"></div>
+      </div>
+
+      <!-- Pane 4: Slot 4 -->
+      <div data-pane="4" class="pane">
+        <div class="pane-header">
+          <select data-el="slot-type-4" class="pane-slot-type" title="Chart type">
+            <option value="time">Time series</option>
+            <option value="duration">Duration curve</option>
+            <option value="box">Box &amp; whisker</option>
+            <option value="stacked" selected>Stacked line</option>
+            <option value="xy">X–Y plot</option>
+            <option value="heatmap">Diurnal heatmap</option>
+            <option value="legend">Legend</option>
+          </select>
+          <span class="pane-note"></span>
+          <button type="button" data-el="figure-4" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
+          <button type="button" data-el="zoom-reset-4" class="pane-btn" title="Reset the zoom on this chart">Reset zoom</button>
+          <button type="button" data-el="xy-swap-4" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
+          <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-4" /> fit</label>
+          <span class="pane-icon" title="Expand this pane (or press 4)">⤢</span>
+        </div>
+        <div data-pane="4-body" class="pane-body"></div>
+      </div>
+    </div>
+  </template>
+</body>
+</html>
