@@ -4,7 +4,7 @@
 //
 //   (a) `ChartsHooks` has no header-note or stats-table members;
 //   (b) every pane header is cleared on each render;
-//   (c) only X-Y and heatmap slots write one;
+//   (c) only X-Y, heatmap, interval and an unfollowed time slot write one;
 //   (d) every pane holds its own box dimension control, so no box pane
 //       restates its dimension as a note;
 //   (e) the weighted-mean qualifier is per legend row;
@@ -55,8 +55,13 @@ const writes = [...charts.matchAll(/headerNote\(\s*root,\s*i \+ 1,\s*([^\n]*)/g)
 );
 assert.equal(
   writes.length,
-  3,
-  'three headerNote writes: the clear, plus X-Y and heatmap. ' + `Found: ${writes.join(' | ')}`,
+  5,
+  'five headerNote writes: the clear, plus X-Y, heatmap, interval (which series it cut), and a ' +
+    `time pane whose zoom does not follow the dates. Found: ${writes.join(' | ')}`,
+);
+assert.ok(
+  writes.some((text) => text.startsWith('`whole year · dates ')),
+  'a time pane showing the whole year says so, since the rail says otherwise',
 );
 assert.ok(
   writes.some((text) => text.startsWith('`X ')),

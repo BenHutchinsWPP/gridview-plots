@@ -79,6 +79,9 @@ export interface RetainedBatch {
 export function createSectionHost(
   host: HTMLElement,
   template: HTMLTemplateElement,
+  /** The status bar, where the notes live: on screen with or without a
+   * section, and over nothing until opened. */
+  notesHost: HTMLElement,
 ): {
   /** Build the section's chrome once and return the root its content mounts
    * into (one clone of `#section-template`). */
@@ -97,10 +100,9 @@ export function createSectionHost(
   emptyLead.textContent = 'Drop GridView CSV exports anywhere on this window.';
   empty.appendChild(emptyLead);
   host.appendChild(empty);
-  // A sibling of the empty state, so notes show with or without a section.
-  // One element whose text is rewritten, because this file may not remove
-  // children (`tests/test_section_state.mjs`). It floats over the rail's
-  // corner so it never takes height from the panes.
+  // In the status bar, so notes show with or without a section. One element
+  // whose text is rewritten, because this file may not remove children
+  // (`tests/test_section_state.mjs`).
   const notesCard = document.createElement('div');
   notesCard.className = 'sections-notes';
   // The header is the collapse control, and collapsed it keeps the count on
@@ -130,12 +132,12 @@ export function createSectionHost(
   const notesLine = document.createElement('p');
   notesLine.className = 'sections-notes-body';
   notesCard.append(notesToggle, notesLine);
-  host.appendChild(notesCard);
+  notesHost.appendChild(notesCard);
 
   // The last text shown and whether THAT text was collapsed: render runs on
   // every interaction, so only new text may reset it. New text arrives
   // collapsed, as the bubble and a fresh count: most notes are ordinary
-  // accounts of a load, and an open card covers the rail each time.
+  // accounts of a load, and an open card covers the charts each time.
   let shownNotes = '';
   let collapsed = true;
   let count = 0;

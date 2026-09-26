@@ -339,8 +339,7 @@ function adoptAxis(axis: string[]): void {
 let query: AreaQuery = Object.freeze({
   cases: [] as readonly string[],
   filters: Object.freeze({
-    months: null,
-    daysOfMonth: null,
+    dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
@@ -415,6 +414,22 @@ function yearOfCase(caseId: string): number {
   return NO_YEAR;
 }
 
+/** The loaded Cases' distinct years, ascending: only years a table states.
+ * Not `yearOfCase`, whose fallback is a real year and would read as one. */
+function loadedYears(): number[] {
+  const years = new Set<number>();
+  for (const owner of caseStore.listCases()) {
+    for (const slot of owner.tables.values()) {
+      const year = (slot.data as { year?: number } | null)?.year;
+      if (typeof year === 'number') {
+        years.add(year);
+        break;
+      }
+    }
+  }
+  return [...years].sort((a, b) => a - b);
+}
+
 // ------------------------------------------------------------------- FIND
 
 /** The drawer's selection as the render path reads it. Pins, unpins and
@@ -483,6 +498,34 @@ const drawContext: DrawContext = {
   busKv,
   interfaceRange,
   lines: drawLines,
+};
+
+/** The filters with the dates cleared, one object per filter state: a year
+ * overview draws the whole year under every other filter. */
+let overviewFilters: { of: Filters; filters: Filters } | null = null;
+/** A year overview's lines: the drawn set again, dates cleared, into buffers
+ * of its own so the drawn lines' contents never move. */
+const overviewLines = createSeriesPool();
+const overviewContext: DrawContext = {
+  get filters() {
+    if (overviewFilters?.of !== query.filters) {
+      overviewFilters = {
+        of: query.filters,
+        filters: Object.freeze({ ...query.filters, dates: null }),
+      };
+    }
+    return overviewFilters.filters;
+  },
+  caseLabel: caseLabelOf,
+  caseNames,
+  areaCases,
+  interfaceRows,
+  busRows,
+  generatorRows,
+  busNames,
+  busKv,
+  interfaceRange,
+  lines: overviewLines,
 };
 
 /** The drawer's hourly download resolves through the same draw, into ONE
@@ -712,6 +755,10 @@ function render(): void {
     browsePinned.map((entry) => entry.ref.id),
     series,
     capped ?? undefined,
+    capped !== null &&
+      seriesCapMessage(browsePinned.length, [
+        { label: 'pinned row(s)', count: browsePinned.length },
+      ]) === null,
   );
 
   // Every note of this render, built AFTER the series: warnings such as
@@ -727,16 +774,29 @@ function render(): void {
     if (!groups) cut.set(dim, (groups = computeBoxes(series, dim, yearOfCase, boxScratch)));
     return groups;
   };
+  // The drawn set with the dates cleared, resolved once and only when a pane
+  // asks: a year overview, or a time pane that does not follow the dates.
+  let wholeYearLines: CaseSeries[] | null = null;
+  const wholeYear = capped
+    ? undefined
+    : () => (wholeYearLines ??= resolveDraws(overviewContext, draws));
   charts.render({
     boxDims: query.boxDims,
     limits: limitLines(series),
     series,
-    boxes: query.boxDims.map(boxesOn),
+    boxes: (pane) => boxesOn(query.boxDims[pane]),
     refusal: capped ?? undefined,
     hasCases: caseStore.listCases().length > 0,
+    dates: query.filters.dates,
+    yearOf: (line) => (line.spec?.caseId ? yearOfCase(line.spec.caseId) : NO_YEAR),
+    overview: wholeYear,
+    overviewLimits: wholeYear && (() => limitLines(wholeYear())),
   });
+  // Nothing asked for the whole year: free the lines it last held, as the
+  // drawn pool frees its own on every render.
+  if (!wholeYearLines) overviewLines.sweep();
 
-  shell.render(query);
+  shell.render(query, loadedYears());
 
   renderBrowse();
 
@@ -1732,7 +1792,10 @@ function adoptRestoredCases(
   }
   // Every drawn line's buffers are keyed by Case id, and a restore hands out
   // fresh ids, so nothing here can be reused by anything restored.
-  for (const id of previous) drawLines.dropCase(id);
+  for (const id of previous) {
+    drawLines.dropCase(id);
+    overviewLines.dropCase(id);
+  }
   // Each kind channel is a drop's account of Cases that are gone now, and
   // neither caller republishes all four: Load… writes only `session`, and a
   // drop carrying nothing but a bundle writes only `area`.
@@ -1801,6 +1864,7 @@ async function saveAll(): Promise<void> {
       selections: browseDrawer.selection(),
       layout: sessionLayout,
       boxDims: query.boxDims,
+      intervals: charts.intervals(),
       drawerHeight: browseDrawer.heightPx(),
       inventory: inventory.snapshot(),
     };
@@ -2424,6 +2488,7 @@ function adoptRestoredSession(
   if (loaded.layout && loaded.layout.length === 4) {
     syncLayoutToCharts(loaded.layout as SlotType[]);
   }
+  charts.setIntervals(loaded.intervals);
   // Before this field, a bundle saved no box cut, so every pane starts by
   // Case; a name this build does not know does the same.
   const boxDims = loaded.boxDims;
@@ -2549,7 +2614,9 @@ if (!appChrome) throw new Error('index.html is missing #app-root');
 
 /** Mounted ONCE; `sections.sync` only shows and hides it, so the focused pane
  * and filter chips survive the table count passing through zero. */
-const sections = createSectionHost(sectionHost, sectionTemplate);
+const statusBar = document.getElementById('status-bar');
+if (!statusBar) throw new Error('index.html is missing #status-bar');
+const sections = createSectionHost(sectionHost, sectionTemplate, statusBar);
 
 /** One retain gate per kind, built once. Not on a section: which columns a
  * drop keeps must not depend on what is on screen. */
@@ -2575,7 +2642,14 @@ const areaSection = mountAreaSection(areaRoot, {
   onBoxDimChange: (pane, dim) =>
     setQuery({ boxDims: Object.freeze(query.boxDims.map((was, i) => (i === pane ? dim : was))) }),
   onFiltersChange: setFilters,
-  onFigure: (capture) => openFigureDialog({ capture, hourFilter: filtersLabel(query.filters) }),
+  onDatesChange: (dates) => setFilters({ dates }),
+  // A time pane showing the whole year shows no dates filter, and its
+  // caption must not claim one.
+  onFigure: (capture, shown) =>
+    openFigureDialog({
+      capture,
+      hourFilter: filtersLabel(shown.wholeYear ? { ...query.filters, dates: null } : query.filters),
+    }),
 });
 const shell = areaSection.rail;
 const charts = areaSection.charts;

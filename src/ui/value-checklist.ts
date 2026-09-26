@@ -13,26 +13,30 @@
 //   * **A tick does not rebuild the list**, which would scroll it back to its
 //     top. `setTicked` updates the boxes in place for a write made elsewhere.
 
-import { containsAnyToken, textTokens, type BrowseColumn } from './browse-model';
+import { containsAnyToken, textTokens, valueLabel, type BrowseColumn } from './browse-model';
 
 /** Items listed before the rest are counted instead. */
 const LIMIT = 100;
 
-/** A column's distinct non-blank values over `rowCount` rows, in reading order
- * (`Zone 2` before `Zone 10`). */
+/** A column's distinct values over `rowCount` rows, in reading order
+ * (`Zone 2` before `Zone 10`), with `''` last when some cell is blank: a unit
+ * the list never mentioned has no Area, and "which units have none" is a
+ * question. */
 export function distinctValues(column: BrowseColumn, rowCount: number): string[] {
   const seen = new Set<string>();
   const values: string[] = [];
+  let blank = false;
   for (let row = 0; row < rowCount; row++) {
     const value = column.value(row);
-    if (value === null) continue;
-    const text = String(value).trim();
-    if (text !== '' && !seen.has(text)) {
+    const text = value === null ? '' : String(value).trim();
+    if (text === '') blank = true;
+    else if (!seen.has(text)) {
       seen.add(text);
       values.push(text);
     }
   }
-  return values.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  values.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return blank ? [...values, ''] : values;
 }
 
 export interface ValueChecklistOptions {
@@ -108,7 +112,9 @@ export function mountValueChecklist(
     let selected = 0;
     for (const value of values) if (ticked.has(value)) selected++;
     countBadge.textContent =
-      selected > 0 ? `${selected} of ${values.length} selected` : `${values.length} items`;
+      selected > 0
+        ? `${selected} of ${values.length} selected`
+        : `${values.length} item${values.length === 1 ? '' : 's'}`;
   };
 
   const renderChecklist = (): void => {
@@ -117,7 +123,7 @@ export function mountValueChecklist(
     // The same rule the table applies to the box, so the list shows what a
     // box filter keeps.
     const tokens = textTokens(input.value);
-    visibleItems = values.filter((value) => containsAnyToken(tokens, value));
+    visibleItems = values.filter((value) => containsAnyToken(tokens, valueLabel(value)));
     const shown = visibleItems.slice(0, LIMIT);
     for (const value of shown) {
       const item = document.createElement('label');
@@ -133,7 +139,10 @@ export function mountValueChecklist(
         renderCount();
       });
       const text = document.createElement('span');
-      text.textContent = value;
+      text.textContent = valueLabel(value);
+      if (value === '') item.classList.add('browse-filter-blank');
+      // A narrow list clips a long value; the full one is a hover away.
+      item.title = valueLabel(value);
       item.append(box, text);
       listEl.appendChild(item);
       boxes.push(box);

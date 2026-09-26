@@ -413,50 +413,47 @@ console.log(
 
 // ------------------------------------------------------------------- (i)
 //
-// Batch notes never cover a plot or take height from the panes: they float
-// over the rail's corner.
+// Batch notes live at the status bar's right end, collapsed to a count, so
+// they cover nothing until opened, the rail's slicers included. Open, they
+// rise over the charts and never reach the rail.
 const notesBlock = rule('.sections-notes');
+const notesBody = rule('.sections-notes-body');
+const mainTs = readFileSync(join(root, 'src/main.ts'), 'utf8');
 assert.match(
-  notesBlock,
+  mainTs,
+  /createSectionHost\(sectionHost, sectionTemplate, statusBar\)/,
+  'the notes are mounted in the status bar, which is on screen with or without a section',
+);
+assert.match(notesBlock, /position:\s*relative/, 'the card anchors its own body');
+assert.match(
+  notesBody,
   /position:\s*absolute/,
-  '.sections-notes floats. In the flow it takes its height off every pane and keeps it ' +
-    'until the next drop',
+  'the open body floats. In the flow it would take height off every pane',
 );
+assert.match(notesBody, /bottom:\s*calc\(100%/, 'the body rises above the status bar');
+assert.match(notesBody, /right:\s*0/, 'from the right end, away from the rail');
 assert.match(
-  rule('.sections'),
-  /position:\s*relative/,
-  '.sections is the positioning context for those notes -- without it the card resolves ' +
-    'against the viewport and drifts out of the chart area',
+  notesBody,
+  /max-width:\s*min\([^;]*var\(--rail-width/,
+  'and no wider than the space right of the rail, by the SAME --rail-width the grid sizes ' +
+    'the rail with, so an open card never covers the filters or slicers',
 );
-assert.match(
-  notesBlock,
-  /left:\s*12px/,
-  'the card sits in the RAIL’s corner, not the chart grid’s: an offset that cleared the ' +
-    'rail would put it back over a plot',
-);
-assert.match(
-  notesBlock,
-  /max-width:\s*max\([^)]*var\(--rail-width/,
-  'and it is no wider than the rail, by the SAME --rail-width the grid sizes the rail with, ' +
-    'so an open card does not spill over the panes either. The floor in that max is the ' +
-    'collapsed rail, where the variable is 0',
-);
-// Below the drawer, which is the one surface the user opens deliberately.
-const notesZ = /z-index:\s*(\d+)/.exec(notesBlock);
+// Above the drawer: opening the notes is as deliberate as opening the drawer,
+// and the drawer fills the space the body opens into.
+const notesZ = /z-index:\s*(\d+)/.exec(notesBody);
 const drawerZ = /z-index:\s*(\d+)/.exec(rule('.browse-drawer'));
-assert.ok(notesZ && drawerZ, 'both the notes card and the drawer state a z-index');
+const busyZ = /z-index:\s*(\d+)/.exec(rule('.busy-overlay'));
+assert.ok(notesZ && drawerZ && busyZ, 'the notes body, drawer and busy overlay state a z-index');
 assert.ok(
-  Number(notesZ[1]) < Number(drawerZ[1]),
-  'the notes card sits UNDER the browse drawer: with the rail collapsed the two share a ' +
-    'corner, and a card painted over a drawer the user just opened covers the rows they ' +
-    'opened it to read',
+  Number(notesZ[1]) > Number(drawerZ[1]) && Number(notesZ[1]) < Number(busyZ[1]),
+  'the open notes sit over the browse drawer and under the busy overlay',
 );
 
 assert.match(
   rule('.sections-notes[hidden]'),
   /display:\s*none/,
   'the `display: flex` above has to be beaten for `hidden` to mean anything, or a sync that ' +
-    'clears the notes leaves an empty card floating over the rail',
+    'clears the notes leaves an empty bubble in the status bar',
 );
 
 // Collapsed, the card keeps the bubble and count, and NEW text arrives

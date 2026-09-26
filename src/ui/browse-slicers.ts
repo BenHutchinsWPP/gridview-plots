@@ -15,6 +15,9 @@
 //   * **Painted in place.** The drawer draws on every tick and preview; a
 //     slicer whose values are unchanged only has its ticks updated, so a
 //     search typed into it and its scroll survive.
+//   * **One or two columns, the analyst's pick.** Two pack the slicers into
+//     balanced columns, each as tall as its own list: most category lists
+//     are short, and a full-width box for "Gas, Wind, Solar" wastes the rail.
 //
 // Kind-neutral chrome, handed its mount: only `main.ts` resolves an element,
 // and it finds this one inside the section clone.
@@ -51,11 +54,36 @@ interface Mounted {
 export function createSlicerPane(mount: HTMLElement): SlicerPane {
   const heading = document.createElement('p');
   heading.className = 'slicer-heading';
+  const layout = document.createElement('div');
+  layout.className = 'slicer-layout';
+  layout.setAttribute('role', 'group');
+  layout.setAttribute('aria-label', 'Slicer columns');
+  const top = document.createElement('div');
+  top.className = 'slicer-top';
+  top.append(heading, layout);
   const empty = document.createElement('p');
   empty.className = 'slicer-empty';
   const list = document.createElement('div');
   list.className = 'slicer-list';
-  mount.replaceChildren(heading, empty, list);
+  mount.replaceChildren(top, empty, list);
+
+  const columnButtons = ([1, 2] as const).map((count) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'slicer-layout-btn';
+    button.textContent = String(count);
+    button.title = count === 1 ? 'One slicer per row' : 'Two columns of slicers';
+    button.addEventListener('click', () => setColumns(count));
+    layout.appendChild(button);
+    return { count, button };
+  });
+  function setColumns(count: 1 | 2): void {
+    list.classList.toggle('slicer-list-two', count === 2);
+    for (const entry of columnButtons) {
+      entry.button.setAttribute('aria-pressed', String(entry.count === count));
+    }
+  }
+  setColumns(1);
 
   /** By tab id and column key. */
   const mounted = new Map<string, Mounted>();
@@ -105,7 +133,7 @@ export function createSlicerPane(mount: HTMLElement): SlicerPane {
     paint(tab, view, next, why) {
       writes = next;
       heading.textContent = tab ? `On the ${tab.label} tab` : '';
-      heading.hidden = !tab;
+      top.hidden = !tab;
       const columns = tab ? slicerColumns(tab, view) : [];
       empty.hidden = tab !== undefined && columns.length > 0;
       empty.textContent = tab

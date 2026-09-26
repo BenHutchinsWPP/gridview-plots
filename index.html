@@ -140,18 +140,16 @@
   <template id="section-template">
     <!-- Left Rail -->
     <div data-el="left-rail" class="left-rail">
-      <!-- FILTERS Section -->
-      <div data-el="filters-section" class="rail-section">
-        <h2 class="rail-section-title">FILTERS</h2>
+      <!-- FILTERS Section: collapsible, so the slicers below can be reached
+           without scrolling past it. Collapsed, its title still names the
+           filters that are on. -->
+      <details data-el="filters-section" class="rail-section rail-collapsible" open>
+        <summary class="rail-section-title">FILTERS <span data-el="filters-on" class="rail-section-on"></span></summary>
 
+        <!-- One run of days, the same hours in every Case: src/ui/date-strip.ts. -->
         <div class="filter-group">
-          <label class="filter-label">Month<button type="button" class="filter-clear" data-filter="months" title="Clear the month filter">clear</button></label>
-          <div data-el="month-chips" class="chip-grid"></div>
-        </div>
-
-        <div class="filter-group">
-          <label class="filter-label">Day of Month<button type="button" class="filter-clear" data-filter="daysOfMonth" title="Clear the day-of-month filter">clear</button></label>
-          <div data-el="day-of-month-chips" class="chip-grid"></div>
+          <label class="filter-label">Months &amp; days<button type="button" class="filter-clear" data-filter="dates" title="Clear the dates">clear</button></label>
+          <div data-el="date-strip"></div>
         </div>
 
         <div class="filter-group">
@@ -175,7 +173,7 @@
         </div>
 
         <button data-el="reset-filters-btn" class="btn btn-reset">Clear all filters <span class="btn-key">R</span></button>
-      </div>
+      </details>
 
       <!-- SLICERS: the active Browse tab's category filters as standing
            checklists. Each IS its column's filter, so it narrows the browse
@@ -201,6 +199,11 @@
                last option is the table kind's own dimension, named by the
                section that mounts the panes ("area"), because one template
                serves every kind.
+             * follow dates / overview: a time pane only. Both write the
+               rail's dates; the overview sits under the body, so showing
+               it refits the chart.
+             * every / colour / mean / p10–p90: an interval pane. Colour
+               offers only what the length can mean (src/ui/interval-plot.ts).
              * X ⇄ Y and fit: an X-Y pane with exactly two series drawn. A fit
                is off by default: a trend line over hourly data is a claim
                the pane would make on its own. -->
@@ -213,6 +216,7 @@
             <option value="stacked">Stacked line</option>
             <option value="xy">X–Y plot</option>
             <option value="heatmap">Diurnal heatmap</option>
+            <option value="interval">Interval</option>
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
@@ -220,6 +224,8 @@
           <button type="button" data-el="figure-1" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
           <button type="button" data-el="zoom-reset-1" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-1" checked /> limits</label>
+          <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-1" checked /> follow dates</label>
+          <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-1" /> overview</label>
           <label class="pane-control" style="display: none;">by
             <select data-el="box-dim-select-1">
               <option value="case">case</option>
@@ -233,9 +239,26 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-1" /> values</label>
           <button type="button" data-el="xy-swap-1" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-1" /> fit</label>
+          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">every
+            <select data-el="interval-by-1">
+              <option value="day">day</option>
+              <option value="week">week</option>
+              <option value="month">month</option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;" title="Colour each period by">
+            <select data-el="interval-colour-1">
+              <option value="time">early → late</option>
+              <option value="weekday">weekday</option>
+              <option value="month">month</option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;" title="The mean of every period at each hour"><input type="checkbox" data-el="interval-mean-1" checked /> mean</label>
+          <label class="pane-control" style="display: none;" title="The 10th to 90th percentile of the periods at each hour"><input type="checkbox" data-el="interval-band-1" /> p10–p90</label>
           <span class="pane-icon" title="Expand this pane (or press 1)">⤢</span>
         </div>
         <div data-pane="1-body" class="pane-body"></div>
+        <div data-el="overview-1" class="pane-overview" hidden></div>
       </div>
       <div data-pane="2" class="pane">
         <div class="pane-header">
@@ -246,6 +269,7 @@
             <option value="stacked">Stacked line</option>
             <option value="xy">X–Y plot</option>
             <option value="heatmap">Diurnal heatmap</option>
+            <option value="interval">Interval</option>
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
@@ -253,6 +277,8 @@
           <button type="button" data-el="figure-2" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
           <button type="button" data-el="zoom-reset-2" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-2" checked /> limits</label>
+          <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-2" checked /> follow dates</label>
+          <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-2" /> overview</label>
           <label class="pane-control" style="display: none;">by
             <select data-el="box-dim-select-2">
               <option value="case">case</option>
@@ -266,9 +292,26 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-2" /> values</label>
           <button type="button" data-el="xy-swap-2" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-2" /> fit</label>
+          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">every
+            <select data-el="interval-by-2">
+              <option value="day">day</option>
+              <option value="week">week</option>
+              <option value="month">month</option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;" title="Colour each period by">
+            <select data-el="interval-colour-2">
+              <option value="time">early → late</option>
+              <option value="weekday">weekday</option>
+              <option value="month">month</option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;" title="The mean of every period at each hour"><input type="checkbox" data-el="interval-mean-2" checked /> mean</label>
+          <label class="pane-control" style="display: none;" title="The 10th to 90th percentile of the periods at each hour"><input type="checkbox" data-el="interval-band-2" /> p10–p90</label>
           <span class="pane-icon" title="Expand this pane (or press 2)">⤢</span>
         </div>
         <div data-pane="2-body" class="pane-body"></div>
+        <div data-el="overview-2" class="pane-overview" hidden></div>
       </div>
       <div data-pane="3" class="pane">
         <div class="pane-header">
@@ -279,6 +322,7 @@
             <option value="stacked">Stacked line</option>
             <option value="xy">X–Y plot</option>
             <option value="heatmap">Diurnal heatmap</option>
+            <option value="interval">Interval</option>
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
@@ -286,6 +330,8 @@
           <button type="button" data-el="figure-3" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
           <button type="button" data-el="zoom-reset-3" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-3" checked /> limits</label>
+          <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-3" checked /> follow dates</label>
+          <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-3" /> overview</label>
           <label class="pane-control" style="display: none;">by
             <select data-el="box-dim-select-3">
               <option value="case">case</option>
@@ -299,9 +345,26 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-3" /> values</label>
           <button type="button" data-el="xy-swap-3" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-3" /> fit</label>
+          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">every
+            <select data-el="interval-by-3">
+              <option value="day">day</option>
+              <option value="week">week</option>
+              <option value="month">month</option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;" title="Colour each period by">
+            <select data-el="interval-colour-3">
+              <option value="time">early → late</option>
+              <option value="weekday">weekday</option>
+              <option value="month">month</option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;" title="The mean of every period at each hour"><input type="checkbox" data-el="interval-mean-3" checked /> mean</label>
+          <label class="pane-control" style="display: none;" title="The 10th to 90th percentile of the periods at each hour"><input type="checkbox" data-el="interval-band-3" /> p10–p90</label>
           <span class="pane-icon" title="Expand this pane (or press 3)">⤢</span>
         </div>
         <div data-pane="3-body" class="pane-body"></div>
+        <div data-el="overview-3" class="pane-overview" hidden></div>
       </div>
       <div data-pane="4" class="pane">
         <div class="pane-header">
@@ -312,6 +375,7 @@
             <option value="stacked">Stacked line</option>
             <option value="xy">X–Y plot</option>
             <option value="heatmap">Diurnal heatmap</option>
+            <option value="interval">Interval</option>
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
@@ -319,6 +383,8 @@
           <button type="button" data-el="figure-4" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
           <button type="button" data-el="zoom-reset-4" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-4" checked /> limits</label>
+          <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-4" checked /> follow dates</label>
+          <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-4" /> overview</label>
           <label class="pane-control" style="display: none;">by
             <select data-el="box-dim-select-4">
               <option value="case">case</option>
@@ -332,9 +398,26 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-4" /> values</label>
           <button type="button" data-el="xy-swap-4" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-4" /> fit</label>
+          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">every
+            <select data-el="interval-by-4">
+              <option value="day">day</option>
+              <option value="week">week</option>
+              <option value="month">month</option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;" title="Colour each period by">
+            <select data-el="interval-colour-4">
+              <option value="time">early → late</option>
+              <option value="weekday">weekday</option>
+              <option value="month">month</option>
+            </select>
+          </label>
+          <label class="pane-control" style="display: none;" title="The mean of every period at each hour"><input type="checkbox" data-el="interval-mean-4" checked /> mean</label>
+          <label class="pane-control" style="display: none;" title="The 10th to 90th percentile of the periods at each hour"><input type="checkbox" data-el="interval-band-4" /> p10–p90</label>
           <span class="pane-icon" title="Expand this pane (or press 4)">⤢</span>
         </div>
         <div data-pane="4-body" class="pane-body"></div>
+        <div data-el="overview-4" class="pane-overview" hidden></div>
       </div>
     </div>
   </template>

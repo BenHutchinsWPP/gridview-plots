@@ -309,6 +309,9 @@ export function pinLines(
   pinIds: readonly string[],
   lines: readonly ResolvedLine[],
   capped?: string,
+  /** The click preview took the drawn set past the cap: the pins alone fit,
+   * so they are not what to unpin. */
+  cappedByPreview = false,
 ): Map<string, PinLine> {
   const byId = new Map<string, ResolvedLine>();
   for (const line of lines)
@@ -317,7 +320,12 @@ export function pinLines(
   for (const id of pinIds) {
     const line = byId.get(id);
     if (capped !== undefined) {
-      out.set(id, { drawn: false, reason: 'more series are pinned than the charts draw' });
+      out.set(id, {
+        drawn: false,
+        reason: cappedByPreview
+          ? 'the previewed row takes the charts past the most lines they draw'
+          : 'more series are pinned than the charts draw',
+      });
     } else if (!line) {
       out.set(id, { drawn: false, reason: 'its table is no longer loaded' });
     } else if (line.values === null) {
@@ -700,6 +708,18 @@ export function containsAnyToken(tokens: readonly string[], cell: string): boole
   return tokens.some((token) => lower.includes(token));
 }
 
+/**
+ * A blank cell as a checklist names it. In a `values` filter a blank is the
+ * empty string, which is what a blank cell displays, so ticking it keeps the
+ * blank rows with no rule of its own.
+ */
+export const BLANK_LABEL = '(blank)';
+
+/** A checklist value as it is read: the blank named, any other as itself. */
+export function valueLabel(value: string): string {
+  return value === '' ? BLANK_LABEL : value;
+}
+
 /** Filters are replaced, never mutated, so a set per filter object holds. */
 const valueSets = new WeakMap<ColumnFilter, ReadonlySet<string>>();
 
@@ -876,8 +896,9 @@ export function filterConstraint(filter: ColumnFilter): string {
     return `contains any of (${tokens.join(', ')})`;
   }
   if (filter.kind === 'values') {
-    if (filter.values.length === 1) return `is ${filter.values[0]}`;
-    return `is any of (${filter.values.join(', ')})`;
+    const named = filter.values.map(valueLabel);
+    if (named.length === 1) return `is ${named[0]}`;
+    return `is any of (${named.join(', ')})`;
   }
   if (filter.min !== null && filter.max !== null) return `${filter.min} – ${filter.max}`;
   if (filter.min !== null) return `≥ ${filter.min}`;

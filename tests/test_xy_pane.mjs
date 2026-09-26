@@ -36,7 +36,7 @@ function statement(text, start) {
 // ------------------------------------------------------------------- (a)
 assert.match(
   charts,
-  /export type SlotType = [^;]*'xy'/,
+  /export type SlotType =\s*[^;]*'xy'/,
   "'xy' is a SlotType; without it the select's value casts to a string no branch matches",
 );
 

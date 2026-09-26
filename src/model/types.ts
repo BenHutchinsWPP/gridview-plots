@@ -3,11 +3,12 @@
 // Model types no kind owns. A type moves here only when a second kind needs
 // it; promoting one early spreads one kind's vocabulary to all.
 
+import type { DateSet } from './date-range';
+
 /** Hour filters over the calendar; `null` means no constraint, a fast path
  * in `buildMask`. */
 export interface Filters {
-  readonly months: Set<number> | null; // 1-12
-  readonly daysOfMonth: Set<number> | null; // 1-31
+  readonly dates: DateSet | null; // runs of days of the year, both ends kept
   readonly hoursOfDay: Set<number> | null; // 1-24, hour-ending (HE)
   readonly daysOfWeek: Set<number> | null; // 0-6, 0 = Monday .. 6 = Sunday
   readonly seasons: Set<string> | null; // 'Winter' | 'Spring' | 'Summer' | 'Fall'

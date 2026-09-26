@@ -24,6 +24,7 @@ import {
   decodeValue,
   type BundleContents,
   type ManifestV3,
+  type SavedInterval,
 } from './envelope';
 import { reconstructInventory } from './reconstruct';
 import { assertMagicVersion, LEGACY_MAGICS, manifestVersion, migrateManifest } from './legacy';
@@ -221,6 +222,8 @@ export interface RestoredBundle {
   layout?: readonly string[];
   /** Each chart pane's box dimension, as saved; checked by the caller. */
   boxDims?: readonly string[];
+  /** Each chart pane's interval settings, as saved; checked by the caller. */
+  intervals?: readonly SavedInterval[];
   /** The drawer's dragged height; undefined when saved on a detent. */
   drawerHeight?: number;
   /** The generator group map, or null. */
@@ -344,6 +347,7 @@ export function restoreBundle(
       ),
     layout: manifest.layout,
     boxDims: manifest.boxDims,
+    intervals: manifest.intervals,
     drawerHeight: manifest.drawerHeight,
     generatorGroups,
     busGroups,

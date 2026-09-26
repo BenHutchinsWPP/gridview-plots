@@ -44,8 +44,7 @@ function ok(label) {
 }
 
 const NO_FILTERS = {
-  months: null,
-  daysOfMonth: null,
+  dates: null,
   hoursOfDay: null,
   daysOfWeek: null,
   seasons: null,
@@ -189,7 +188,7 @@ function draw(data, subject, { filters = NO_FILTERS, spec = {}, opts = {} } = {}
   const entry = draw(
     data,
     { entity: 'G1 PV' },
-    { filters: { ...NO_FILTERS, months: new Set([1]) } },
+    { filters: { ...NO_FILTERS, dates: [{ start: 0, end: 30 }] } },
   );
   assert.equal(entry.n, 31 * 24, 'only January’s hours are kept');
   assert.ok(Number.isNaN(entry.values[31 * 24]), 'a filtered-out hour is a gap, not a zero');
@@ -442,7 +441,7 @@ function drawBus(data, subject, { filters = NO_FILTERS, spec = {} } = {}) {
   const january = drawBus(
     data,
     { entity: 10001 },
-    { filters: { ...NO_FILTERS, months: new Set([1]) } },
+    { filters: { ...NO_FILTERS, dates: [{ start: 0, end: 30 }] } },
   );
   assert.equal(january.n, 31 * 24, 'only January’s hours are kept');
   assert.ok(Number.isNaN(january.values[31 * 24]), 'a filtered-out hour is a gap, not a zero');
@@ -508,7 +507,7 @@ function drawBus(data, subject, { filters = NO_FILTERS, spec = {} } = {}) {
   const groupPct = drawBus(
     spiky,
     { groupBy: BUS_GROUP_BY, value: 'West' },
-    { spec: { perUnit: true }, filters: { ...NO_FILTERS, months: new Set([2]) } },
+    { spec: { perUnit: true }, filters: { ...NO_FILTERS, dates: [{ start: 31, end: 58 }] } },
   );
   assert.equal(groupPct.unit, '%');
   assert.equal(groupPct.rangeLabel, '% of peak');
@@ -622,7 +621,7 @@ function drawArea(
   const january = drawArea(
     data,
     { entity: 'AREA_AV' },
-    { filters: { ...NO_FILTERS, months: new Set([1]) } },
+    { filters: { ...NO_FILTERS, dates: [{ start: 0, end: 30 }] } },
   );
   assert.equal(january.n, 31 * 24);
   assert.ok(Number.isNaN(january.values[31 * 24]));
@@ -655,7 +654,7 @@ function drawArea(
   const groupPct = drawArea(
     peaked,
     { groupBy: 'grouping', value: 'Northwest' },
-    { spec: { perUnit: true }, filters: { ...NO_FILTERS, months: new Set([2]) } },
+    { spec: { perUnit: true }, filters: { ...NO_FILTERS, dates: [{ start: 31, end: 58 }] } },
   );
   // Hour 0 sums to 40 + 80 = 120; a February hour to 10 + 20 = 30.
   assert.equal(groupPct.stats.max, 25, 'the sum over its unfiltered peak');
@@ -748,7 +747,7 @@ function drawInterface(data, subject, { filters = NO_FILTERS, spec = {}, opts = 
   const january = drawInterface(
     data,
     { entity: 'P01' },
-    { filters: { ...NO_FILTERS, months: new Set([1]) } },
+    { filters: { ...NO_FILTERS, dates: [{ start: 0, end: 30 }] } },
   );
   assert.equal(january.n, 31 * 24);
   assert.ok(Number.isNaN(january.values[31 * 24]));

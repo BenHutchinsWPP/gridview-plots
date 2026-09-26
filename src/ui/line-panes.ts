@@ -13,6 +13,7 @@ import { hourLabel, timeAxisValues, timeSplits } from './chart-format';
 import { addStackedTooltip, addTooltip } from './chart-tooltip';
 import { addAxisReadout } from './chart-axis';
 import type { CaseSeries, ChartsInput } from './charts';
+import { rangeHours, type DateSet } from '../model/date-range';
 
 /** Points on the duration curve's x axis (% of interval, so cases with
  * different kept-hour counts overlay); >2 per pixel at any pane width. */
@@ -130,6 +131,10 @@ export interface LinePaneDeps {
   scaleOf(unit: string): string;
   scalesOf(series: { unit: string }[]): { scale: string; label: string }[];
   banner(body: HTMLElement, kind: 'refusal' | 'note', text: string): void;
+  /** A drag-zoom on a time pane, in hour indexes. */
+  onZoom(slot: number, min: number, max: number): void;
+  /** The dates a time pane shades over the whole year, read on every draw. */
+  slotBands: readonly (DateSet | null)[];
 }
 
 /** What one rebuild of one slot draws. */
@@ -159,6 +164,8 @@ export function createLinePanes(deps: LinePaneDeps): LinePanes {
     scaleOf,
     scalesOf,
     banner,
+    onZoom,
+    slotBands,
   } = deps;
 
   function baseOptions(
@@ -304,6 +311,40 @@ export function createLinePanes(deps: LinePaneDeps): LinePanes {
         scales.map((s) => s.scale),
       );
       markExtremes(options, [...drawable.map((s) => s.color), ...limits.map(() => null)]);
+      options.hooks = {
+        ...options.hooks,
+        // Under the lines, so the band tints the chart and hides nothing.
+        drawAxes: [
+          ...(options.hooks?.drawAxes ?? []),
+          (self) => {
+            const bands = slotBands[slot];
+            if (!bands) return;
+            const { top, height } = self.bbox;
+            const ctx = self.ctx;
+            ctx.save();
+            ctx.fillStyle = 'rgba(0, 102, 204, 0.08)';
+            ctx.strokeStyle = 'rgba(0, 102, 204, 0.45)';
+            ctx.lineWidth = devicePixelRatio || 1;
+            // One band per run of the dates.
+            for (const band of bands) {
+              const [from, to] = rangeHours(band);
+              const x0 = self.valToPos(from - 0.5, 'x', true);
+              const x1 = self.valToPos(to - 0.5, 'x', true);
+              ctx.fillRect(x0, top, Math.max(1, x1 - x0), height);
+              ctx.strokeRect(x0, top, Math.max(1, x1 - x0), height);
+            }
+            ctx.restore();
+          },
+        ],
+        setSelect: [
+          ...(options.hooks?.setSelect ?? []),
+          (self) => {
+            const { left, width } = self.select;
+            if (width < 1) return;
+            onZoom(slot, self.posToVal(left, 'x'), self.posToVal(left + width, 'x'));
+          },
+        ],
+      };
       plot = new uPlot(options, data, uplotHost);
       slotPlots[slot] = plot;
     } else {

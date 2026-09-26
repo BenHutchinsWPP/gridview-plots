@@ -1573,8 +1573,7 @@ const interfaceTableIn = (data) => ({
     let label = 'Case 1';
     const context = {
       filters: {
-        months: null,
-        daysOfMonth: null,
+        dates: null,
         hoursOfDay: null,
         daysOfWeek: null,
         seasons: null,
@@ -1628,8 +1627,7 @@ const interfaceTableIn = (data) => ({
     const [drawn] = resolveDraws(
       {
         filters: {
-          months: null,
-          daysOfMonth: null,
+          dates: null,
           hoursOfDay: null,
           daysOfWeek: null,
           seasons: null,
@@ -2264,8 +2262,7 @@ const interfaceTableIn = (data) => ({
 
   const { createBrowseScopes: makeScopes } = await import('../src/app/browse-scope.ts');
   const noHourFilters = {
-    months: null,
-    daysOfMonth: null,
+    dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
@@ -2614,8 +2611,7 @@ const interfaceTableIn = (data) => ({
   // ------------------------------------------- the resolver draws group rows
   loadGeneratorGroups(MEMBERSHIP, NAME_MAPPING, undefined);
   const NO_HOUR_FILTERS = {
-    months: null,
-    daysOfMonth: null,
+    dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
@@ -2922,8 +2918,7 @@ const interfaceTableIn = (data) => ({
   const names = new Map([['c1', { name: 'Case 1', label: 'Case 1' }]]);
   const cases = ['c1'];
   const noFilters = {
-    months: null,
-    daysOfMonth: null,
+    dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
@@ -3219,8 +3214,7 @@ const interfaceTableIn = (data) => ({
   ok('a grouped row built under a filter freezes its member set, and the spec carries it');
 
   const NO_HOUR_FILTERS = {
-    months: null,
-    daysOfMonth: null,
+    dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
@@ -3297,8 +3291,7 @@ const interfaceTableIn = (data) => ({
   assert.deepEqual(nw.members, ['AREA_AV']);
 
   const NO_HOUR_FILTERS = {
-    months: null,
-    daysOfMonth: null,
+    dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
@@ -3561,8 +3554,7 @@ const interfaceTableIn = (data) => ({
   // order: this is the text the descriptor prints, and a reader re-deriving
   // the mask from the file has to be able to trust its names.
   const NONE = {
-    months: null,
-    daysOfMonth: null,
+    dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
@@ -3570,18 +3562,28 @@ const interfaceTableIn = (data) => ({
   };
   assert.equal(filtersLabel(NONE), 'all hours');
   assert.equal(
-    filtersLabel({ ...NONE, months: new Set([3, 1]), hoursOfDay: new Set([24, 2]) }),
-    'Month: Jan, Mar · Hour (HE): 2, 24',
+    filtersLabel({ ...NONE, dates: [{ start: 50, end: 68 }], hoursOfDay: new Set([24, 2]) }),
+    'Dates: Feb 20 – Mar 10 · Hour (HE): 2, 24',
   );
   assert.equal(
     filtersLabel({
       ...NONE,
-      daysOfMonth: new Set([31]),
       daysOfWeek: new Set([6, 0]),
       seasons: new Set(['Winter']),
       tou: new Set(['OnPeak']),
     }),
-    'Day of Month: 31 · Day: Mon, Sun · Season: Winter · TOU: OnPeak',
+    'Day: Mon, Sun · Season: Winter · TOU: OnPeak',
+  );
+  assert.equal(
+    filtersLabel({
+      ...NONE,
+      dates: [
+        { start: 50, end: 52 },
+        { start: 194, end: 194 },
+      ],
+    }),
+    'Dates: Feb 20 – Feb 22, Jul 14',
+    'every run of scattered dates, for a reader re-deriving the mask',
   );
   ok('the hour filter is a sentence in the rail’s own words, values sorted, or “all hours”');
 }
@@ -4292,8 +4294,7 @@ console.log(`\n${checks} checks passed.`);
   const { createBrowseScopes } = await import('../src/app/browse-scope.ts');
   const scopes = createBrowseScopes();
   const noFilters = {
-    months: null,
-    daysOfMonth: null,
+    dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
@@ -4488,8 +4489,7 @@ console.log(`\n${checks} checks passed.`);
   const { createBrowseScopes } = await import('../src/app/browse-scope.ts');
   const scopes = createBrowseScopes();
   const filters = {
-    months: null,
-    daysOfMonth: null,
+    dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
@@ -5652,5 +5652,52 @@ console.log(`\n${checks} checks passed.`);
   assert.equal(got.get('preview').drawn, false, 'the preview line never answers for a pin');
   const capped = pinLines(['drawn'], [], 'Too many series.');
   assert.match(capped.get('drawn').reason, /more series are pinned/);
+  const byPreview = pinLines(['drawn'], [], 'Too many series.', true);
+  assert.match(byPreview.get('drawn').reason, /previewed row/, 'a preview that tips it is named');
   ok('a Selected row greys only when its line is not drawn, and says why');
+}
+
+{
+  // "(blank)" is a value like any other in a checklist, as in Excel: listed
+  // last when some cell is blank, and ticking it keeps exactly the blank rows.
+  const { distinctValues } = await import('../src/ui/value-checklist.ts');
+  const { valueLabel, BLANK_LABEL } = await import('../src/ui/browse-model.ts');
+  const zones = ['Zone 10', null, 'Zone 2', '  ', 'Zone 2'];
+  const column = {
+    key: 'list.Zone',
+    label: 'Zone',
+    kind: 'text',
+    computed: false,
+    category: true,
+    value: (row) => zones[row],
+  };
+  const tab = {
+    id: 't',
+    label: 'T',
+    rows: zones.map((_, i) => ({ id: `r${i}` })),
+    columns: [column],
+    notes: [],
+  };
+  assert.deepEqual(distinctValues(column, zones.length), ['Zone 2', 'Zone 10', '']);
+  assert.equal(valueLabel(''), BLANK_LABEL);
+  assert.deepEqual(
+    distinctValues({ ...column, value: () => 'Zone 1' }, 3),
+    ['Zone 1'],
+    'no blank cell, no (blank) entry',
+  );
+  const keep = (values) =>
+    Array.from(
+      visibleRows(tab, {
+        ...NO_VIEW,
+        filters: new Map([['list.Zone', { kind: 'values', values }]]),
+      }),
+    );
+  assert.deepEqual(keep(['']), [1, 3], 'a null and a whitespace cell are both blank');
+  assert.deepEqual(keep(['', 'Zone 2']), [1, 2, 3, 4]);
+  assert.equal(filterConstraint({ kind: 'values', values: [''] }), 'is (blank)');
+  assert.equal(
+    filterConstraint({ kind: 'values', values: ['Zone 2', ''] }),
+    'is any of (Zone 2, (blank))',
+  );
+  ok('a checklist lists (blank) last and ticking it keeps the blank rows');
 }

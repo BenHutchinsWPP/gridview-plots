@@ -38,7 +38,7 @@ const html = read('index.html');
 // ------------------------------------------------------------------- (a)
 assert.match(
   charts,
-  /export type SlotType = [^;]*'heatmap'/,
+  /export type SlotType =[^;]*'heatmap'/,
   "'heatmap' is a declared SlotType in src/ui/charts.ts",
 );
 

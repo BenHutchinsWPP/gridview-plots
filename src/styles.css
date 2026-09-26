@@ -312,10 +312,6 @@ body.is-busy {
 .sections {
   grid-row: 2;
   grid-column: 1 / -1;
-  /* The positioning context for `.sections-notes`, which floats over the
-     rail's bottom corner rather than taking a share of the panes' height.
-     This element, not `.gv-section`, because the notes show whether or not a
-     section is on screen -- see ui/shell.ts. */
   position: relative;
   display: flex;
   flex-direction: column;
@@ -383,35 +379,23 @@ body.is-busy {
 /* Every batch note and series warning, whether or not a section is on screen
    -- see ui/shell.ts for why that is the whole point of this element.
 
-   It is ABSOLUTE, so it costs the panes no height: as a flex child beside the
-   section it took up to a fifth of the window and held it until the next drop.
-   The corner is the RAIL's, not the chart grid's, and the width is the rail's
-   too -- so nothing about this card, open or collapsed, is ever over a plot.
-   The floor in that `max` is for the collapsed rail, where `--rail-width` is
-   0 and the card has nowhere to be but the chart's bottom-left margin.
-   Below the drawer's z-index, because a drawer the user opened on purpose is
-   what they are looking at. */
+   It lives at the status bar's right end, collapsed to a bubble and a count,
+   so it covers nothing until it is opened: in the rail's corner it sat over
+   the slicers. Open, the body rises over the charts' bottom right, never
+   wider than the space right of the rail, and above the browse drawer,
+   because opening it is as deliberate as opening the drawer. */
 .sections-notes {
-  position: absolute;
-  z-index: 15;
-  bottom: 12px;
-  left: 12px;
-  max-width: max(200px, calc(var(--rail-width, 320px) - 24px));
+  position: relative;
+  margin-left: auto;
+  flex: none;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  border: 1px solid var(--color-border);
-  border-left: 3px solid var(--color-accent);
-  border-radius: 0 6px 6px 0;
-  background: var(--color-bg-secondary);
+  align-items: center;
   color: var(--color-text-primary);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 24%);
-  overflow: hidden;
   user-select: text;
 }
 
 /* `display: flex` above beats the `hidden` attribute, so without this a sync
-   that cleared the notes would leave an empty card floating over the rail --
+   that cleared the notes would leave an empty bubble in the status bar --
    the same trap `.gv-section-details[hidden]` carries a rule for. */
 .sections-notes[hidden] {
   display: none;
@@ -422,20 +406,25 @@ body.is-busy {
    Collapsed, the card IS this button -- a bubble and a number. */
 .sections-notes-toggle {
   flex: none;
-  align-self: stretch;
   display: flex;
   align-items: center;
-  gap: 6px;
-  border: none;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
   background: none;
   color: var(--color-text-secondary);
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 1;
-  padding: 8px 10px;
+  padding: 3px 6px;
   text-align: left;
+}
+
+.sections-notes[data-collapsed='false'] .sections-notes-toggle {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .sections-notes-toggle:hover {
@@ -453,10 +442,21 @@ body.is-busy {
 .sections-notes-body {
   /* One element holding every note, newline-separated -- see ui/shell.ts. */
   white-space: pre-line;
+  position: absolute;
+  z-index: 30;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: max-content;
+  max-width: min(520px, calc(100vw - var(--rail-width, 320px) - 32px));
   margin: 0;
   max-height: 40vh;
   overflow-y: auto;
-  padding: 0 10px 10px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--color-bg-secondary);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 24%);
   font-size: 12px;
   line-height: 1.5;
   text-align: left;
@@ -512,9 +512,78 @@ body.is-busy {
   margin-bottom: 8px;
 }
 
+/* A rail section that folds to its title (the Filters). */
+.gv-section .rail-collapsible > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.gv-section .rail-collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+.gv-section .rail-collapsible > summary::before {
+  content: '▾';
+  width: 10px;
+}
+.gv-section .rail-collapsible:not([open]) > summary::before {
+  content: '▸';
+}
+.gv-section .rail-collapsible:not([open]) > summary {
+  margin-bottom: 0;
+}
+.gv-section .rail-collapsible > summary:hover {
+  color: var(--color-accent);
+}
+.gv-section .rail-section-on {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--color-accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gv-section .filter-group {
+  margin-bottom: 10px;
+}
+
+/* A filter's name on the left and its clear on the right edge, so every
+   clear sits in one column and none crowds its label. */
+.gv-section .filter-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+/* A text control, not a boxed button: it acts on the label beside it. */
+.gv-section .filter-clear {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--color-accent);
+  font-size: 11px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.gv-section .filter-clear:hover:not(:disabled) {
+  background: var(--color-bg-primary);
+  text-decoration: underline;
+}
+
 /* Disabled means "this filter is already unset" -- the button stays in place
  * rather than disappearing, so the row does not reflow on every click. */
 .gv-section .filter-clear:disabled {
+  color: var(--color-text-secondary);
   opacity: 0.35;
   cursor: default;
 }
@@ -596,6 +665,19 @@ body.is-busy {
   min-width: 0;
 }
 
+/* A time pane's year overview (src/ui/year-overview.ts). Out of the body, so
+   showing it shrinks the body and the chart refits. */
+.gv-section .pane-overview {
+  flex: 0 0 56px;
+  border-top: 1px solid var(--color-border-light);
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+}
+.gv-section .pane-overview svg {
+  display: block;
+}
+
 /* Status Bar */
 .status-bar {
   grid-column: 1 / -1;
@@ -609,6 +691,8 @@ body.is-busy {
 }
 
 #status-text {
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: 'Monaco', 'Menlo', monospace;
   white-space: nowrap;
   overflow: hidden;
@@ -668,12 +752,6 @@ body.is-busy {
   color: #ffffff;
 }
 
-.gv-section [data-el='month-chips'] {
-  grid-template-columns: repeat(6, 1fr);
-}
-.gv-section [data-el='day-of-month-chips'] {
-  grid-template-columns: repeat(8, 1fr);
-}
 .gv-section [data-el='hour-chips'] {
   grid-template-columns: repeat(12, 1fr);
 }
@@ -685,6 +763,155 @@ body.is-busy {
 }
 .gv-section [data-el='tou-chips'] {
   grid-template-columns: repeat(2, 1fr);
+}
+
+/* The date strip (src/ui/date-strip.ts) */
+.gv-section .date-strip {
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-primary);
+  padding: 8px;
+}
+.gv-section .ds-range-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+.gv-section .ds-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+.gv-section .ds-field span {
+  font-size: 10px;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.gv-section .ds-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: 12px var(--font-family);
+  padding: 3px 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+}
+.gv-section .ds-input.ds-bad {
+  border-color: #c62828;
+  background: #fdecec;
+}
+.gv-section .ds-btn {
+  font: 11px var(--font-family);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  border-radius: 3px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+.gv-section .ds-btn:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.gv-section .ds-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.gv-section .ds-step {
+  padding: 3px 7px;
+  font-size: 12px;
+}
+.gv-section .ds-presets {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 8px 0 6px;
+}
+.gv-section .ds-hint {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--color-text-secondary);
+}
+.gv-section .ds-strip {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  row-gap: 2px;
+  user-select: none;
+  touch-action: none;
+  border-radius: 3px;
+  padding: 2px;
+}
+.gv-section .ds-strip:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.gv-section .ds-month {
+  font: 600 11px var(--font-family);
+  color: var(--color-text-secondary);
+  background: none;
+  border: none;
+  text-align: left;
+  padding: 0 2px;
+  cursor: pointer;
+  line-height: 14px;
+}
+.gv-section .ds-month:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.gv-section .ds-month.ds-whole {
+  color: var(--color-accent);
+  font-weight: 700;
+}
+.gv-section .ds-days {
+  display: grid;
+  grid-template-columns: repeat(31, 1fr);
+  gap: 1px;
+}
+.gv-section .ds-day {
+  height: 14px;
+  background: #eceff3;
+  cursor: pointer;
+}
+.gv-section .ds-day.ds-weekend {
+  background: #dce1e8;
+}
+.gv-section .ds-day.ds-in {
+  background: #7fb2e5;
+}
+.gv-section .ds-day.ds-edge {
+  background: var(--color-accent);
+}
+.gv-section .ds-day.ds-hover {
+  outline: 1px solid #004c99;
+}
+.gv-section .ds-readout {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 8px;
+  margin-top: 6px;
+  font:
+    11px 'Monaco',
+    'Menlo',
+    monospace;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.gv-section .ds-readout span {
+  white-space: nowrap;
+}
+.gv-section .ds-readout b {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.gv-section .ds-note {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  line-height: 1.45;
+  margin: 6px 0 0;
 }
 
 /* Pane headers and inline warnings */
@@ -2606,6 +2833,39 @@ body.is-busy {
   color: var(--color-text-secondary);
   font-size: 11px;
 }
+/* The heading and the 1 | 2 column pick on one line. */
+.slicer-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.slicer-top[hidden] {
+  display: none;
+}
+.slicer-layout {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.slicer-layout-btn {
+  min-width: 22px;
+  padding: 1px 6px;
+  border: none;
+  background: none;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.slicer-layout-btn + .slicer-layout-btn {
+  border-left: 1px solid var(--color-border);
+}
+.slicer-layout-btn[aria-pressed='true'] {
+  background: var(--color-accent);
+  color: #fff;
+}
 .slicer-list {
   display: flex;
   flex-direction: column;
@@ -2641,6 +2901,24 @@ body.is-busy {
 .slicer-body .browse-filter-checklist {
   max-height: 180px;
 }
+/* Two columns, balanced: each slicer is as tall as its own list and packs up
+   under the one above it, never split across the columns. */
+.slicer-list.slicer-list-two {
+  display: block;
+  column-count: 2;
+  column-gap: 8px;
+}
+.slicer-list-two .slicer {
+  break-inside: avoid;
+  margin-bottom: 8px;
+}
+.slicer-list-two .browse-filter-checklist-actions {
+  flex-wrap: wrap;
+}
+.slicer-list-two .browse-filter-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .browse-filter-slicer {
   margin-top: 6px;
 }
@@ -2658,4 +2936,10 @@ body.is-busy {
   max-width: 100%;
   padding: 0;
   height: 20px;
+}
+
+/* "(blank)" is not a value the file carried: set apart from the real ones. */
+.browse-filter-blank span {
+  font-style: italic;
+  color: var(--color-text-secondary);
 }

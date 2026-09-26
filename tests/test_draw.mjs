@@ -47,8 +47,7 @@ function ok(label) {
 }
 
 const NO_FILTERS = {
-  months: null,
-  daysOfMonth: null,
+  dates: null,
   hoursOfDay: null,
   daysOfWeek: null,
   seasons: null,
@@ -472,7 +471,7 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     { ...ref, id: `${ref.kind} | p.u.`, perUnit: true },
   ]);
   // A month filter, so masked hours are in play.
-  ctx.filters = { ...NO_FILTERS, months: new Set([1]) };
+  ctx.filters = { ...NO_FILTERS, dates: [{ start: 0, end: 30 }] };
   const drawn = resolveDraws(
     ctx,
     refs.map((ref) => pin(ref)),

@@ -90,6 +90,9 @@ export interface ManifestV3 {
   /** Each chart pane's box dimension, by pane. Absent in older bundles, which
    * restore every pane by Case. */
   boxDims?: readonly string[];
+  /** Each chart pane's interval settings, by pane. Absent in older bundles,
+   * whose interval panes start on the defaults. */
+  intervals?: readonly SavedInterval[];
   /** The drawer's dragged height in pixels; absent on a detent. Optional. */
   drawerHeight?: number;
   /** Generator group map, by GeneratorList name, with its column mapping. */
@@ -213,6 +216,15 @@ function cubeBytesOf(cube: Float32Array): Uint8Array<ArrayBuffer> {
   return new Uint8Array(cube.buffer as ArrayBuffer, cube.byteOffset, cube.byteLength);
 }
 
+/** One pane's interval settings as saved: plain values, checked on
+ * restore by the chart module, which knows what each may be. */
+export interface SavedInterval {
+  readonly length: string;
+  readonly colour: string;
+  readonly mean: boolean;
+  readonly band: boolean;
+}
+
 /**
  * Everything a bundle carries besides the Cases, all optional. Defaults are
  * the EMPTY session, never a live read: the caller states what to save, and
@@ -224,6 +236,8 @@ export interface BundleContents extends Partial<SessionReference> {
   readonly layout?: readonly string[];
   /** Each chart pane's box dimension, by pane. */
   readonly boxDims?: readonly string[];
+  /** Each chart pane's interval settings. */
+  readonly intervals?: readonly SavedInterval[];
   /** The drawer's dragged height in pixels; null when it sits on a detent. */
   readonly drawerHeight?: number | null;
   /** The session's inventory, keyed by live Case id; written by index. */
@@ -249,6 +263,7 @@ export function buildManifest(
     selections = [],
     layout = ['time', 'duration', 'box', 'stacked'],
     boxDims = [],
+    intervals = [],
     drawerHeight = null,
     inventory,
   } = contents;
@@ -319,6 +334,9 @@ export function buildManifest(
   }
   if (boxDims.length > 0) {
     manifest.boxDims = boxDims;
+  }
+  if (intervals.length > 0) {
+    manifest.intervals = intervals;
   }
   if (drawerHeight !== null) {
     manifest.drawerHeight = drawerHeight;

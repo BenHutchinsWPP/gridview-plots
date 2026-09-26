@@ -8,6 +8,7 @@
 //     consumed so later tables stay aligned.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import './test_loader.mjs';
 import { AREAS } from './test_fixtures.mjs';
@@ -711,6 +712,25 @@ check('each pane’s box dimension round-trips, and an older bundle carries none
   assert.equal(bundle.boxDims, undefined, 'and the restore starts every pane by Case');
 });
 
+check('each pane’s interval settings round-trip, and an older bundle carries none', () => {
+  const intervals = [
+    { length: 'week', colour: 'month', mean: false, band: true },
+    { length: 'day', colour: 'weekday', mean: true, band: false },
+    { length: 'month', colour: 'time', mean: true, band: true },
+    { length: 'day', colour: 'time', mean: true, band: false },
+  ];
+  const { manifest, cubes } = buildManifest([studyCase()], { intervals });
+  const wire = JSON.parse(JSON.stringify(manifest));
+  assert.deepEqual(wire.intervals, intervals);
+  assert.deepEqual(restoreBundle(wire, toCaseBlocks(wire, cubes)).intervals, intervals);
+  const { wire: older, bundle } = roundTrip([studyCase()], GROUPINGS_CSV);
+  assert.equal(older.intervals, undefined, 'no field is written when none is given');
+  assert.equal(bundle.intervals, undefined, 'and the restore starts interval panes on defaults');
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.match(main, /intervals: charts\.intervals\(\)/, 'a save writes them');
+  assert.match(main, /charts\.setIntervals\(loaded\.intervals\)/, 'a restore adopts them');
+});
+
 check('the drawer’s dragged height round-trips, and a detent bundle carries none', () => {
   const original = studyCase();
   const dragged = roundTrip([original], GROUPINGS_CSV, new Map(), [], undefined, 611);
@@ -818,8 +838,7 @@ function drawPins(store, pins) {
   return resolveDraws(
     {
       filters: {
-        months: null,
-        daysOfMonth: null,
+        dates: null,
         hoursOfDay: null,
         daysOfWeek: null,
         seasons: null,

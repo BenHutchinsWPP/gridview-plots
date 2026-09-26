@@ -30,9 +30,10 @@ import { STACKED_PANE } from './stacked';
 import { TIME_PANE } from './time';
 import { heatmapPane } from './heatmap';
 import { xyPane } from './xy';
+import { intervalPane, type FigureInterval } from './interval';
 
 /** Pane types that export. Grows as each pane type gets a renderer. */
-export type FigurePane = 'time' | 'duration' | 'stacked' | 'box' | 'xy' | 'heatmap';
+export type FigurePane = 'time' | 'duration' | 'stacked' | 'box' | 'xy' | 'heatmap' | 'interval';
 
 /** Width and height in inches. */
 export interface FigureSize {
@@ -111,6 +112,9 @@ export interface FigureCapture {
   /** The X-Y pane's state; required for an X-Y figure, whose first two
    * lines are the pair in the pane's order, X then Y. */
   readonly xy?: { readonly fit: boolean };
+  /** The interval pane's settings; required for an interval figure, whose
+   * first line is the series it cut. */
+  readonly interval?: FigureInterval;
 }
 
 export interface FigureInput extends FigureCapture {
@@ -122,7 +126,9 @@ export interface FigureInput extends FigureCapture {
   readonly measureText: (text: string, fontPt: number) => number;
   /** Per-export replacements by text id (`context`, `legend[r][c]`,
    * `legend[r][under]`, `footnote[i]`, `axis.x`, `axis.y[side]`, a heatmap's
-   * `axis.color`, `caption`).
+   * `axis.color`, an interval key's `legend.from`, `legend.to`,
+   * `legend.key[i]`, `legend.mean`, `legend.band` and `legend.picked`,
+   * `caption`).
    * Never remembered: the next figure starts from the app's own labels. */
   readonly edits?: Readonly<Record<string, string>>;
 }
@@ -242,6 +248,7 @@ const PANES: Record<
   box: (capture, drawnIndex) => boxPane(capture.boxes, drawnIndex),
   xy: (capture, drawnIndex) => xyPane(capture, drawnIndex),
   heatmap: (capture, drawnIndex) => heatmapPane(capture, drawnIndex),
+  interval: (capture, drawnIndex) => intervalPane(capture, drawnIndex),
 };
 
 // Text in points at the figure's final size.

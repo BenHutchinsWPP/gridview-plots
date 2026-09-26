@@ -141,13 +141,19 @@ export function buildMask(
   out?: Uint8Array,
 ): Uint8Array {
   const mask = out ?? new Uint8Array(calendar.length);
-  const { months, daysOfMonth, hoursOfDay, daysOfWeek: daysOfWeekFilter, seasons, tou } = filters;
+  const { dates, hoursOfDay, daysOfWeek: daysOfWeekFilter, seasons, tou } = filters;
+  // Day d is hours 24d … 24d + 23 in every year, so a day's hours need no
+  // calendar lookup.
+  let days: Uint8Array | null = null;
+  if (dates !== null) {
+    days = new Uint8Array(Math.ceil(calendar.length / 24));
+    for (const run of dates) days.fill(1, run.start, run.end + 1);
+  }
 
   for (let h = 0; h < calendar.length; h++) {
     const entry = calendar[h];
     let keep = 1;
-    if (months !== null && !months.has(getMonth(entry))) keep = 0;
-    else if (daysOfMonth !== null && !daysOfMonth.has(getDayOfMonth(entry))) keep = 0;
+    if (days !== null && days[Math.floor(h / 24)] === 0) keep = 0;
     else if (daysOfWeekFilter !== null && !daysOfWeekFilter.has(getDayOfWeek(entry))) keep = 0;
     else if (hoursOfDay !== null && !hoursOfDay.has(getHourOfDay(entry))) keep = 0;
     else if (seasons !== null && !seasons.has(SEASON_NAMES[getSeason(entry)])) keep = 0;

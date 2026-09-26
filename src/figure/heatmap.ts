@@ -38,7 +38,7 @@ const INK = '#333333';
 const SEAM_PT = 0.25;
 
 /** The pane's `rgb(r,g,b)` as hex, which every SVG reader takes. */
-function hex(color: string): string {
+export function hex(color: string): string {
   const match = /^rgb\((\d+),(\d+),(\d+)\)$/.exec(color);
   if (!match) return color;
   return `#${match

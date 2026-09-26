@@ -508,6 +508,9 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
     writeCount(tab, view, order);
     if (!rebuilt && tab === shownTab && sameOrder(shownOrder, order)) {
       restyle();
+      // No row was removed, so there is nothing to put back; kept, a later
+      // reload would pull focus from wherever the analyst went since.
+      if (loading === 0) pendingCell = undefined;
       return;
     }
     shownTab = tab;

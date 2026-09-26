@@ -91,8 +91,7 @@ check('2034-07-04 is a Tuesday', () => {
 check('mask for August, weekdays, HE 7-22 has a hand-computed count', () => {
   const calendar = buildCalendar(2035);
   const filters = {
-    months: new Set([8]),
-    daysOfMonth: null,
+    dates: [{ start: 212, end: 242 }], // August
     hoursOfDay: new Set([7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]),
     daysOfWeek: new Set([0, 1, 2, 3, 4]), // Monday..Friday
     seasons: null,
@@ -110,34 +109,51 @@ check('mask for August, weekdays, HE 7-22 has a hand-computed count', () => {
   assert.equal(kept, expected);
 });
 
-// --- 3b. Day of month ---------------------------------------------------
+// --- 3b. Dates -------------------------------------------------------------
 //
-// 31 chips are offered whatever the month, so a high day is not an error: it
-// simply keeps fewer hours once the shorter months are in play.
+// Every Case drops Feb 29, so day d is hours 24d … 24d + 23 in any year: a
+// range keeps the same hours in a 2035 and a 2045 calendar, though their
+// weekdays differ.
 
-check('day-of-month mask keeps only the named days of each month', () => {
-  const calendar = buildCalendar(2035);
+check('a date range keeps the same hours in every year, and intersects', () => {
   const touBitmap = new Uint8Array(HOURS_PER_YEAR); // unused: filters.tou is null
-  const base = { months: null, hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
-  const count = (mask) => {
-    let kept = 0;
-    for (let h = 0; h < mask.length; h++) kept += mask[h];
-    return kept;
-  };
+  const base = { hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
+  const kept = (mask) => [...mask.keys()].filter((h) => mask[h] === 1);
 
-  const firsts = buildMask({ ...base, daysOfMonth: new Set([1]) }, calendar, touBitmap);
-  assert.equal(count(firsts), 12 * 24, 'the 1st of every month');
-
-  const thirtyFirsts = buildMask({ ...base, daysOfMonth: new Set([31]) }, calendar, touBitmap);
-  assert.equal(count(thirtyFirsts), 7 * 24, 'only the 31-day months have a 31st');
+  // Feb 20 (day 50) to Mar 10 (day 68): 19 days.
+  const dates = [{ start: 50, end: 68 }];
+  const in2035 = kept(buildMask({ ...base, dates }, buildCalendar(2035), touBitmap));
+  const in2045 = kept(buildMask({ ...base, dates }, buildCalendar(2045), touBitmap));
+  assert.equal(in2035.length, 19 * 24);
+  assert.deepEqual(in2045, in2035, 'the same hours whatever the year');
+  assert.equal(in2035[0], 50 * 24, 'from HE 1 of Feb 20');
+  assert.equal(in2035.at(-1), 69 * 24 - 1, 'to HE 24 of Mar 10');
+  const first = buildCalendar(2035)[in2035[0]];
+  assert.equal([getMonth(first), getDayOfMonth(first)].join('/'), '2/20');
 
   // It intersects with the other dimensions rather than replacing them.
   const narrow = buildMask(
-    { ...base, months: new Set([8]), daysOfMonth: new Set([1, 2, 3]), hoursOfDay: new Set([17]) },
-    calendar,
+    { ...base, dates: [{ start: 212, end: 214 }], hoursOfDay: new Set([17]) },
+    buildCalendar(2035),
     touBitmap,
   );
-  assert.equal(count(narrow), 3, 'Aug 1-3, HE 17');
+  assert.equal(kept(narrow).length, 3, 'Aug 1-3, HE 17');
+});
+
+check('scattered dates keep each run’s hours, the same in every year', () => {
+  const touBitmap = new Uint8Array(HOURS_PER_YEAR);
+  const base = { hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
+  const kept = (mask) => [...mask.keys()].filter((h) => mask[h] === 1);
+  // Feb 20, Jul 14 and Aug 3: three days, 72 hours.
+  const dates = [
+    { start: 50, end: 50 },
+    { start: 194, end: 194 },
+    { start: 214, end: 214 },
+  ];
+  const in2035 = kept(buildMask({ ...base, dates }, buildCalendar(2035), touBitmap));
+  assert.equal(in2035.length, 72);
+  assert.deepEqual(kept(buildMask({ ...base, dates }, buildCalendar(2045), touBitmap)), in2035);
+  assert.deepEqual([in2035[0], in2035[24], in2035[48]], [50 * 24, 194 * 24, 214 * 24]);
 });
 
 // --- 4. Groupings ---------------------------------------------------------

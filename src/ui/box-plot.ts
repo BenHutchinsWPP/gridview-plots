@@ -144,9 +144,9 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
 
-    const groups: BoxGroup[] = (input.boxes[slotIndex] ?? []).filter((group) =>
-      group.boxes.some((box) => box.quantiles.n > 0),
-    );
+    const groups: BoxGroup[] = input
+      .boxes(slotIndex)
+      .filter((group) => group.boxes.some((box) => box.quantiles.n > 0));
     if (groups.length === 0) {
       slotBoxGeometry[slotIndex] = null;
       slotBoxHits[slotIndex] = [];

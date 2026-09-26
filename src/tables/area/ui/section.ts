@@ -15,17 +15,13 @@
 // one template, and a global id lookup works until a second one mounts,
 // which is what lets the mistake survive review.
 
-import {
-  DAY_NAMES,
-  HOURS_PER_YEAR,
-  MONTH_NAMES,
-  SEASON_NAMES,
-  TOU_LABELS,
-} from '../../../model/calendar';
+import { DAY_NAMES, HOURS_PER_YEAR, SEASON_NAMES, TOU_LABELS } from '../../../model/calendar';
+import { setLabel, type DateSet } from '../../../model/date-range';
 import type { Filters, PaneView } from '../../../model/types';
 import type { AreaQuery, BoxDim } from '../types';
 import { scaleOf, scalesOf } from '../rules';
 import { createChipGrid } from '../../../ui/chips';
+import { createDateStrip } from '../../../ui/date-strip';
 import { within } from '../../../ui/dom';
 import { registerKeys } from '../../../ui/shell';
 import { createCharts, type Charts, type ChartsHooks, type SlotType } from '../../../ui/charts';
@@ -36,11 +32,21 @@ export interface AreaSectionHandlers {
 }
 
 export interface AreaSection {
-  render(query: AreaQuery): void;
+  /** `years`: the loaded Cases' distinct years, for the date strip. */
+  render(query: AreaQuery, years: readonly number[]): void;
 }
 
 /** The four pane hooks, spelled out (see src/ui/charts.ts). */
 const PANE_HOOKS = ['[data-pane="1"]', '[data-pane="2"]', '[data-pane="3"]', '[data-pane="4"]'];
+
+/** Each filter by its rail label, in rail order, for the collapsed title. */
+const FILTER_NAMES: Record<keyof Filters, string> = {
+  dates: 'Dates',
+  hoursOfDay: 'Hour',
+  daysOfWeek: 'Day',
+  seasons: 'Season',
+  tou: 'TOU',
+};
 
 /** Collapse a selection into runs: {1,2,3,7} over Jan..Dec -> "Jan–Mar, Jul". */
 function summarise<T>(
@@ -79,19 +85,14 @@ function summarise<T>(
  * decks, and a screenshot that states its own filters cannot be misread. */
 export function statusSentence(query: AreaQuery, keptHours: number): string {
   const { filters } = query;
-  const months = Array.from({ length: 12 }, (_, i) => i + 1);
   const hours = Array.from({ length: 24 }, (_, i) => i + 1);
   const days = Array.from({ length: 7 }, (_, i) => i);
 
   const parts = [
     `${keptHours.toLocaleString()} of ${HOURS_PER_YEAR.toLocaleString()} h`,
-    summarise(filters.months, months, (m) => MONTH_NAMES[m - 1], 'all months'),
+    filters.dates === null ? 'all dates' : setLabel(filters.dates, 4),
     summarise(filters.daysOfWeek, days, (d) => DAY_NAMES[d], 'all days'),
   ];
-  if (filters.daysOfMonth !== null) {
-    const daysOfMonth = Array.from({ length: 31 }, (_, i) => i + 1);
-    parts.push(`day ${summarise(filters.daysOfMonth, daysOfMonth, String, 'all')}`);
-  }
   if (filters.hoursOfDay !== null) {
     parts.push(`HE ${summarise(filters.hoursOfDay, hours, String, 'all')}`);
   }
@@ -130,16 +131,8 @@ function createAreaSection(root: HTMLElement, handlers: AreaSectionHandlers): Ar
   }
 
   // ------------------------------------------------------------ chip grids
-  const monthChips = createChipGrid(
-    within(root, '[data-el="month-chips"]'),
-    MONTH_NAMES.map((label, index) => ({ value: index + 1, label })),
-    (next) => handlers.onFiltersChange({ months: next }),
-  );
-  // 31 chips whatever the month; the 31st simply keeps fewer hours.
-  const dayOfMonthChips = createChipGrid(
-    within(root, '[data-el="day-of-month-chips"]'),
-    Array.from({ length: 31 }, (_, i) => ({ value: i + 1, label: String(i + 1) })),
-    (next) => handlers.onFiltersChange({ daysOfMonth: next }),
+  const dateStrip = createDateStrip(within(root, '[data-el="date-strip"]'), (dates) =>
+    handlers.onFiltersChange({ dates }),
   );
   const hourChips = createChipGrid(
     within(root, '[data-el="hour-chips"]'),
@@ -164,8 +157,7 @@ function createAreaSection(root: HTMLElement, handlers: AreaSectionHandlers): Ar
 
   function resetFilters(): void {
     handlers.onFiltersChange({
-      months: null,
-      daysOfMonth: null,
+      dates: null,
       hoursOfDay: null,
       daysOfWeek: null,
       seasons: null,
@@ -178,6 +170,7 @@ function createAreaSection(root: HTMLElement, handlers: AreaSectionHandlers): Ar
   // Per-filter clear, one delegated listener. Clearing commits the same null
   // "no constraint" a full chip selection does (src/model/types.ts).
   const filtersSection = within(root, '[data-el="filters-section"]');
+  const filtersOn = within(root, '[data-el="filters-on"]');
   filtersSection.addEventListener('click', (event) => {
     const key = (event.target as HTMLElement).closest<HTMLElement>('.filter-clear')?.dataset.filter;
     if (key) handlers.onFiltersChange({ [key]: null } as Partial<Filters>);
@@ -232,9 +225,8 @@ function createAreaSection(root: HTMLElement, handlers: AreaSectionHandlers): Ar
 
   // ------------------------------------------------------------ render
   return {
-    render(query) {
-      monthChips.render(query.filters.months);
-      dayOfMonthChips.render(query.filters.daysOfMonth);
+    render(query, years) {
+      dateStrip.render(query.filters.dates, years);
       hourChips.render(query.filters.hoursOfDay);
       dayChips.render(query.filters.daysOfWeek);
       seasonChips.render(query.filters.seasons);
@@ -242,6 +234,10 @@ function createAreaSection(root: HTMLElement, handlers: AreaSectionHandlers): Ar
       for (const button of filtersSection.querySelectorAll<HTMLButtonElement>('.filter-clear')) {
         button.disabled = query.filters[button.dataset.filter as keyof Filters] === null;
       }
+      const on = (Object.keys(FILTER_NAMES) as (keyof Filters)[])
+        .filter((key) => query.filters[key] !== null)
+        .map((key) => FILTER_NAMES[key]);
+      filtersOn.textContent = on.length === 0 ? '' : `· ${on.join(', ')}`;
     },
   };
 }
@@ -271,7 +267,8 @@ export function mountAreaSection(
     onBoxDimChange(pane: number, dim: BoxDim): void;
     initialLayout?: readonly SlotType[];
     onLayoutChange?: (layout: readonly SlotType[]) => void;
-    onFigure?: (capture: FigureCapture) => void;
+    onFigure?: (capture: FigureCapture, shown: { wholeYear: boolean }) => void;
+    onDatesChange?: (dates: DateSet) => void;
   },
 ): AreaSectionHandle {
   return {
@@ -284,6 +281,7 @@ export function mountAreaSection(
         initialLayout: handlers.initialLayout,
         onLayoutChange: handlers.onLayoutChange,
         onFigure: handlers.onFigure,
+        onDatesChange: handlers.onDatesChange,
       },
     ),
   };

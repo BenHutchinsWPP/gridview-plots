@@ -1110,8 +1110,7 @@ function busDrawn(kv) {
   };
   const context = {
     filters: {
-      months: null,
-      daysOfMonth: null,
+      dates: null,
       hoursOfDay: null,
       daysOfWeek: null,
       seasons: null,
@@ -1155,6 +1154,96 @@ ok('a bus figure key reads `number name kV`, and states no kV the BusList does n
 });
 
 let passed = 0;
+
+// ------------------------------------------------------------ interval
+
+function intervalFigure(lines, interval = {}, over = {}) {
+  return build(lines, {
+    pane: 'interval',
+    xWindow: [0, 1],
+    interval: {
+      length: 'day',
+      colour: 'time',
+      mean: true,
+      band: false,
+      picked: null,
+      // 2035's, which opens on a Monday.
+      weekdays: Array.from({ length: 365 }, (_, day) => day % 7),
+      ...interval,
+    },
+    ...over,
+  });
+}
+/** Stroked polylines, by colour. */
+const polylines = (svg) =>
+  [...svg.matchAll(/<path d="[^"]*" fill="none" stroke="(#[0-9a-f]{6})"/g)].map((m) => m[1]);
+
+const shaped = () =>
+  Float32Array.from({ length: H }, (_, h) => 100 + (h % 24) + Math.floor(h / 24));
+
+ok('an interval figure draws one line per period, and the mean, with no opacity or clip', () => {
+  const figure = intervalFigure([line({ values: shaped() })]);
+  // 365 day lines plus the mean.
+  assert.equal(polylines(figure.svg).length, 366);
+  assert.ok(polylines(figure.svg).includes('#1a1a1a'), 'the mean in black');
+  assert.ok(!/opacity|clipPath/.test(figure.svg), 'tints and cropping, not opacity or a clip');
+  assert.equal(textOf(figure, 'axis.x'), 'Hour ending');
+  assert.match(figure.caption, /^Daily profiles of /);
+  assert.equal(textOf(figure, 'legend.from'), 'Mon Jan 1');
+  assert.equal(textOf(figure, 'legend.to'), 'Mon Dec 31');
+  assert.match(
+    footnotes(figure)[0],
+    /^Each line is one day, 365 days in all, coloured from the earliest/,
+  );
+});
+
+ok('an interval figure names ten picked days in their own colours, and ramps eleven', () => {
+  const only = (days) => {
+    const values = new Float32Array(H).fill(NaN);
+    for (const d of days) for (let h = 0; h < 24; h++) values[d * 24 + h] = 100 + h;
+    return values;
+  };
+  const three = intervalFigure([line({ values: only([50, 194, 214]) })]);
+  assert.equal(textOf(three, 'legend.key[0]'), 'Tue Feb 20');
+  assert.equal(textOf(three, 'legend.key[2]'), 'Fri Aug 3');
+  assert.equal(textOf(three, 'legend.from'), undefined, 'no ramp');
+  const colours = new Set(polylines(three.svg).filter((c) => c !== '#1a1a1a'));
+  assert.equal(colours.size, 3, 'three distinct colours');
+  assert.equal(footnotes(three)[0], 'Each line is one day, 3 days in all.');
+  const eleven = intervalFigure([line({ values: only([...Array(11).keys()]) })]);
+  assert.equal(textOf(eleven, 'legend.from'), 'Mon Jan 1', 'eleven days take the ramp');
+});
+
+ok('an interval figure draws one series and footnotes the others', () => {
+  const other = line({ facets: { subject: 'SOUTH_PATH' }, color: '#ff7f0e' });
+  const figure = intervalFigure([
+    line({ values: shaped() }),
+    { ...other, values: null, refusal: 'An interval chart draws one series.' },
+  ]);
+  assert.ok(
+    footnotes(figure).includes('Not drawn: SOUTH_PATH. An interval chart draws one series.'),
+    footnotes(figure).join(' | '),
+  );
+  assert.match(textOf(figure, 'context'), /NORTH_PATH$/, 'the series is named in the context line');
+});
+
+ok(
+  'an interval figure keys weeks by month, a band and the picked period, every text editable',
+  () => {
+    const figure = intervalFigure(
+      [line({ values: shaped() })],
+      { length: 'week', colour: 'month', band: true, picked: 'week of Feb 5' },
+      { edits: { 'legend.band': 'p10 to p90' } },
+    );
+    assert.equal(textOf(figure, 'legend.key[0]'), 'Jan');
+    assert.equal(textOf(figure, 'legend.picked'), 'week of Feb 5');
+    assert.equal(textOf(figure, 'legend.band'), 'p10 to p90');
+    assert.ok(svgTexts(figure.svg).includes('p10 to p90'), 'the edit is what is drawn');
+    assert.ok(footnotes(figure).includes('Weeks run Monday to Sunday.'));
+    assert.equal(textOf(figure, 'axis.x'), undefined, 'a week is titled by its day names');
+  },
+);
+
 for (const [name, fn] of checks) {
   fn();
   passed++;

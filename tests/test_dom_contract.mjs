@@ -1207,3 +1207,47 @@ console.log(
     'ok - a Figure button in every pane header, hidden on a refused pane, and a body-level dialog with one Escape',
   );
 }
+
+// The date strip is the rail's month and day filter. It is a focusable
+// div, which the shell's one keydown owner does not skip, so its arrows stop
+// on the strip. A pane's zoom and the dates set each other, so a range a pane
+// reports is dropped when it is the one already applied.
+{
+  assert.ok(template.includes('data-el="date-strip"'), 'the rail has the date strip');
+  for (const gone of ['month-chips', 'day-of-month-chips', 'data-filter="months"']) {
+    assert.ok(!template.includes(gone), `${gone} is gone from the template`);
+  }
+  const strip = read('src/ui/date-strip.ts');
+  const keys = strip.slice(strip.indexOf("strip.addEventListener('keydown'"));
+  assert.match(
+    keys.slice(0, keys.indexOf('\n  });')),
+    /event\.stopPropagation\(\)/,
+    'arrow keys on the strip stop there',
+  );
+  assert.match(
+    strip,
+    /strip\.addEventListener\('contextmenu', \(event\) => event\.preventDefault\(\)\)/,
+    'a Ctrl-click on the strip opens no menu on macOS, where it is a right-click',
+  );
+  const charts = read('src/ui/charts.ts');
+  const guard = charts.slice(charts.indexOf('function datesFromPane'));
+  assert.match(
+    guard.slice(0, guard.indexOf('\n  }')),
+    /sameSet\(dates, lastInput\.dates\)\) return;/,
+    'a pane reporting the dates already applied is a no-op',
+  );
+  console.log('ok - the date strip keeps its arrows, and a pane re-reporting the dates is a no-op');
+}
+
+// The Filters fold to their title, so the slicers below them can be reached
+// without scrolling past every chip. Open by default, and the folded title
+// names the filters that are on.
+{
+  assert.match(
+    template,
+    /<details data-el="filters-section" class="rail-section rail-collapsible" open>/,
+    'the Filters are a <details>, open by default',
+  );
+  assert.ok(template.includes('data-el="filters-on"'), 'its title carries the filters that are on');
+  console.log('ok - the Filters fold to a title that still names the filters that are on');
+}

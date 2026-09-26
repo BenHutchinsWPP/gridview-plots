@@ -4,13 +4,8 @@
 // cases, under the hour filter. The same arithmetic for every kind, generic
 // over the kind's row type so this module never learns what it holds.
 
-import {
-  buildCalendar,
-  buildMask,
-  DAY_NAMES,
-  HOURS_PER_YEAR,
-  MONTH_NAMES,
-} from '../model/calendar';
+import { buildCalendar, buildMask, DAY_NAMES, HOURS_PER_YEAR } from '../model/calendar';
+import { setLabel } from '../model/date-range';
 import type { Filters } from '../model/types';
 
 /** What every kind's row already is, and all this scoping needs. */
@@ -74,8 +69,8 @@ function filtersKey(filters: Filters): string {
   const part = (set: ReadonlySet<number | string> | null): string =>
     set === null ? '*' : [...set].map(String).sort().join('+');
   return [
-    part(filters.months),
-    part(filters.daysOfMonth),
+    // Every run: a key naming only the first would keep the old ranking.
+    filters.dates === null ? '*' : filters.dates.map((run) => `${run.start}-${run.end}`).join(','),
     part(filters.hoursOfDay),
     part(filters.daysOfWeek),
     part(filters.seasons),
@@ -94,10 +89,7 @@ export function filtersLabel(filters: Filters): string {
   const words = (set: ReadonlySet<string> | null): string =>
     set === null ? '' : [...set].sort().join(', ');
   const parts: string[] = [];
-  const months = filters.months && [...filters.months].sort((a, b) => a - b);
-  if (months) parts.push(`Month: ${months.map((m) => MONTH_NAMES[m - 1] ?? m).join(', ')}`);
-  const dom = numbers(filters.daysOfMonth);
-  if (dom) parts.push(`Day of Month: ${dom}`);
+  if (filters.dates) parts.push(`Dates: ${setLabel(filters.dates)}`);
   const hours = numbers(filters.hoursOfDay);
   if (hours) parts.push(`Hour (HE): ${hours}`);
   const days = filters.daysOfWeek && [...filters.daysOfWeek].sort((a, b) => a - b);
