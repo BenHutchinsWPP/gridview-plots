@@ -331,7 +331,8 @@ check('a drop logs one `loaded` naming its files, with the notes that named none
     ],
   });
   assert.deepEqual(events(inventory), ['refused'], 'the drop is logged when it ends');
-  inventory.endDrop(['said by the root']);
+  inventory.noteDrop('said by the root');
+  inventory.endDrop();
   const log = inventory.log(CONTEXT);
   assert.deepEqual(
     log.map((line) => line.event),
@@ -676,6 +677,215 @@ check('a cell summarises as a count: metrics where it has variants, else files',
   assert.equal(cellSummary(beta), '1 metric');
   assert.equal(cellSummary(alpha), '2 files', 'a table with no variant counts its files');
   assert.equal(cellSummary(inventory.pivot(CASES, COLUMNS).rows[1].cells[0]), undefined);
+});
+
+// ------------------------------------------------------------------ a bundle inside a drop
+//
+// A drop applies its auxiliary files in drop order, so a bundle can restore
+// after the same drop has already refused a file or loaded a list. The
+// restore makes the Log the bundle's, but what this drop said stays said.
+
+const savedWith = ({ session = [], slots = [], records = [] } = {}) => ({
+  records: records.map((name, index) => ({
+    id: `r${index + 1}`,
+    name,
+    size: 1,
+    lastModified: null,
+    loadedAt: null,
+    kind: 'List',
+    shape: null,
+    variants: [],
+    counts: null,
+    notes: [],
+  })),
+  slots,
+  session,
+  log: [{ event: 'loaded', at: 0, files: [], notes: ['from the saving session'] }],
+  about: '',
+});
+const restoreInto = (inventory, saved, made = []) =>
+  inventory.restore(saved, {
+    made,
+    present: () => true,
+    adopted: new Set(saved.session.map((entry) => entry.input)),
+    source: file('SAMPLE_bundle.gvmb'),
+  });
+
+check('a bundle restored mid-drop keeps what the drop logged before it', () => {
+  const inventory = createInventory(() => 0);
+  const notes = file('SAMPLE_notes.txt');
+  inventory.beginDrop();
+  inventory.logRefused([notes], 'not a file this app reads');
+  restoreInto(inventory, savedWith());
+  inventory.endDrop();
+  const log = inventory.log(CONTEXT);
+  assert.deepEqual(
+    log.map((line) => line.event),
+    ['loaded', 'refused', 'restored'],
+    "the bundle's Log, then this drop's refusal, then the restore",
+  );
+  assert.deepEqual(names(log[1]), ['SAMPLE_notes.txt']);
+  assert.deepEqual(inventory.unaccounted([notes]), [], 'and it is not refused a second time');
+});
+
+check('a list loaded earlier in the drop and replaced by the bundle says so', () => {
+  const inventory = createInventory(() => 0);
+  const mine = file('SAMPLE_mine.csv');
+  inventory.beginDrop();
+  inventory.recordSessionInput('list-a', [mine], 'List', { merge: true });
+  restoreInto(
+    inventory,
+    savedWith({
+      records: ['SAMPLE_theirs.csv'],
+      session: [{ input: 'list-a', records: ['r1'], editedInApp: false }],
+    }),
+  );
+  inventory.endDrop();
+  const log = inventory.log(CONTEXT);
+  assert.deepEqual(
+    log.map((line) => line.event),
+    ['loaded', 'loaded', 'restored', 'replaced'],
+  );
+  assert.deepEqual(names(log[1]), ['SAMPLE_mine.csv'], 'it did load, before the restore');
+  assert.deepEqual(names(log[3]), ['SAMPLE_mine.csv']);
+  assert.equal(log[3].where, 'ListA');
+  assert.match(log[3].reason, /SAMPLE_theirs\.csv/);
+  assert.equal(
+    log.filter((line) => line.files.some((f) => f.name === 'SAMPLE_mine.csv')).length,
+    2,
+    'never logged `loaded` again once the drop ends',
+  );
+  assert.deepEqual(
+    inventory.strip(ROWS)[0].files.map((f) => f.name),
+    ['SAMPLE_theirs.csv'],
+  );
+});
+
+check('a second bundle in one drop logs what it replaces, whoever put it there', () => {
+  const inventory = createInventory(() => 0);
+  const bundle = (name) => file(`${name}.gvmb`);
+  const carrying = (list) =>
+    savedWith({
+      records: [list],
+      session: [{ input: 'list-a', records: ['r1'], editedInApp: false }],
+    });
+  inventory.beginDrop();
+  inventory.recordSessionInput('list-a', [file('SAMPLE_mine.csv')], 'List', { merge: true });
+  // The first bundle carries no list, the second two do.
+  for (const [saved, source] of [
+    [savedWith(), bundle('SAMPLE_b1')],
+    [carrying('SAMPLE_b2list.csv'), bundle('SAMPLE_b2')],
+    [carrying('SAMPLE_b3list.csv'), bundle('SAMPLE_b3')],
+  ]) {
+    inventory.restore(saved, {
+      made: [],
+      present: () => true,
+      adopted: new Set(saved.session.map((entry) => entry.input)),
+      source,
+    });
+  }
+  inventory.endDrop();
+  const replaced = inventory.log(CONTEXT).filter((line) => line.event === 'replaced');
+  assert.deepEqual(
+    replaced.map((line) => [names(line), line.reason]),
+    [
+      [['SAMPLE_mine.csv'], 'by SAMPLE_b2list.csv from SAMPLE_b2.gvmb'],
+      [['SAMPLE_b2list.csv'], 'by SAMPLE_b3list.csv from SAMPLE_b3.gvmb'],
+    ],
+  );
+});
+
+check('a file whose pruned record left it unnamed is unaccounted again', () => {
+  const inventory = createInventory(() => 0);
+  const gone = file('SAMPLE_gone.csv');
+  inventory.recordTable('c1', { kind: 'alpha' }, [wide(gone)]);
+  inventory.restore(savedWith(), {
+    made: [],
+    present: () => true,
+    adopted: new Set(),
+    source: 'origin-private storage',
+  });
+  assert.deepEqual(inventory.unaccounted([gone]), [gone]);
+});
+
+check('a file whose record a restore pruned records afresh when it comes back', () => {
+  const inventory = createInventory(() => 0);
+  const again = file('SAMPLE_again.csv');
+  inventory.recordTable('c1', { kind: 'alpha' }, [wide(again)]);
+  restoreInto(inventory, savedWith());
+  assert.deepEqual(inventory.noteFiles([again], 'a note'), [again], 'it has no record now');
+  inventory.recordTable('c1', { kind: 'alpha' }, [wide(again)]);
+  const [line] = inventory.pivot(CASES, COLUMNS).rows[0].cells[0].lines;
+  assert.deepEqual(
+    line.files.map((f) => f.name),
+    ['SAMPLE_again.csv'],
+  );
+  assert.equal(inventory.detail(line.files[0].id).title, 'SAMPLE_again.csv');
+});
+
+check('a slot dropped at restore with no Case still names its column', () => {
+  const inventory = createInventory(() => 0);
+  restoreInto(
+    inventory,
+    savedWith({
+      records: ['SAMPLE_gone.csv'],
+      slots: [{ case: 3, slot: { kind: 'beta', variant: 'Q1' }, records: ['r1'] }],
+    }),
+  );
+  const dropped = inventory.log(CONTEXT).find((line) => line.event === 'dropped at restore');
+  assert.equal(dropped.where, 'a Case not loaded · Beta: Q1');
+});
+
+check('a partial list load inside a drop names its row', () => {
+  const inventory = createInventory(() => 0);
+  inventory.beginDrop();
+  inventory.recordSessionInput('list-a', [file('SAMPLE_list.csv')], 'List', {
+    merge: true,
+    partial: '2 row(s) dropped',
+  });
+  inventory.endDrop();
+  const [line] = inventory.log(CONTEXT);
+  assert.equal(line.event, 'partial');
+  assert.equal(line.where, 'ListA');
+  assert.equal(line.reason, '2 row(s) dropped');
+});
+
+check('a partial input says it was edited in app, inside a drop as outside', () => {
+  const inventory = createInventory(() => 0);
+  inventory.beginDrop();
+  inventory.recordSessionInput('groups', [file('SAMPLE_g.csv')], 'Groups', {
+    editedInApp: true,
+    partial: '1 row dropped',
+  });
+  inventory.endDrop();
+  assert.equal(inventory.log(CONTEXT)[0].reason, '1 row dropped; edited in app before Apply');
+});
+
+check('a file merged into an edited input leaves it flagged', () => {
+  const inventory = createInventory(() => 0);
+  inventory.recordSessionInput('groups', [file('SAMPLE_g1.csv')], 'Groups', { editedInApp: true });
+  inventory.recordSessionInput('groups', [file('SAMPLE_g2.csv')], 'Groups', { merge: true });
+  assert.equal(inventory.strip(ROWS)[2].editedInApp, true);
+});
+
+check('Copy: a value a spreadsheet would read as a formula pastes as text', () => {
+  const inventory = createInventory(() => 0);
+  for (const [kind, name] of [
+    ['alpha', '=HYPERLINK("x").csv'],
+    ['beta', '-5 MW.csv'],
+    ['gamma', '"quoted.csv'],
+    ['own', "'draft.csv"],
+  ]) {
+    inventory.recordTable('c1', { kind }, [long(file(name), 'metrics')]);
+  }
+  const loaded = parseTsv(inventory.tsv(CASES, WITH_LIMITS, [])).filter(
+    (row) => row.State === 'loaded',
+  );
+  assert.deepEqual(
+    loaded.map((row) => row.File),
+    [`'=HYPERLINK("x").csv`, `'-5 MW.csv`, `'"quoted.csv`, `''draft.csv`],
+  );
+  assert.equal(loaded[0]['Size (bytes)'], '10', 'a number stays a number');
 });
 
 console.log(`\n${passed} checks passed.`);

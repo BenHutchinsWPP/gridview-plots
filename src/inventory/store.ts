@@ -237,9 +237,13 @@ const TSV_HEADER = [
 ];
 
 /** A tab or line break inside a value would start a new cell or row in the
- * pasted sheet, so each becomes a space. */
+ * pasted sheet, so each becomes a space. A leading `= + - @` would paste as a
+ * formula and a leading `"` as a quoted cell, so such a value takes the
+ * apostrophe a spreadsheet reads as "this is text" (as does one that already
+ * starts with an apostrophe, which the spreadsheet would otherwise hide). */
 function tsvCell(value: string): string {
-  return value.replace(/[\t\r\n]+/g, ' ');
+  const flat = value.replace(/[\t\r\n]+/g, ' ');
+  return /^[=+\-@"']/.test(flat) ? `'${flat}` : flat;
 }
 
 /** What a missing filename reads as, everywhere it is shown. */
@@ -317,19 +321,33 @@ export function createInventory(now: () => number = () => Date.now()) {
    * `loaded` can carry the notes that name no file. `null` outside a drop,
    * where each record logs itself at once (an editor's Apply). */
   let drop: {
-    touched: string[];
+    /** Insertion-ordered: the `loaded` event lists files in drop order. */
+    touched: Set<string>;
+    /** Every record this drop put in place, across any restores within it:
+     * what a later bundle in the same drop replaces is logged `replaced`. */
+    placed: Set<string>;
     /** Slots each touched record filled in this drop. */
     filled: Map<string, number>;
-    partial: Map<string, { failed: number; reason?: string }>;
+    partial: Map<string, { failed: number; reason?: string; input?: string }>;
     notes: string[];
+    /** Where this drop's own events start in `log`, so a bundle restored
+     * mid-drop keeps them when the Log becomes the bundle's. */
+    logStart: number;
   } | null = null;
   let nextId = 1;
   /** The bundle's "About" note: free text, saved with the bundle. */
   let about = '';
 
+  /** A File's live record id. A restore can prune the record while the
+   * `File` is still held, and then the file has none. */
+  function recordOf(file: File): string | undefined {
+    const id = byFile.get(file);
+    return id !== undefined && records.has(id) ? id : undefined;
+  }
+
   function logFile(file: File): LogFile {
     logged.add(file);
-    const record = byFile.get(file);
+    const record = recordOf(file);
     return {
       ...(record === undefined ? {} : { record }),
       name: file.name,
@@ -361,7 +379,8 @@ export function createInventory(now: () => number = () => Date.now()) {
       return;
     }
     for (const id of ids) {
-      if (!drop.touched.includes(id)) drop.touched.push(id);
+      drop.touched.add(id);
+      drop.placed.add(id);
       drop.filled.set(id, (drop.filled.get(id) ?? 0) + 1);
     }
   }
@@ -380,7 +399,7 @@ export function createInventory(now: () => number = () => Date.now()) {
   }
 
   function recordFor(file: File): FileRecord {
-    const known = byFile.get(file);
+    const known = recordOf(file);
     if (known !== undefined) return records.get(known) as FileRecord;
     const record: FileRecord = {
       id: `f${nextId++}`,
@@ -439,7 +458,7 @@ export function createInventory(now: () => number = () => Date.now()) {
   function noteFiles(files: readonly File[], note: string): File[] {
     const unplaced: File[] = [];
     for (const file of files) {
-      const id = byFile.get(file);
+      const id = recordOf(file);
       if (id === undefined) {
         unplaced.push(file);
         continue;
@@ -458,6 +477,32 @@ export function createInventory(now: () => number = () => Date.now()) {
   }
 
   const cellFile = (id: string): CellFile => ({ id, name: (records.get(id) as FileRecord).name });
+
+  /** Write a drop's gathered events: one `partial` per file that loaded in
+   * part, then one `loaded` naming the rest and carrying `notes`. */
+  function writeDrop(ended: NonNullable<typeof drop>, notes: readonly string[]): void {
+    for (const [id, partial] of ended.partial) {
+      const filled = ended.filled.get(id) ?? 0;
+      const reasons = partial.reason === undefined ? [] : [partial.reason];
+      if (partial.failed > 0) {
+        reasons.push(
+          `${filled.toLocaleString()} of ${(filled + partial.failed).toLocaleString()} ` +
+            `slot(s) loaded`,
+        );
+      }
+      append({
+        event: 'partial',
+        files: [recordFile(id)],
+        ...(partial.input === undefined ? {} : { input: partial.input }),
+        reason: reasons.join('; '),
+        notes: [...(records.get(id) as FileRecord).notes],
+      });
+    }
+    const loaded = [...ended.touched].filter((id) => !ended.partial.has(id));
+    if (loaded.length > 0 || notes.length > 0) {
+      append({ event: 'loaded', files: loaded.map(recordFile), notes: [...notes] });
+    }
+  }
 
   /** Records nothing references any more: a restore replaced the pivot and
    * the Log, so what only they named is gone. */
@@ -524,24 +569,26 @@ export function createInventory(now: () => number = () => Date.now()) {
         record.kind = kind;
         return record.id;
       });
-      const previous = session.get(input)?.records ?? [];
+      const current = session.get(input);
+      const previous = current?.records ?? [];
       const before = merge ? previous : [];
       const after = [...before, ...ids.filter((id) => !before.includes(id))];
-      session.set(input, { records: after, editedInApp });
+      // A merge keeps what is already in the input, edits included.
+      const edited = editedInApp || (merge && (current?.editedInApp ?? false));
+      session.set(input, { records: after, editedInApp: edited });
       logReplaced(previous, after, { input });
-      const edited = editedInApp ? 'edited in app before Apply' : undefined;
+      const flag = editedInApp ? 'edited in app before Apply' : undefined;
+      const reason = partial === undefined || flag === undefined ? partial : `${partial}; ${flag}`;
       if (partial === undefined) {
-        touch(ids, edited);
+        touch(ids, flag);
       } else if (drop === null) {
-        append({
-          event: 'partial',
-          files: ids.map(recordFile),
-          input,
-          reason: edited === undefined ? partial : `${partial}; ${edited}`,
-        });
+        append({ event: 'partial', files: ids.map(recordFile), input, reason });
       } else {
         touch(ids);
-        for (const id of ids) drop.partial.set(id, { failed: 0, reason: partial });
+        for (const id of ids) {
+          const failed = drop.partial.get(id)?.failed ?? 0;
+          drop.partial.set(id, { failed, reason, input });
+        }
       }
     },
 
@@ -591,12 +638,24 @@ export function createInventory(now: () => number = () => Date.now()) {
 
     /**
      * Take up a restored bundle's inventory: the pivot and the Log become the
-     * bundle's, then `restored` is logged. A session row is replaced only when
+     * bundle's, then `restored` is logged. Mid-drop, the drop's own events are
+     * kept after the bundle's Log, and whatever the drop put in place that the
+     * bundle replaces is logged `replaced`. A session row is replaced only when
      * the bundle carried that input and the restore adopted it (to nothing,
      * when the bundle recorded no file for it). Whatever the bundle listed
      * that the restore did not take up is logged `dropped at restore`.
      */
     restore(saved: SavedInventory, context: RestoreContext): void {
+      // Mid-drop, what the drop accepted so far is logged now, and every
+      // event the drop wrote is kept after the bundle's Log.
+      let kept: LogEvent[] = [];
+      if (drop !== null) {
+        writeDrop(drop, []);
+        drop.touched.clear();
+        drop.filled.clear();
+        drop.partial.clear();
+        kept = log.slice(drop.logStart);
+      }
       const renamed = new Map<string, string>();
       for (const record of saved.records) {
         const id = `f${nextId++}`;
@@ -629,10 +688,17 @@ export function createInventory(now: () => number = () => Date.now()) {
       }
 
       const carried = new Map(saved.session.map((entry) => [entry.input, entry]));
+      /** Inputs whose records this drop put in place and the bundle replaces. */
+      const superseded: { input: string; gone: string[]; by: string[] }[] = [];
       for (const input of context.adopted) {
+        const before = session.get(input)?.records ?? [];
         const entry = carried.get(input);
+        const by = entry === undefined ? [] : ids(entry.records);
         if (entry === undefined) session.delete(input);
-        else session.set(input, { records: ids(entry.records), editedInApp: entry.editedInApp });
+        else session.set(input, { records: by, editedInApp: entry.editedInApp });
+        const gone = before.filter((id) => drop?.placed.has(id) && !by.includes(id));
+        if (gone.length > 0) superseded.push({ input, gone, by });
+        for (const id of by) drop?.placed.add(id);
       }
       for (const entry of saved.session) {
         const files = ids(entry.records);
@@ -659,12 +725,25 @@ export function createInventory(now: () => number = () => Date.now()) {
           notes: [...rest.notes],
         });
       }
+      if (drop !== null) drop.logStart = log.length;
+      log.push(...kept);
       about = saved.about;
       const source = context.source;
       if (typeof source === 'string') {
         append({ event: 'restored', files: [], reason: `from ${source}` });
       } else {
         append({ event: 'restored', files: [logFile(source)] });
+      }
+      const from = typeof source === 'string' ? source : source.name;
+      for (const { input, gone, by } of superseded) {
+        const names = by.map((id) => records.get(id)?.name ?? NOT_RECORDED).join(' + ');
+        append({
+          event: 'replaced',
+          files: gone.map(recordFile),
+          input,
+          reason:
+            names === '' ? `by ${from}, which lists no file for it` : `by ${names} from ${from}`,
+        });
       }
       for (const event of dropped) append({ ...event, reason: DROPPED_AT_RESTORE });
       prune();
@@ -680,33 +759,23 @@ export function createInventory(now: () => number = () => Date.now()) {
     /** Open a drop: until `endDrop`, accepted files are gathered into one
      * `loaded` event, and files a failure also names become `partial`. */
     beginDrop(): void {
-      drop = { touched: [], filled: new Map(), partial: new Map(), notes: [] };
+      drop = {
+        touched: new Set(),
+        placed: new Set(),
+        filled: new Map(),
+        partial: new Map(),
+        notes: [],
+        logStart: log.length,
+      };
     },
 
-    /** Close the drop and write its events: one `partial` per file that
-     * loaded in part, then one `loaded` naming the rest and carrying every
-     * note that named no file (or only files that loaded nothing). */
-    endDrop(notes: readonly string[] = []): void {
+    /** Close the drop and write its events; its `loaded` carries every note
+     * that named no file (or only files that loaded nothing). */
+    endDrop(): void {
       if (drop === null) return;
       const ended = drop;
       drop = null;
-      for (const [id, partial] of ended.partial) {
-        const filled = ended.filled.get(id) ?? 0;
-        append({
-          event: 'partial',
-          files: [recordFile(id)],
-          reason:
-            partial.reason ??
-            `${filled.toLocaleString()} of ${(filled + partial.failed).toLocaleString()} ` +
-              `slot(s) loaded`,
-          notes: [...(records.get(id) as FileRecord).notes],
-        });
-      }
-      const loaded = ended.touched.filter((id) => !ended.partial.has(id));
-      const batchNotes = [...ended.notes, ...notes.filter((note) => !ended.notes.includes(note))];
-      if (loaded.length > 0 || batchNotes.length > 0) {
-        append({ event: 'loaded', files: loaded.map(recordFile), notes: batchNotes });
-      }
+      writeDrop(ended, ended.notes);
     },
 
     /**
@@ -718,8 +787,8 @@ export function createInventory(now: () => number = () => Date.now()) {
      */
     recordOutcome(outcome: IngestOutcome): void {
       const accepted = (file: File): string | undefined => {
-        const id = byFile.get(file);
-        return id !== undefined && drop?.touched.includes(id) ? id : undefined;
+        const id = recordOf(file);
+        return id !== undefined && drop?.touched.has(id) ? id : undefined;
       };
       for (const failure of outcome.failures) {
         const refused: File[] = [];
@@ -759,8 +828,11 @@ export function createInventory(now: () => number = () => Date.now()) {
         if (event.input !== undefined) {
           return context.rows.find((row) => row.input === event.input)?.label ?? event.input;
         }
-        if (event.caseId === undefined) return undefined;
-        const name = caseName.get(event.caseId) ?? 'a Case no longer loaded';
+        if (event.caseId === undefined && event.slot === undefined) return undefined;
+        const name =
+          event.caseId === undefined
+            ? 'a Case not loaded'
+            : (caseName.get(event.caseId) ?? 'a Case no longer loaded');
         if (event.slot === undefined) return name;
         const label =
           context.columns.find((column) => column.kind === event.slot?.kind)?.label ??
@@ -789,11 +861,12 @@ export function createInventory(now: () => number = () => Date.now()) {
     /** The files neither recorded nor named in the Log: what a load that
      * threw part-way never reached, for the root to log as refused. */
     unaccounted(files: readonly File[]): File[] {
-      return files.filter((file) => !byFile.has(file) && !logged.has(file));
+      return files.filter((file) => recordOf(file) === undefined && !logged.has(file));
     },
 
-    /** How many distinct files are behind the given Cases' slots: the
-     * readout's count. A file behind three slots counts once. */
+    /** How many distinct files are behind what is loaded, the given Cases'
+     * slots and every session input: the readout's count. A file behind
+     * three slots counts once. */
     fileCount(caseIds: Iterable<string>): number {
       return liveRecordIds(caseIds).size;
     },

@@ -61,7 +61,7 @@ function bundle(restoredCases, extra = {}) {
 }
 
 /** A loaded study, a fake host over it and the list of what the host did. */
-function setup({ read, load, download, attachThrowsOn } = {}) {
+function setup({ read, load, download, attachThrowsOn, throwIn = [] } = {}) {
   const store = new CaseStore();
   const old = store.createCase('SAMPLE_old');
   store.attachTable(old.id, AREA, 'old:area');
@@ -69,6 +69,10 @@ function setup({ read, load, download, attachThrowsOn } = {}) {
   limits.setCaseLimits(old.id, limitTable('old.csv', 1));
   const calls = [];
   const said = new Map();
+  /** A host step the test makes throw, as a bug or a bad block would. */
+  const fail = (step) => {
+    if (throwIn.includes(step)) throw new Error(`SAMPLE ${step} failed`);
+  };
 
   const cases = {
     listCases: () => store.listCases(),
@@ -95,12 +99,16 @@ function setup({ read, load, download, attachThrowsOn } = {}) {
       dropCaseLimits: (id) => limits.dropCaseLimits(id),
       adoptLimits: (shared, byCase) => {
         calls.push('adoptLimits');
+        fail('adoptLimits');
         limits.adoptLimits(shared, byCase);
       },
       caseLimits: () => limits.caseLimits(),
     },
     inventory: {
-      restore: (saved, context) => calls.push({ restore: context }),
+      restore: (saved, context) => {
+        calls.push({ restore: context });
+        fail('restore');
+      },
       logRefused: (files, reason) => calls.push(`logRefused ${reason}`),
       logRefusedSource: (source, reason) => calls.push(`logRefusedSource ${source}: ${reason}`),
     },
@@ -123,13 +131,20 @@ function setup({ read, load, download, attachThrowsOn } = {}) {
       calls.push('contents');
       return { layout: ['time'] };
     },
-    restoreView: (loaded, made) => calls.push({ restoreView: made }),
+    restoreView: (loaded, made) => {
+      calls.push({ restoreView: made });
+      fail('restoreView');
+    },
     adoptGroups: (loaded, named, taken) => {
       calls.push('adoptGroups');
       taken.add('groups:area');
+      fail('adoptGroups');
       return [`groups from ${named.inline}`];
     },
-    adoptLookups: () => calls.push('adoptLookups'),
+    adoptLookups: () => {
+      calls.push('adoptLookups');
+      fail('adoptLookups');
+    },
     lookupSources: () => ['SAMPLE_list.csv'],
   };
   for (const kind of ['area', 'interface', 'bus', 'generator']) said.set(kind, [`${kind} account`]);
@@ -326,6 +341,69 @@ await check('both restore paths adopt one session, in one order, by the Cases ma
     'restore',
   ]);
   assert.deepEqual(orders[1], orders[0], 'Load… adopts exactly what a dropped bundle does');
+});
+
+await check('a step that fails after the swap is said, and the restore still lands', async () => {
+  const saved = () =>
+    bundle([savedCase('SAMPLE_a', [AREA])], {
+      generatorGroups: new Map(),
+      lookups: new Map([['buslist', { rowCount: 3, entity: 'bus' }]]),
+      limits: { shared: limitTable('shared.csv', 9), byIndex: new Map(), dropped: 0 },
+    });
+  for (const path of ['file', 'load']) {
+    const { store, old, calls, said, flow } = setup({
+      read: saved,
+      load: saved,
+      throwIn: ['restoreView', 'adoptGroups', 'adoptLookups'],
+    });
+    const notes =
+      path === 'file'
+        ? await flow.restoreBundleFile(file('SAMPLE.gvmb'))
+        : (await flow.loadAll(), said.get('session'));
+    assert.deepEqual(
+      store.listCases().map((entry) => entry.name),
+      ['SAMPLE_a'],
+      `${path}: the old Case is gone, so the restore is not called refused`,
+    );
+    assert.ok(!store.listCases().some((entry) => entry.id === old.id), path);
+    assert.equal(
+      index(calls, (call) => typeof call === 'string' && call.startsWith('logRefused')),
+      -1,
+      `${path}: nothing is logged refused`,
+    );
+    for (const failed of ['restoreView', 'adoptGroups', 'adoptLookups']) {
+      assert.ok(
+        notes.some((line) => line.includes(`SAMPLE ${failed} failed`)),
+        `${path}: ${failed} is said`,
+      );
+    }
+    assert.ok(
+      notes.some((line) => /carried shared limits from shared\.csv/.test(line)),
+      `${path}: the steps after a failure still run`,
+    );
+    const restore = calls.find((call) => call.restore)?.restore;
+    assert.ok(restore, `${path}: the inventory is still reconciled`);
+    assert.ok(restore.adopted.has('groups:area'), `${path}: what the groups took before failing`);
+    assert.ok(!restore.adopted.has('groups:generator'), `${path}: not what they did not`);
+    assert.ok(!restore.adopted.has('buslist'), `${path}: a list that failed is not adopted`);
+    assert.ok(restore.adopted.has('limits (shared)'), `${path}: the limits that landed are`);
+  }
+});
+
+await check('an inventory that fails to reconcile is said, and the restore stands', async () => {
+  const saved = bundle([savedCase('SAMPLE_a', [AREA])]);
+  const { store, calls, flow } = setup({ read: () => saved, throwIn: ['restore'] });
+  const notes = await flow.restoreBundleFile(file('SAMPLE.gvmb'));
+  assert.equal(notes[0], 'Restored 1 case(s) from SAMPLE.gvmb.');
+  assert.ok(notes.some((line) => line.includes('SAMPLE restore failed')));
+  assert.deepEqual(
+    store.listCases().map((entry) => entry.name),
+    ['SAMPLE_a'],
+  );
+  assert.equal(
+    index(calls, (call) => typeof call === 'string' && call.startsWith('logRefused')),
+    -1,
+  );
 });
 
 await check('Load… closes the Contents panel first, and logs a bundle it refuses', async () => {

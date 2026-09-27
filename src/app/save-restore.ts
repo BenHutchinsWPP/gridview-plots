@@ -14,7 +14,7 @@
 // maps are the root's state, adopted through the host; this holds none.
 
 import type { Inventory } from '../inventory/store';
-import { groupsInput, LIMITS_COLUMN, SHARED_LIMITS_INPUT } from '../inventory/store';
+import { LIMITS_COLUMN, SHARED_LIMITS_INPUT } from '../inventory/store';
 import { restoreCaseLimits } from '../limits/envelope';
 import type { LimitsStore } from '../limits/store';
 import type { LookupTable, LookupVariant } from '../lookups/types';
@@ -76,8 +76,9 @@ export interface SaveRestoreHost {
   contents(): BundleContents;
   /** Put the bundle's view back onto the Cases it made: axis, pins, panes. */
   restoreView(loaded: RestoredBundle, made: readonly MadeCase[]): void;
-  /** Adopt the bundle's group maps, adding to `taken` each input whose
-   * adoption can fail on its own. Returns the notes. */
+  /** Adopt the bundle's group maps, adding each input to `taken` once its
+   * map is in effect, so a throw part-way leaves the landed ones taken.
+   * Returns the notes. */
   adoptGroups(loaded: RestoredBundle, named: BundleNamed, taken: Set<string>): string[];
   adoptLookups(lookups: Map<LookupVariant, LookupTable>): void;
   /** The file names behind the session's reference lists. */
@@ -201,23 +202,21 @@ export function createSaveRestore(host: SaveRestoreHost) {
   /**
    * Take up the bundle's inventory once every table and session input has
    * been adopted: whatever it listed that the restore did not take up is
-   * logged `dropped at restore`. `taken` holds the inputs whose adoption can
-   * fail on its own; the rest follow their stores' rules: a carried list or
-   * group map is always adopted, and any limits block replaces the shared
-   * limits, even with none.
+   * logged `dropped at restore`. `taken` holds each group map as it landed,
+   * since one kind can land and the next throw; the rest follow their
+   * stores' rules unless their step failed (`landed`): carried lists are
+   * adopted, and any limits block replaces the shared limits, even with none.
    */
   function adoptInventory(
     loaded: RestoredBundle,
     made: readonly MadeCase[],
     source: File | string,
     taken: ReadonlySet<string>,
+    landed: { lists: boolean; limits: boolean },
   ): void {
     const adopted = new Set(taken);
-    for (const variant of loaded.lookups.keys()) adopted.add(variant);
-    if (loaded.generatorGroups !== null) adopted.add(groupsInput('generator'));
-    if (loaded.busGroups !== null) adopted.add(groupsInput('bus'));
-    if (loaded.interfaceGroups !== null) adopted.add(groupsInput('interface'));
-    if (loaded.limits.shared !== undefined || loaded.limits.byIndex.size > 0) {
+    if (landed.lists) for (const variant of loaded.lookups.keys()) adopted.add(variant);
+    if (landed.limits && (loaded.limits.shared !== undefined || loaded.limits.byIndex.size > 0)) {
       adopted.add(SHARED_LIMITS_INPUT);
     }
     const caseLimits = limits.caseLimits();
@@ -235,24 +234,39 @@ export function createSaveRestore(host: SaveRestoreHost) {
     });
   }
 
-  /** Everything a restore adopts once its Cases are made: display names
-   * before the view repaints, the inventory last. Returns the notes. */
+  /**
+   * Everything a restore adopts once its Cases are made: display names
+   * before the view repaints, the inventory last. Returns the notes.
+   *
+   * Every step runs after the old Cases are gone, so a throw here cannot
+   * refuse the restore, and a caller's "nothing was replaced" would be false.
+   * A step that throws is said, the steps after it still run, and the
+   * inventory is reconciled against what did land.
+   */
   function adoptSession(
     loaded: RestoredBundle,
     made: readonly MadeCase[],
     source: File | string,
     named: BundleNamed,
   ): string[] {
-    const displayNotes = adoptDisplayNames(loaded.restoredCases, made);
-    host.restoreView(loaded, made);
+    const said = adoptDisplayNames(loaded.restoredCases, made);
+    const step = (what: string, run: () => readonly string[] | void): boolean => {
+      try {
+        said.push(...(run() ?? []));
+        return true;
+      } catch (error) {
+        said.push(`${named.start}: ${what} could not be restored. ${messageOf(error)}`);
+        return false;
+      }
+    };
+    step('the view (pins, panes and drawer)', () => host.restoreView(loaded, made));
     const taken = new Set<string>();
-    const said = [
-      ...displayNotes,
-      ...host.adoptGroups(loaded, named, taken),
-      ...adoptLookups(loaded.lookups, named.start),
-      ...adoptLimits(loaded.limits, made, named.start),
-    ];
-    adoptInventory(loaded, made, source, taken);
+    step('the group maps', () => host.adoptGroups(loaded, named, taken));
+    const landed = {
+      lists: step('the reference lists', () => adoptLookups(loaded.lookups, named.start)),
+      limits: step('the limits', () => adoptLimits(loaded.limits, made, named.start)),
+    };
+    step('the Contents inventory', () => adoptInventory(loaded, made, source, taken, landed));
     return said;
   }
 
@@ -330,6 +344,7 @@ export function createSaveRestore(host: SaveRestoreHost) {
         // Nothing was removed: every failure above happens either inside the
         // read (before the store is touched at all) or inside
         // `adoptRestoredCases`, which rolls its own partial work back.
+        // `adoptSession` runs after the swap and says its own failures.
         const refusal = `${file.name}: ${messageOf(error)}`;
         inventory.logRefused([file], refusal);
         return [refusal];

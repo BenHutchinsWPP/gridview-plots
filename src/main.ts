@@ -674,12 +674,18 @@ const saveRestore = createSaveRestore({
     inventory: inventory.snapshot(),
   }),
   restoreView,
-  adoptGroups: (loaded, named, taken) => [
-    ...adoptGroupings(loaded.groupings, named.inline, taken),
-    ...generatorEditing.adoptSaved(loaded.generatorGroups, named.start),
-    ...busEditing.adoptSaved(loaded.busGroups, named.start),
-    ...interfaceEditing.adoptSaved(loaded.interfaceGroups, named.start),
-  ],
+  adoptGroups: (loaded, named, taken) => {
+    // Each kind is `taken` as it lands, so a later kind that throws leaves
+    // the earlier kinds' rows naming the maps now in effect.
+    const said = adoptGroupings(loaded.groupings, named.inline, taken);
+    said.push(...generatorEditing.adoptSaved(loaded.generatorGroups, named.start));
+    if (loaded.generatorGroups !== null) taken.add(groupsInput('generator'));
+    said.push(...busEditing.adoptSaved(loaded.busGroups, named.start));
+    if (loaded.busGroups !== null) taken.add(groupsInput('bus'));
+    said.push(...interfaceEditing.adoptSaved(loaded.interfaceGroups, named.start));
+    if (loaded.interfaceGroups !== null) taken.add(groupsInput('interface'));
+    return said;
+  },
   adoptLookups,
   lookupSources,
 });
