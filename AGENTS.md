@@ -325,8 +325,9 @@ Asserted by `tests/test_commit_messages.mjs`.
 **A subject, and at most one line of why.** The diff says what changed; a
 body that retells it is noise. Keep `Closes #N`: it closes the issue on push.
 
-**A finished branch merges into `main` with `--no-ff`**, not a PR, and the
-merge subject names the feature. Never rewrite a pushed commit.
+**History on `main` is linear: one short commit per piece of work**, not a PR
+and not a merge commit. Before a push, squash exploratory unpushed commits
+into those. Never rewrite a pushed commit.
 
 ## Agent tooling
 
