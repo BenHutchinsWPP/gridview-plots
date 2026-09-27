@@ -3,8 +3,7 @@
 // What the shared membership editor needs to know to edit AREA groupings.
 //
 // The editor itself is `src/ui/membership-editor.ts` -- it is chrome over a
-// name -> group map rather than anything of this kind's, the same argument
-// that put the map in `src/lookups/groupings.ts`. What is here is only what
+// name -> group map that every kind's groups share. What is here is only what
 // Area decides.
 //
 // The editor cannot add or remove AREAS. The axis comes from the loaded data

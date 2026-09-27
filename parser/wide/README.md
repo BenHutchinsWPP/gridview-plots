@@ -14,6 +14,6 @@ cube entities by trimmed header name.
 ./build.sh
 ```
 
-Commit `block.wasm` with any `block.c` change, and bump `ABI_VERSION` with
-`PARSER_ABI` in `src/tables/wide/block.ts` when the exports or arena layout
-change.
+Commit `block.wasm` with any change to `block.c` or `../common/fields.h`,
+and bump `ABI_VERSION` with `PARSER_ABI` in `src/tables/wide/block.ts` when
+the exports or arena layout change.

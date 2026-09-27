@@ -2,7 +2,17 @@
 //
 // Worked example: pin across kinds and Cases, save, restore twice into a
 // fresh context, and print the Selected tab each time. See SKILL.md.
-import { chromium, open, loadStudy, tab, pinRow, makeGroup, selectedRows, S } from './drive.mjs';
+import {
+  chromium,
+  open,
+  loadStudy,
+  tab,
+  pinRow,
+  makeGroup,
+  selectedRows,
+  idle,
+  S,
+} from './drive.mjs';
 const browser = await chromium.launch({ args: ['--no-sandbox'] });
 // ---- session 1: build, pin, save
 {
@@ -30,7 +40,7 @@ const browser = await chromium.launch({ args: ['--no-sandbox'] });
   const { page } = await open(browser);
   for (const round of [1, 2]) {
     await page.setInputFiles('#file-input', [`${S}/study.gvmb`]);
-    await page.waitForTimeout(2500);
+    await idle(page);
     console.log(`restore ${round}`, JSON.stringify(await selectedRows(page), null, 0));
     console.log(
       'header',

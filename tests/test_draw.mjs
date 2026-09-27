@@ -327,7 +327,7 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
 {
   // The legend reads a frozen filter the way the Selected tab does: with what
   // it was chosen on, once the pin no longer shows that.
-  const { setGroupings } = await import('../src/lookups/groupings.ts');
+  const { setGroupings } = await import('../src/tables/area/groupings.ts');
   setGroupings('Name,Grouping\nAREA_AV,North\nAREA_NV,North');
   const metrics = ['Load (MWh)', 'Generation (MWh)'];
   const data = {

@@ -16,7 +16,6 @@ import { createScratch, quantiles } from '../kernels';
 import type { LookupVariant, LookupTable } from '../lookups/types';
 import { lookupFor } from '../lookups/store';
 import { bucketLabelFor } from '../lookups/reduce';
-import { areasIn } from '../lookups/groupings';
 import type { Filters } from '../model/types';
 import type { CaseSeries } from '../ui/charts';
 import type { RangeLimits } from './range';
@@ -359,11 +358,9 @@ export function checkStackOverlap(
       areaNames.add(areaLabel.trim().toLowerCase());
     } else if (area.spec && 'groupBy' in area.spec.subject) {
       areaLabel = area.spec.subject.value;
-      // A frozen member set IS the group, as in the resolver; the grouping
-      // file's live membership is only the fallback.
-      const members = area.spec.subject.members
-        ? area.spec.subject.members.map(String)
-        : areasIn(area.spec.subject.value);
+      // The areas the resolver summed, which is the frozen member set when
+      // the pin has one, so the grouping map is never read here.
+      const members = (area.summed ?? area.spec.subject.members ?? []).map(String);
       for (const m of members) areaNames.add(m.trim().toLowerCase());
     } else {
       // Fallback when no spec: "Case · Area · Metric" or "Area".

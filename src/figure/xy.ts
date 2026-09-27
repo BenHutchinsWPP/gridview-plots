@@ -11,7 +11,7 @@
 // cannot state a different equation from the app. Points on one 300 dpi
 // output pixel are one mark: more would only lengthen the file.
 
-import { fitCaption, fitLine } from '../ui/xy-plot';
+import { fitCaption, fitLine } from '../ui/panes/xy';
 import { fullLabel, type SeriesFacets } from '../series/label';
 import { niceScale, type FigureCapture, type FigureLine, type PaneRenderer } from './build';
 import { line as svgLine, rect } from './svg';
@@ -25,7 +25,7 @@ const X_TICK_ROOM_PT = 56;
 
 /** A series' full label as a figure names it: its figure key in place of
  * its subject, so a group states its member count, as its legend key would. */
-export function xyAxisTitle(entry: FigureLine): string {
+function xyAxisTitle(entry: FigureLine): string {
   const facets: SeriesFacets | undefined = entry.facets;
   if (!facets) return entry.name;
   const figured = facets.figureSubject

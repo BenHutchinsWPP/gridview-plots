@@ -1,0 +1,75 @@
+// src/ui/status-sentence.ts
+//
+// The status bar's text. The status bar is a sentence, not a widget:
+// analysts screenshot panes into decks, and a screenshot that states its own
+// filters cannot be misread.
+//
+// Kept free of DOM and chart imports so it loads under Node and is tested as
+// behaviour (tests/test_status_sentence.mjs).
+
+import { DAY_NAMES, HOURS_PER_YEAR, SEASON_NAMES, TOU_LABELS } from '../model/calendar';
+import { setLabel } from '../model/date-range';
+import type { Filters } from '../model/types';
+
+/** Collapse a selection into runs: {1,2,3,7} over Jan..Dec -> "Jan–Mar, Jul". */
+export function summarise<T>(
+  selection: ReadonlySet<T> | null,
+  ordered: readonly T[],
+  label: (value: T) => string,
+  everything: string,
+): string {
+  if (selection === null || selection.size === ordered.length) return everything;
+  if (selection.size === 0) return 'nothing';
+
+  const indices = ordered
+    .map((value, index) => (selection.has(value) ? index : -1))
+    .filter((i) => i >= 0);
+  const parts: string[] = [];
+  let start = indices[0];
+  let previous = indices[0];
+  for (let i = 1; i <= indices.length; i++) {
+    const current = indices[i];
+    if (current === previous + 1) {
+      previous = current;
+      continue;
+    }
+    parts.push(
+      start === previous
+        ? label(ordered[start])
+        : `${label(ordered[start])}–${label(ordered[previous])}`,
+    );
+    start = current;
+    previous = current;
+  }
+  return parts.join(', ');
+}
+
+/** What the sentence states: the hour filters and how many Cases they cut. */
+export interface StatusView {
+  readonly filters: Filters;
+  readonly cases: readonly unknown[];
+}
+
+export function statusSentence(view: StatusView, keptHours: number): string {
+  const { filters } = view;
+  const hours = Array.from({ length: 24 }, (_, i) => i + 1);
+  const days = Array.from({ length: 7 }, (_, i) => i);
+
+  const parts = [
+    `${keptHours.toLocaleString()} of ${HOURS_PER_YEAR.toLocaleString()} h`,
+    filters.dates === null ? 'all dates' : setLabel(filters.dates, 4),
+    summarise(filters.daysOfWeek, days, (d) => DAY_NAMES[d], 'all days'),
+  ];
+  if (filters.hoursOfDay !== null) {
+    parts.push(`HE ${summarise(filters.hoursOfDay, hours, String, 'all')}`);
+  }
+  if (filters.seasons !== null) {
+    parts.push(summarise(filters.seasons, SEASON_NAMES, String, 'all seasons'));
+  }
+  if (filters.tou !== null) {
+    parts.push(summarise(filters.tou, TOU_LABELS, String, 'all TOU'));
+  }
+  const plural = view.cases.length === 1 ? '' : 's';
+  parts.push(`${view.cases.length} case${plural}`);
+  return parts.join(' · ');
+}

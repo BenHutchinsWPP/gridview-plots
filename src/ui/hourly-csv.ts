@@ -114,7 +114,7 @@ export const LONG_EXCEL_SERIES = 119;
 export type HourlyLayout = 'wide' | 'long';
 
 /** The unit a "% of range" cell is written in. A ratio, so 0.42 is 42%. */
-export const RATIO_UNIT = 'ratio of range';
+const RATIO_UNIT = 'ratio of range';
 
 /** One exported series as its resolve left it; values travel separately. */
 export interface HourlyEntry {
@@ -217,7 +217,7 @@ function refusalLines(entries: readonly HourlyEntry[], names: readonly string[])
 }
 
 /** The long layout's column header. */
-export const LONG_COLUMNS = ['Series', ...HOUR_COLUMNS, 'Value'] as const;
+const LONG_COLUMNS = ['Series', ...HOUR_COLUMNS, 'Value'] as const;
 
 /**
  * Everything above the first hour row: the descriptor, the shared facets, a

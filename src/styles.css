@@ -631,7 +631,6 @@ body.is-busy {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
@@ -641,6 +640,7 @@ body.is-busy {
 }
 
 .gv-section .pane-icon {
+  flex-shrink: 0;
   cursor: pointer;
   margin-left: 8px;
   opacity: 0.6;
@@ -651,9 +651,14 @@ body.is-busy {
   opacity: 1;
 }
 
+/* Only the note shrinks: a control that shrank would push its label into
+   the next one. */
 .gv-section .pane-control {
-  margin-left: auto;
+  flex-shrink: 0;
+  margin-left: 8px;
   font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -929,13 +934,16 @@ body.is-busy {
   padding: 1px 4px;
   border-radius: 3px;
   flex-shrink: 0;
+  /* As wide as the chosen type, not the longest one, so the note gets the rest. */
+  field-sizing: content;
 }
 .pane-slot-type:hover {
   border-color: var(--color-accent);
 }
 
 .gv-section .pane-note {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
   font-weight: 400;
   font-size: 11px;
   color: var(--color-text-secondary);
@@ -947,6 +955,7 @@ body.is-busy {
 
 /* Header actions: drag-zoom is undone here as well as by a double-click. */
 .gv-section .pane-btn {
+  flex-shrink: 0;
   font-size: 10px;
   font-weight: 500;
   padding: 1px 6px;
@@ -959,6 +968,12 @@ body.is-busy {
   white-space: nowrap;
 }
 
+/* Download, Figure and Reset zoom are icons, named by aria-label and title. */
+.gv-section .pane-btn:has(> svg) {
+  padding: 2px 4px;
+  line-height: 0;
+}
+
 .gv-section .pane-btn:hover {
   border-color: var(--color-accent);
   color: var(--color-accent);
@@ -966,7 +981,7 @@ body.is-busy {
 
 .gv-section .pane-control input[type='checkbox'] {
   vertical-align: -1px;
-  margin-right: 2px;
+  margin: 0 3px 0 0;
 }
 
 .gv-section .pane-control select {

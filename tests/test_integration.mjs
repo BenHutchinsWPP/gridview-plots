@@ -391,7 +391,7 @@ await check('one Case holds one Area table and TWO Interface tables, in distinct
 // -------------------------------------------------------- 5. save -> bytes
 //
 // `buildManifest(store.listCases(), ...)` is exactly what `saveAll` writes;
-// section 10 keeps `saveAll` on this input.
+// tests/test_save_restore.mjs keeps `saveAll` on this input.
 
 const { manifest, cubes } = buildManifest(store.listCases(), { groupings: GROUPINGS_CSV });
 
@@ -742,69 +742,24 @@ function occurrences(haystack, needle) {
   return haystack.split(needle).length - 1;
 }
 
-await check('saveAll saves the whole store, not the Area tables in it', () => {
-  const body = bodyOf('async function saveAll(');
-  assert.match(body, /caseStore\.listCases\(\)/, 'the writers are handed every Case');
-  assert.doesNotMatch(
-    body,
-    /areaCases\(\)/,
-    'filtering to Area here is what dropped every Interface table from the .gvmb and OPFS',
-  );
-  // And the refusal counts TABLES: guarding on the Area count refused to save
-  // a study made only of Interface tables, saying "drop a CSV export first"
-  // about files the user had already dropped.
-  assert.match(body, /entry\.tables\.size/, 'the "nothing to save" guard counts tables');
-});
-
-await check('the restore path reads restoredCases and every slot on them', () => {
-  const adoptBody = bodyOf('function adoptRestoredCases(');
-  assert.match(adoptBody, /entry\.tables\.values\(\)/, 'every slot is re-attached');
-  assert.doesNotMatch(
-    adoptBody,
-    /AREA_SLOT/,
-    'attaching only the Area slot is what silently discarded restored Interface tables',
-  );
-  for (const signature of ['async function restoreBundleFile(', 'async function loadAll(']) {
-    const body = bodyOf(signature);
-    assert.match(body, /loaded\.restoredCases/, `${signature} restores every table kind`);
-    // Unknown-kind and migration notices must reach the user whether the
-    // restore was taken up or refused.
-    assert.ok(
-      occurrences(body, 'loaded.warnings') >= 2,
-      `${signature} surfaces the load's warnings on both outcomes, not just one`,
-    );
-  }
-});
-
-await check('a restore builds the replacement before it removes anything', () => {
-  const body = bodyOf('function adoptRestoredCases(');
-  // An unreadable bundle is refused (falsy) before anything is removed, never
-  // "Restored 0 case(s)" over a wiped study.
-  assert.match(body, /if \(tableCount === 0\) return (false|null);/, 'an empty restore is refused');
-  // And the ordering: the new Cases exist before a single old one is removed,
-  // so a throw part-way leaves the loaded study in the store.
-  assert.ok(
-    body.indexOf('createCase(') < body.indexOf('removeCase('),
-    'the swap commits only once every restored table has been attached',
-  );
-});
+// Save hands the writers every Case, and a restore reads every slot and
+// builds before it removes: behaviour in tests/test_save_restore.mjs.
 
 await check('a drop reads as running from the first byte to the last table', () => {
   // The busy floor keeps the app looking busy between batches:
   //   1. setBusy falls back to the floor, not to nothing;
-  //   2. loadFiles clears it in a `finally`, so a throw cannot leave it on.
+  //   2. the drop raises it and drops it in a `finally`, so a throw cannot
+  //      leave it on: behaviour, through a fake host, in test_drop_load.mjs.
   const setBusyBody = bodyOf('function setBusy(');
   assert.match(
     setBusyBody,
     /busy = message \?\? busyFloor;/,
     'setBusy(null) falls back to the drop-long floor, not to an idle chrome',
   );
-  const loadBody = bodyOf('async function loadFiles(');
-  assert.match(loadBody, /setBusyFloor\(/, 'loadFiles holds the busy line for the whole drop');
-  const finallyAt = loadBody.lastIndexOf('} finally {');
-  assert.ok(
-    finallyAt >= 0 && loadBody.indexOf('setBusyFloor(null)', finallyAt) > finallyAt,
-    'the floor is dropped in a finally: a drop that throws must not leave the busy bar running',
+  assert.match(
+    blockOf('const dropLoad = createDropLoad({', '\n});'),
+    /\n  setBusyFloor,\n/,
+    "the drop holds the busy line through the root's floor",
   );
   // And the chrome has to be TOLD, because a busy message is not tellable from
   // an idle status sentence by reading it -- and on a narrow window the status
@@ -846,8 +801,14 @@ await check('one commit site serves every ingest, and it replaces', () => {
   // for one slot in a bundle is a refusal).
   assert.equal(
     occurrences(MAIN_TS, 'caseStore.attachTable('),
-    3,
+    2,
     'a new attachTable site in main.ts has to state its own replace policy here',
+  );
+  const restoreAttach = read('src/app/save-restore.ts').match(/cases\.attachTable\([^;]*;/g);
+  assert.deepEqual(
+    restoreAttach,
+    ['cases.attachTable(created.id, table.key, table.data);'],
+    'the restore attaches at one site, without replace',
   );
 
   // The host's attach is where the root learns a table's source files, so it
@@ -870,33 +831,22 @@ await check('one commit site serves every ingest, and it replaces', () => {
     'tables are recorded at the ingest host only',
   );
   // A drop's accepted files are logged as one event when the drop ends, so
-  // the drop is closed on every exit, a throw included.
-  const load = bodyOf('async function loadFiles(');
-  const finallyAt = load.lastIndexOf('} finally {');
-  assert.ok(
-    load.indexOf('inventory.beginDrop()') > 0 && load.indexOf('inventory.beginDrop()') < finallyAt,
-    'loadFiles opens a drop in the inventory',
-  );
-  assert.ok(
-    load.indexOf('inventory.endDrop()', finallyAt) > finallyAt,
-    'loadFiles closes the drop in its finally',
+  // the drop is closed on every exit, a throw included: behaviour in
+  // test_drop_load.mjs, over the inventory the root hands it.
+  assert.match(
+    blockOf('const dropLoad = createDropLoad({', '\n});'),
+    /\n  inventory,\n/,
+    'the drop brackets itself in the one inventory',
   );
   // A group file loaded in an editor is recorded on Apply, after the
-  // membership is adopted, for every kind; a cancel returns first.
-  for (const [opener, apply] of [
-    ['function openGeneratorGroupEditor(', 'applyGeneratorMembership(edit.value)'],
-    ['function openBusGroupEditor(', 'applyBusMembership(edit.value)'],
-    ['function openInterfaceGroupEditor(', 'applyInterfaceMembership(edit.value)'],
-  ]) {
-    const body = bodyOf(opener);
-    const cancelAt = body.indexOf('if (edit === null) return;');
-    const applyAt = body.indexOf(apply);
-    const recordAt = body.indexOf('recordEditorGroups(');
-    assert.ok(
-      cancelAt > 0 && cancelAt < applyAt && applyAt < recordAt,
-      `${opener} records the editor's file after Apply adopts it, never on cancel`,
-    );
-  }
+  // membership is adopted, for every kind; a cancel returns first. The order
+  // is the shared flow's, proved by behaviour in test_group_editing.mjs; here
+  // the root must route the host's record to the inventory.
+  assert.match(
+    blockOf('const groupHost: GroupEditingHost = {', '};'),
+    /recordEditor: recordEditorGroups/,
+    "each kind's editor records through recordEditorGroups",
+  );
   {
     const area = MAIN_TS.indexOf('showGroupEditor({ present: presentAreas() })');
     const tail = MAIN_TS.slice(area, MAIN_TS.indexOf('render();', area));
@@ -931,7 +881,11 @@ await check('the hourly export reaches app state only through its host', () => {
     /resolve: \(ref\) => resolveDraw\(exportContext,/,
     'the root resolves an exported row through the draw, into the export context',
   );
-  assert.match(MAIN_TS, /lines: createScratchPool\(\)/, 'the export context has a one-set pool');
+  assert.match(
+    MAIN_TS,
+    /const exportContext = drawContextOf\(drawSource, \(\) => query\.filters, createScratchPool\(\)\)/,
+    'the export context has a one-set pool',
+  );
 });
 
 console.log(`\n${checks} integration checks passed.`);

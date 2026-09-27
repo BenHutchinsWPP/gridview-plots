@@ -1,21 +1,26 @@
 // tests/test_heatmap_pane.mjs
 //
-// The 24x365 diurnal heatmap slot. src/ui/charts.ts cannot load under Node
-// (it imports uPlot and a CSS file), so its couplings are asserted against
-// the source text. The renderer itself, src/ui/heatmap-plot.ts, is run here
-// under Node against stubbed DOM so color mapping, calendar geometry, and
-// hover hit-testing are proven directly.
+// The 24x365 diurnal heatmap chart type. Its adapter, src/ui/panes/heatmap.ts,
+// loads under Node, so it is run here against a fake DOM: colour mapping,
+// calendar geometry, hover hit-testing and its Figure are proven through
+// the adapter's own interface. src/ui/charts.ts cannot load (it imports
+// uPlot and a CSS file), so the type list is read as source text.
 //
 // The assertions:
-//   (a) 'heatmap' is a SlotType and all four pane selects offer it;
-//   (b) hand-drawn architecture: the canvas is used and uPlot is hidden;
-//   (c) availability requires at least one drawn series, refusing cleanly
-//       when none is selected;
+//   (a) 'heatmap' is a SlotType, all four pane selects offer it, and the
+//       host maps it to this adapter;
+//   (b) hand-drawn: the adapter draws on the pane's canvas surface, never
+//       uPlot's (the pane showing that surface is tests/test_panes.mjs);
+//   (c) no series at all is the pane's shared empty text
+//       (tests/test_panes.mjs), and a series with no finite value is refused
+//       by name;
 //   (d) color palette mathematics: smooth viridis interpolation for
 //       sequential quantities and cool-warm with centered zero for diverging;
 //   (e) calendar arithmetic: 8,760 hours mapped to 365 days x 24 hours without
 //       drift or leap-year distortion;
-//   (f) hover interaction: hit-testing resolves the correct day, hour, and value.
+//   (f) hover interaction: hit-testing resolves the correct day, hour, and value;
+//   (g) the Figure takes the painted series first and names the rest as
+//       left out.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -24,10 +29,13 @@ import { fileURLToPath } from 'node:url';
 
 // Loader shim for extensionless relative imports under Node ESM
 import './test_loader.mjs';
+import { installFakeDom, stubHost, frameOf } from './test_fixtures_dom.mjs';
 
-const { createHeatmapPlot, viridisColor, coolwarmColor } =
-  await import('../src/ui/heatmap-plot.ts');
+installFakeDom();
+const { createHeatmapAdapter, heatmapScale, viridisColor, coolwarmColor } =
+  await import('../src/ui/panes/heatmap.ts');
 import { HOURS_PER_YEAR } from '../src/model/calendar.ts';
+const { hourLabel } = await import('../src/ui/chart-format.ts');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => readFileSync(join(root, relative), 'utf8');
@@ -44,25 +52,13 @@ assert.match(
 
 const heatmapOptions = [...html.matchAll(/<option value="heatmap">/g)];
 assert.equal(heatmapOptions.length, 4, 'all four pane selects offer the Diurnal heatmap slot');
+assert.match(charts, /heatmap: createHeatmapAdapter,/, 'the host draws a heatmap pane with it');
 
 // ------------------------------------------------------------------- (b)
-assert.ok(
-  charts.includes("} else if (slotType === 'heatmap') {"),
-  'charts.ts contains the heatmap slot rendering branch',
-);
-assert.match(
-  charts,
-  /slotType === 'heatmap'[\s\S]*?canvasHost\.style\.display = ''/,
-  'heatmap displays the shared canvas host rather than uPlot',
-);
-
-// ------------------------------------------------------------------- (c)
-assert.match(
-  charts,
-  /drawable\.length === 0[\s\S]*?banner\(\s*body,\s*'refusal',\s*'Select a series in the Browse drawer to display its diurnal heatmap\.'/,
-  'heatmap refuses when no series is drawn, asking the user to select one',
-);
-
+const { host, record } = stubHost();
+const heatmap = createHeatmapAdapter(host);
+assert.equal(heatmap.surface, 'canvas', 'heatmap draws on the shared canvas rather than uPlot');
+assert.deepEqual(heatmap.controls(frameOf([])), [], 'and shows no header control of its own');
 // ------------------------------------------------------------------- (d) Color palette math
 // Sequential viridis: 0 -> deep purple, 1 -> bright yellow
 assert.equal(viridisColor(0), 'rgb(68,1,84)', 'viridis starts at purple at t=0');
@@ -85,87 +81,6 @@ assert.equal(coolwarmColor(-10), coolwarmColor(0), 'coolwarm clamps underflow to
 assert.equal(coolwarmColor(10), coolwarmColor(1), 'coolwarm clamps overflow to t=1');
 
 // ------------------------------------------------------------------- (e) Calendar & stubbed render
-// Build a stub 2D canvas context and elements
-function makeStubContext() {
-  const calls = [];
-  return {
-    calls,
-    save() {},
-    restore() {},
-    scale() {},
-    clearRect() {},
-    fillRect(x, y, w, h) {
-      calls.push({ op: 'fillRect', x, y, w, h });
-    },
-    strokeRect(x, y, w, h) {
-      calls.push({ op: 'strokeRect', x, y, w, h });
-    },
-    beginPath() {},
-    moveTo() {},
-    lineTo() {},
-    stroke() {},
-    fillText() {},
-    measureText: (text) => ({ width: text.length * 6 }),
-    createLinearGradient: () => ({ addColorStop() {} }),
-    set fillStyle(val) {},
-    set strokeStyle(val) {},
-    set lineWidth(val) {},
-    set font(val) {},
-    set textAlign(val) {},
-    set textBaseline(val) {},
-  };
-}
-
-globalThis.window = globalThis;
-globalThis.devicePixelRatio = 1;
-
-function makeStubElement() {
-  const children = [];
-  return {
-    style: {},
-    className: '',
-    textContent: '',
-    children,
-    clientWidth: 400,
-    clientHeight: 300,
-    getBoundingClientRect: () => ({ width: 400, height: 300 }),
-    querySelectorAll: () => [],
-    appendChild: (c) => children.push(c),
-    replaceChildren: (...cs) => {
-      children.length = 0;
-      children.push(...cs);
-    },
-  };
-}
-
-globalThis.document = {
-  createElement: () => makeStubElement(),
-};
-
-const mockCtx = makeStubContext();
-const mockCanvas = {
-  style: {},
-  width: 400,
-  height: 300,
-  getContext: () => mockCtx,
-};
-
-const stubBody = makeStubElement();
-const stubTip = makeStubElement();
-const slotHeatmapGeometry = [null, null, null, null];
-
-const heatmapPlot = createHeatmapPlot({
-  paneBodies: [stubBody, stubBody, stubBody, stubBody],
-  slotCanvases: [mockCanvas, mockCanvas, mockCanvas, mockCanvas],
-  slotTips: [stubTip, stubTip, stubTip, stubTip],
-  slotHeatmapGeometry,
-  paneSize: () => ({ width: 400, height: 300 }),
-  formatNumber: (v) => v.toFixed(1),
-  hourLabel: (h) => `Hour ${h}`,
-  banner: () => {},
-  clip: (_ctx, text) => text,
-});
-
 // Create an 8,760-hour synthetic series
 const testValues = new Float64Array(HOURS_PER_YEAR);
 for (let i = 0; i < HOURS_PER_YEAR; i++) {
@@ -176,58 +91,88 @@ for (let i = 0; i < HOURS_PER_YEAR; i++) {
 
 const testSeries = {
   name: 'Test Solar',
-  caseId: 'case-1',
-  caseName: 'Base Case',
-  slotKey: 'gen',
-  entity: 'Solar 1',
-  variable: 'Generation',
   unit: 'MW',
   color: '#ff7f0e',
   values: testValues,
+  warnings: [],
   stats: { mean: 50, sd: 20, min: 10, max: 260 },
   n: HOURS_PER_YEAR,
   allZero: false,
 };
+const otherSeries = { ...testSeries, name: 'Test Wind', color: '#1f77b4' };
 
-// Draw slot 0
-heatmapPlot.draw(0, testSeries);
+const scale = heatmapScale(testValues);
+assert.equal(scale.diverging, false, 'strictly positive series detected as sequential');
+assert.equal(scale.min, 10, 'min recovered from values');
+assert.equal(scale.max, 260, 'max recovered from values');
 
-assert.ok(slotHeatmapGeometry[0] !== null, 'geometry is recorded on successful draw');
-assert.equal(
-  slotHeatmapGeometry[0].scale.diverging,
-  false,
-  'strictly positive series detected as sequential',
+heatmap.draw(frameOf([testSeries, otherSeries]));
+assert.deepEqual(
+  record.notes,
+  ['Test Solar (1 of 2)'],
+  'the header names which of the drawn series it painted',
 );
-assert.equal(slotHeatmapGeometry[0].scale.min, 10, 'min recovered from values');
-assert.equal(slotHeatmapGeometry[0].scale.max, 260, 'max recovered from values');
+assert.equal(host.canvas.style.display, '', 'a drawn heatmap shows its canvas');
 
 // In 8,760 cells, each cell gets a fillRect call (plus the colorbar fillRect)
-const fillRects = mockCtx.calls.filter((c) => c.op === 'fillRect');
+const fillRects = host.canvas.context.calls.filter((c) => c.op === 'fillRect');
 assert.equal(fillRects.length, HOURS_PER_YEAR + 1, 'exactly 8,760 cells plus 1 colorbar drawn');
 
 // ------------------------------------------------------------------- (f) Hover test
-// Test hover inside the plot area (X: ~mid-year day 182, Y: ~midday hour 11)
-const geom = slotHeatmapGeometry[0];
+// The plot box a 400 x 300 pane leaves: margins 34 left, 22 top, 36 bottom,
+// 78 right for the colour bar.
+const geom = { marginLeft: 34, marginTop: 22, plotWidth: 400 - 34 - 78, plotHeight: 300 - 22 - 36 };
 const testPx = geom.marginLeft + Math.round(geom.plotWidth / 2); // ~mid-year (day 182)
 const testPy = geom.marginTop + Math.round(geom.plotHeight / 2); // ~midday (HE 12)
 
-heatmapPlot.hover(0, testPx, testPy);
-assert.equal(stubTip.style.display, '', 'hover inside plot bounds displays tooltip');
-assert.ok(stubTip.children.length >= 2, 'tooltip populates header and row content');
-assert.match(
-  stubTip.children[0].textContent,
-  /Hour 4379/,
-  'tooltip reflects mid-year midday hour index',
+const tip = host.tip;
+heatmap.hover(testPx, testPy);
+assert.equal(tip.style.display, '', 'hover inside plot bounds displays tooltip');
+assert.ok(tip.children.length >= 2, 'tooltip populates header and row content');
+assert.equal(
+  tip.children[0].textContent,
+  `${hourLabel(4379)} (Hour 4380)`,
+  'tooltip reflects the mid-year midday hour, index 4379',
 );
 
 // Test hover outside the plot area
-heatmapPlot.hover(0, 0, 0);
-assert.equal(stubTip.style.display, 'none', 'hover outside plot bounds hides tooltip');
+heatmap.hover(0, 0);
+assert.equal(tip.style.display, 'none', 'hover outside plot bounds hides tooltip');
 
-// Clear
-heatmapPlot.clear(0);
-assert.equal(slotHeatmapGeometry[0], null, 'clear() nulls out slot geometry');
+// ------------------------------------------------------------------- (g) Figure
+const shot = heatmap.figure.capture();
+assert.equal(shot.capture.pane, 'heatmap');
+assert.deepEqual(
+  shot.capture.lines.map((line) => [line.name, line.values === null, line.refusal]),
+  [
+    ['Test Solar', false, undefined],
+    ['Test Wind', true, 'A heatmap paints one series.'],
+  ],
+  'the painted series first, the other drawn series named as left out',
+);
+assert.notEqual(shot.capture.lines[0].values, testValues, 'the values are a copy');
+
+// ------------------------------------------------------------------- (c) Refusal
+const blank = {
+  ...testSeries,
+  name: 'Test Blank',
+  values: new Float64Array(HOURS_PER_YEAR).fill(NaN),
+};
+heatmap.draw(frameOf([blank]));
+assert.deepEqual(record.banners.at(-1), {
+  kind: 'refusal',
+  text: 'All values in Test Blank are blank or non-finite.',
+});
+assert.equal(host.canvas.style.display, 'none', 'a refused heatmap hides its canvas');
+assert.equal(heatmap.figure.capture(), null, 'and offers nothing to capture');
+
+// Leaving the type releases the shared canvas: a hover finds no heatmap.
+heatmap.draw(frameOf([testSeries]));
+heatmap.leave();
+heatmap.hover(testPx, testPy);
+assert.equal(tip.style.display, 'none', 'after leave() the heatmap answers no hover');
+assert.equal(heatmap.figure.capture(), null);
 
 console.log(
-  'ok - diurnal heatmap slot: SlotType registration, hand-drawn uPlot-free canvas, color palettes, 8,760 geometry, and interactive hover inspection',
+  'ok - diurnal heatmap: SlotType registration, hand-drawn uPlot-free canvas, color palettes, 8,760 geometry, interactive hover inspection and its figure',
 );

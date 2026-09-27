@@ -1,40 +1,24 @@
-// src/ui/heatmap-plot.ts
+// src/ui/panes/heatmap.ts
 //
-// The 24x365 diurnal heatmap pane, hand-drawn because uPlot draws 1D
-// ascending x-axes, not a matrix. Hour of day across, Jan 1..Dec 31 down.
+// The 24x365 diurnal heatmap chart type, hand-drawn because uPlot draws 1D
+// ascending x-axes, not a matrix. Day of year across, hour of day up.
 // Diverging palette when values span zero (flows, storage), sequential
-// (viridis) when non-negative. Geometry and hovers are owned by charts.ts via
-// `deps`, so the pane holds no state across redraws.
+// (viridis) when non-negative. One series: the pane names which of the drawn
+// lines it painted. The scale and colour rules are exported for the print
+// figure, so the two cannot paint one series differently.
 
-import type { CaseSeries } from './charts';
-import { MONTH_NAMES, MONTH_LENGTHS } from '../model/calendar';
+import type { CaseSeries } from '../charts';
+import { MONTH_NAMES, MONTH_LENGTHS } from '../../model/calendar';
+import { clip, formatNumber, hourLabel } from '../chart-format';
+import { figureShot, pinnedOf, type PaneAdapter, type PaneFrame, type PaneHost } from './adapter';
 
-export interface HeatmapGeometry {
+interface HeatmapGeometry {
   marginLeft: number;
   marginTop: number;
   plotWidth: number;
   plotHeight: number;
   scale: HeatmapScale;
   series: CaseSeries;
-}
-
-export interface HeatmapPlotDeps {
-  paneBodies: HTMLElement[];
-  slotCanvases: HTMLCanvasElement[];
-  slotTips: HTMLElement[];
-  slotHeatmapGeometry: (HeatmapGeometry | null)[];
-  paneSize(body: HTMLElement): { width: number; height: number };
-  formatNumber(value: number): string;
-  hourLabel(hour: number): string;
-  banner(body: HTMLElement, kind: 'refusal' | 'note', text: string): void;
-  clip(context: CanvasRenderingContext2D, text: string, maxWidth: number): string;
-}
-
-export interface HeatmapPlot {
-  draw(slotIndex: number, series: CaseSeries): void;
-  clear(slotIndex: number): void;
-  hover(slotIndex: number, px: number, py: number): void;
-  clearHover(slotIndex: number): void;
 }
 
 // ----------------------------------------------------------- color palettes
@@ -136,39 +120,29 @@ const MARGIN_RIGHT = 78;
 const HOURS_IN_DAY = 24;
 const DAYS_IN_YEAR = 365;
 
-export function createHeatmapPlot(deps: HeatmapPlotDeps): HeatmapPlot {
-  const {
-    paneBodies,
-    slotCanvases,
-    slotTips,
-    slotHeatmapGeometry,
-    paneSize,
-    formatNumber,
-    hourLabel,
-    clip,
-  } = deps;
-
+export function createHeatmapAdapter(host: PaneHost): PaneAdapter {
+  const { body, canvas, tip } = host;
+  let frame: PaneFrame | null = null;
+  let geometry: HeatmapGeometry | null = null;
   // Track the hovered cell to draw a cursor outline without repainting the entire matrix
-  const slotHoveredCell = Array.from({ length: 4 }, () => ({ day: -1, hour: -1 }));
+  let hoveredCell = { day: -1, hour: -1 };
 
-  function clear(slotIndex: number): void {
-    slotHeatmapGeometry[slotIndex] = null;
-    slotHoveredCell[slotIndex] = { day: -1, hour: -1 };
-    slotTips[slotIndex].style.display = 'none';
-    slotCanvases[slotIndex].style.display = 'none';
+  function clear(): void {
+    geometry = null;
+    hoveredCell = { day: -1, hour: -1 };
+    tip.style.display = 'none';
+    canvas.style.display = 'none';
   }
 
-  function clearHover(slotIndex: number): void {
-    slotTips[slotIndex].style.display = 'none';
-    if (slotHoveredCell[slotIndex].day >= 0) {
-      slotHoveredCell[slotIndex] = { day: -1, hour: -1 };
-      const geom = slotHeatmapGeometry[slotIndex];
-      if (geom) draw(slotIndex, geom.series);
+  function clearHover(): void {
+    tip.style.display = 'none';
+    if (hoveredCell.day >= 0) {
+      hoveredCell = { day: -1, hour: -1 };
+      if (geometry) draw(geometry.series);
     }
   }
 
-  function hover(slotIndex: number, px: number, py: number): void {
-    const geometry = slotHeatmapGeometry[slotIndex];
+  function hover(px: number, py: number): void {
     if (!geometry) return;
 
     const { marginLeft, marginTop, plotWidth, plotHeight, series } = geometry;
@@ -181,9 +155,8 @@ export function createHeatmapPlot(deps: HeatmapPlotDeps): HeatmapPlot {
       py >= marginTop &&
       py <= marginTop + plotHeight;
 
-    const tip = slotTips[slotIndex];
     if (!inside) {
-      clearHover(slotIndex);
+      clearHover();
       return;
     }
 
@@ -199,10 +172,10 @@ export function createHeatmapPlot(deps: HeatmapPlotDeps): HeatmapPlot {
     );
     const h = HOURS_IN_DAY - 1 - r;
 
-    const prev = slotHoveredCell[slotIndex];
+    const prev = hoveredCell;
     if (prev.day !== d || prev.hour !== h) {
-      slotHoveredCell[slotIndex] = { day: d, hour: h };
-      renderWithCursor(slotIndex, geometry, d, h);
+      hoveredCell = { day: d, hour: h };
+      renderWithCursor(geometry, d, h);
     }
 
     const hourIdx = d * HOURS_IN_DAY + h;
@@ -232,31 +205,29 @@ export function createHeatmapPlot(deps: HeatmapPlotDeps): HeatmapPlot {
     tip.replaceChildren(head, row);
     tip.style.display = '';
 
-    const right = px < paneBodies[slotIndex].clientWidth / 2;
+    const right = px < body.clientWidth / 2;
     tip.style.left = right ? 'auto' : '6px';
     tip.style.right = right ? '6px' : 'auto';
   }
 
-  function draw(slotIndex: number, series: CaseSeries): void {
-    const body = paneBodies[slotIndex];
+  function draw(series: CaseSeries): void {
     body.querySelectorAll('.pane-banner').forEach((node) => node.remove());
 
     const values = series.values;
     if (!values || values.length === 0) {
-      clear(slotIndex);
-      deps.banner(body, 'refusal', `No hourly values available for ${series.name}.`);
+      clear();
+      host.banner('refusal', `No hourly values available for ${series.name}.`);
       return;
     }
 
     const scale = heatmapScale(values);
     if (!scale) {
-      clear(slotIndex);
-      deps.banner(body, 'refusal', `All values in ${series.name} are blank or non-finite.`);
+      clear();
+      host.banner('refusal', `All values in ${series.name} are blank or non-finite.`);
       return;
     }
-    const { width, height } = paneSize(body);
+    const { width, height } = host.size();
     const ratio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    const canvas = slotCanvases[slotIndex];
     canvas.width = Math.floor(width * ratio);
     canvas.height = Math.floor(height * ratio);
     canvas.style.display = '';
@@ -264,7 +235,7 @@ export function createHeatmapPlot(deps: HeatmapPlotDeps): HeatmapPlot {
     const plotWidth = Math.max(48, width - MARGIN_LEFT - MARGIN_RIGHT);
     const plotHeight = Math.max(24, height - MARGIN_TOP - MARGIN_BOTTOM);
 
-    const geometry: HeatmapGeometry = {
+    const drawn: HeatmapGeometry = {
       marginLeft: MARGIN_LEFT,
       marginTop: MARGIN_TOP,
       plotWidth,
@@ -273,19 +244,13 @@ export function createHeatmapPlot(deps: HeatmapPlotDeps): HeatmapPlot {
       series,
     };
 
-    slotHeatmapGeometry[slotIndex] = geometry;
-    slotHoveredCell[slotIndex] = { day: -1, hour: -1 };
+    geometry = drawn;
+    hoveredCell = { day: -1, hour: -1 };
 
-    renderWithCursor(slotIndex, geometry, -1, -1);
+    renderWithCursor(drawn, -1, -1);
   }
 
-  function renderWithCursor(
-    slotIndex: number,
-    geometry: HeatmapGeometry,
-    cursorDay: number,
-    cursorHour: number,
-  ): void {
-    const canvas = slotCanvases[slotIndex];
+  function renderWithCursor(drawn: HeatmapGeometry, cursorDay: number, cursorHour: number): void {
     const context = canvas.getContext('2d');
     if (!context) return;
 
@@ -293,10 +258,10 @@ export function createHeatmapPlot(deps: HeatmapPlotDeps): HeatmapPlot {
     context.save();
     context.scale(ratio, ratio);
 
-    const { width, height } = paneSize(paneBodies[slotIndex]);
+    const { width, height } = host.size();
     context.clearRect(0, 0, width, height);
 
-    const { marginLeft, marginTop, plotWidth, plotHeight, scale, series } = geometry;
+    const { marginLeft, marginTop, plotWidth, plotHeight, scale, series } = drawn;
     const values = series.values ?? [];
 
     const [low, high] = heatmapEnds(scale);
@@ -432,5 +397,45 @@ export function createHeatmapPlot(deps: HeatmapPlotDeps): HeatmapPlot {
     context.restore();
   }
 
-  return { draw, clear, hover, clearHover };
+  return {
+    surface: 'canvas',
+    controls: () => [],
+    draw(next) {
+      frame = next;
+      tip.style.display = 'none';
+      const { drawable, zeroText } = next;
+      const s = drawable[0];
+      host.note(`${s.name}${drawable.length > 1 ? ` (1 of ${drawable.length})` : ''}`);
+      draw(s);
+      if (zeroText) host.banner('note', zeroText);
+    },
+    leave() {
+      frame = null;
+      clear();
+    },
+    resize() {
+      if (geometry) draw(geometry.series);
+    },
+    hover,
+    unhover() {
+      tip.style.display = 'none';
+      if (geometry) clearHover();
+    },
+    figure: {
+      offered: () => true,
+      capture() {
+        // The one series the pane painted, first; the pinned lines it left
+        // out ride along, named as such.
+        const painted = geometry?.series;
+        if (!frame || !painted || painted.dashed) return null;
+        const pinned = pinnedOf(frame.input.series);
+        return figureShot(host, frame.input, {
+          pane: 'heatmap',
+          ordered: [painted, ...pinned.filter((s) => s !== painted)],
+          xWindow: [0, 1],
+          onlyOne: 'A heatmap paints one series.',
+        });
+      },
+    },
+  };
 }

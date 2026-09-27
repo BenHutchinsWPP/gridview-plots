@@ -27,7 +27,7 @@ import {
   type BrowseRowRef,
   type BrowseTab,
 } from '../../../ui/browse-model';
-import { areasIn, groupingNames } from '../../../lookups/groupings';
+import { areasIn, groupingNames } from '../groupings';
 import { applyMask, buildSeries, quantiles, stats } from '../kernels';
 import { ruleFor, RATIO_METRICS, withheldFromGroups } from '../rules';
 import type { AreaTable } from '../types';

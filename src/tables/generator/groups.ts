@@ -3,7 +3,7 @@
 // The session-wide generator group map (group -> unit NAME keys), loaded from
 // a membership CSV through an explicit column mapping, and its bundle shape.
 //
-// Separate from src/lookups/groupings.ts because the key set differs: area
+// Separate from src/tables/area/groupings.ts because the key set differs: area
 // membership keys on the cube's own axis, while generator membership keys on
 // GeneratorList's `Name`, which is replaced wholesale when another list is
 // dropped, and (bus, unit) rows must be resolved to names first. So no view

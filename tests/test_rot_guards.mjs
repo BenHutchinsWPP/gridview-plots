@@ -7,6 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import './test_loader.mjs';
 
 const registry = await import('../src/tables/registry.ts');
@@ -27,23 +28,24 @@ const isProse = (file, line) =>
   /\.md$/.test(file) ? /^\s*<!--/.test(line) : /^\s*(\/\/|\*|\/\*|#|<!--)/.test(line);
 const unmark = (line) => line.replace(/^\s*(?:\/\/|\*|\/\*|#|<!--)\s*/, ' ');
 
-/** Every tracked text file that can carry a comment or a doc reference. */
-function sources(dir = '.', out = []) {
-  for (const e of readdirSync(new URL(dir + '/', ROOT), { withFileTypes: true })) {
-    if (['node_modules', '.git', 'dist', 'sample-data', 'public'].includes(e.name)) continue;
-    const p = `${dir}/${e.name}`;
-    // Skip a nested checkout (e.g. an agent's git worktree): walking a second
-    // copy of the repo would trip every duplication and header check at once.
-    if (e.isDirectory() && existsSync(new URL(`${p}/.git`, ROOT))) continue;
-    if (e.isDirectory()) sources(p, out);
-    // Extension-less config files carry prose and rot like any other file.
-    else if (
-      /\.(ts|mjs|js|c|h|sh|html|md|json|css|yml)$/.test(e.name) ||
-      /^\.(?:git|prettier)ignore$/.test(e.name)
-    )
-      out.push(p.replace(/^\.\//, ''));
-  }
-  return out;
+/** Every tracked text file that can carry a comment or a doc reference, and
+ * any new one git would track. Git's own ignore rules decide, so a local
+ * archive, an audit report or an agent's worktree never counts as source. */
+function sources() {
+  return execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
+    cwd: new URL('.', ROOT),
+    encoding: 'utf8',
+  })
+    .split('\n')
+    .filter(
+      (p) =>
+        p !== '' &&
+        !/^(?:node_modules|dist|sample-data|public)\//.test(p) &&
+        existsSync(new URL(p, ROOT)) &&
+        // Extension-less config files carry prose and rot like any other file.
+        (/\.(ts|mjs|js|c|h|sh|html|md|json|css|yml)$/.test(p) ||
+          /(?:^|\/)\.(?:git|prettier)ignore$/.test(p)),
+    );
 }
 const FILES = sources();
 
@@ -259,8 +261,12 @@ ok('the resolver map is derived from the registry, not restated', () => {
 //   * `detect.ts`'s `DetectKind`, which is WIDER than `TableKind` (groupings,
 //     bundles and limits are verdicts with no table);
 //   * `storage/legacy.ts`: the legacy formats hold only area and interface;
-//   * the two dispatchers in `src/app/`, whose branches genuinely differ;
-//   * `main.ts`, the composition root;
+//   * the dispatchers in `src/app/`, whose branches genuinely differ (a drop
+//     runs Area's long batch before its wide one, the others' after; each
+//     kind's batch in `ingest-kinds.ts` makes its own picker decisions);
+//   * `main.ts`, the composition root, and the halves of it that read on
+//     their own: `app/case-views.ts` (a typed read per kind) and
+//     `app/browse-wiring.ts` (each kind's tabs and switch answers);
 //   * `ui/groupings-mapping.ts`, whose four answers are about what a
 //     membership FILE says (names, pairs, ids, directions), which belongs to
 //     each `tables/<kind>/groups.ts`, not to the table registry.
@@ -274,7 +280,11 @@ const KIND_MAP_FILES = new Set([
   'src/storage/legacy.ts',
   'src/app/draw.ts',
   'src/app/drop-route.ts',
+  'src/app/drop-load.ts',
+  'src/app/ingest-kinds.ts',
   'src/main.ts',
+  'src/app/case-views.ts',
+  'src/app/browse-wiring.ts',
   'src/ui/groupings-mapping.ts',
 ]);
 
@@ -644,11 +654,6 @@ function proseRuns(file) {
 
 const PROSE_FILES = FILES.filter((f) => /\.(ts|mjs|js|c|h)$/.test(f));
 
-// The one exempt pair: the two block.c files carry their own copies of the
-// same freestanding helpers, and the prose follows the code. Sharing them
-// would mean rebuilding two committed `.wasm` binaries.
-const TWINS = ['parser/long/block.c', 'parser/wide/block.c'].join();
-const areTwins = (at) => [...at].sort().join() === TWINS;
 const groupKey = (at) => [...at].sort().join(' ');
 
 // ---------------------------------------- 10c. the duplication that is left
@@ -673,7 +678,7 @@ ok('no paragraph of prose is copied into a second file', () => {
       }
   const known = new Set(KNOWN_COPIED_PARAGRAPHS);
   const copied = [...seen]
-    .filter(([, at]) => at.size > 1 && !areTwins(at) && !known.has(groupKey(at)))
+    .filter(([, at]) => at.size > 1 && !known.has(groupKey(at)))
     .map(([pair, at]) => `  ${[...at].join(', ')}\n    "${pair.slice(0, 90)}..."`);
   assert.equal(
     copied.length,
@@ -697,7 +702,7 @@ ok('no sentence of prose stands in three or more files', () => {
       }
   const known = new Set(KNOWN_COPIED_SENTENCES);
   const spread = [...seen]
-    .filter(([, at]) => at.size > 2 && !areTwins(at) && !known.has(groupKey(at)))
+    .filter(([, at]) => at.size > 2 && !known.has(groupKey(at)))
     .map(
       ([line, at]) => `  ${at.size} files: "${line.slice(0, 80)}..."\n    ${[...at].join(', ')}`,
     );

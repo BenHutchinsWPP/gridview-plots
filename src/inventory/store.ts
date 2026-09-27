@@ -1137,7 +1137,7 @@ export function readSavedInventory(raw: unknown): SavedInventory | undefined {
 }
 
 /** Bytes as the readout states them: exact below a KiB, else one decimal. */
-export function formatBytes(bytes: number): string {
+function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes.toLocaleString()} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
   let value = bytes / 1024;
@@ -1151,7 +1151,7 @@ export function formatBytes(bytes: number): string {
 
 /** A local timestamp, `YYYY-MM-DD HH:MM:SS`: sortable, and what a file
  * browser shows beside the export. */
-export function formatTime(ms: number): string {
+function formatTime(ms: number): string {
   const at = new Date(ms);
   const pad = (value: number) => String(value).padStart(2, '0');
   return (

@@ -258,7 +258,7 @@ const TITLE_PT = 9;
 const NOTE_PT = 7.5;
 const LEADING = 1.3;
 /** About a pen width in print: thinner prints as a hairline. */
-export const LINE_PT = 1.25;
+const LINE_PT = 1.25;
 
 /** A limit line's dash, in points: short dots, the pane's own look. */
 export const LIMIT_DASH: readonly number[] = [1.5, 2.5];

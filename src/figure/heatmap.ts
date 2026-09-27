@@ -19,7 +19,7 @@ import {
   heatmapEnds,
   heatmapScale,
   type HeatmapScale,
-} from '../ui/heatmap-plot';
+} from '../ui/panes/heatmap';
 import { MEASURE_SLACK } from './legend';
 import { line, outlinedRect, rect, text } from './svg';
 import type { FigureCapture, PaneRenderer } from './build';

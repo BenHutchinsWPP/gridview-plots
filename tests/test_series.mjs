@@ -1097,12 +1097,13 @@ function drawInterface(data, subject, { filters = NO_FILTERS, spec = {}, opts = 
   );
   ok('checkStackOverlap flags area containing generator from grouped generator series');
 
-  // 7. Grouped Area contains Generator
-  // Set groupings: Zone 1 -> North
-  setGroupings('Name,Grouping\nNorth,Zone 1\n');
+  // 7. Grouped Area contains Generator. A group line names the areas its
+  // resolver summed, and the overlap test reads those, not the grouping map.
+  setGroupings('Name,Grouping\nSouth,Zone 1\n');
   const zoneArea = {
     name: 'Base Case · Zone 1 · Generation (MWh)',
     unit: 'MWh',
+    summed: ['North'],
     spec: {
       caseId: 'case-1',
       source: { kind: 'area', quantity: 'Generation (MWh)' },
@@ -1138,6 +1139,7 @@ function drawInterface(data, subject, { filters = NO_FILTERS, spec = {}, opts = 
   );
   const zoneWithoutNorth = {
     ...zoneArea,
+    summed: ['South'],
     spec: {
       ...zoneArea.spec,
       subject: { ...zoneArea.spec.subject, members: ['South'] },

@@ -15,7 +15,7 @@ import { COLUMNS_PER_PT } from './time';
 import type { PaneRenderer } from './build';
 
 /** The pane's x-axis title. */
-export const DURATION_X_TITLE = '% of interval';
+const DURATION_X_TITLE = '% of interval';
 
 /** Room a tick label takes, in points: a label per this much width at most. */
 const TICK_ROOM_PT = 40;

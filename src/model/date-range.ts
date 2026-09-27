@@ -54,7 +54,7 @@ export function rangeOf(a: number, b: number): DateRange {
   };
 }
 
-export function sameRange(a: DateRange | null, b: DateRange | null): boolean {
+function sameRange(a: DateRange | null, b: DateRange | null): boolean {
   return a === b || (a !== null && b !== null && a.start === b.start && a.end === b.end);
 }
 

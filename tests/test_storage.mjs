@@ -857,7 +857,7 @@ function drawPins(store, pins) {
   );
 }
 
-/** What `adoptRestoredCases` in main.ts does, minus the DOM: one fresh Case
+/** What `adoptRestoredCases` in src/app/save-restore.ts does, minus the host: one fresh Case
  * per restored case, in bundle order. */
 function adopt(store, restored) {
   return restored.map((entry) => {
@@ -1042,42 +1042,8 @@ check('a bundle saved with id-keyed limits still restores them', () => {
   assert.equal(limits.limitFor('case-legacy', 'PATH_A'), undefined, 'never the saved id');
 });
 
-await checkAsync(
-  'both restore paths in main.ts adopt one session, or log a refusal and adopt nothing',
-  async () => {
-    const { readFileSync } = await import('node:fs');
-    const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-    const functions = main.split(/\n(?=(?:async )?function )/);
-    const restorers = functions.filter((body) =>
-      body.includes('adoptRestoredCases(loaded.restoredCases)'),
-    );
-    assert.deepEqual(
-      restorers.map((body) => body.match(/function (\w+)/)[1]).sort(),
-      ['loadAll', 'restoreBundleFile'],
-      'the file drop and the origin-private Load are the two restore paths',
-    );
-    for (const body of restorers) {
-      const name = body.match(/function (\w+)/)[1];
-      assert.match(body, /adoptRestoredSession\(loaded, adopted\.made, /, name);
-      // The refusal branch logs and returns before anything is adopted.
-      const refused = body.slice(
-        body.indexOf('if (!adopted)'),
-        body.indexOf('adoptRestoredSession('),
-      );
-      assert.match(refused, /inventory\.logRefused(?:Source)?\(/, `${name} logs its refusal`);
-      assert.match(refused, /\breturn\b/, `${name} adopts nothing when refused`);
-    }
-    // Inside it: display names before the view repaints; the inventory after
-    // the limits and every other input it reconciles against.
-    const session = functions.find((body) => body.startsWith('function adoptRestoredSession('));
-    assert.ok(session, 'main.ts declares adoptRestoredSession');
-    const at = (call) => session.indexOf(call);
-    assert.ok(at('adoptRestoredDisplayNames(') < at('adoptRestoredView()'));
-    assert.ok(at('adoptRestoredLimits(loaded.limits, made,') > 0, 'limits by the Cases made');
-    assert.ok(at('adoptRestoredInventory(') > at('adoptRestoredLimits('));
-    assert.match(session, /\.\.\.displayNotes,/, 'a refused display name is said');
-  },
-);
+// That both restore paths adopt one session, in one order, and that a refused
+// bundle adopts nothing, is behaviour in tests/test_save_restore.mjs.
 
 // ------------------------------------------ Case display names
 //
@@ -1145,7 +1111,7 @@ const INV_ROWS = [
   { input: SHARED_LIMITS_INPUT, label: 'Limits (shared)', enables: 's' },
 ];
 
-/** What `adoptRestoredInventory` in main.ts hands `restore` for a slot. */
+/** What `adoptInventory` in src/app/save-restore.ts hands `restore` for a slot. */
 function presentIn(store, limits) {
   return (caseId, slot) =>
     slot.kind === LIMITS_COLUMN

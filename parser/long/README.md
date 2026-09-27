@@ -12,9 +12,9 @@ sudo apt-get install -y lld-18     # supplies wasm-ld
 ./build.sh
 ```
 
-Commit `block.wasm` with any `block.c` change, and bump `ABI_VERSION` with
-`PARSER_ABI` in `src/tables/long/block.ts` when the exports or arena layout
-change.
+Commit `block.wasm` with any change to `block.c` or `../common/fields.h`,
+and bump `ABI_VERSION` with `PARSER_ABI` in `src/tables/long/block.ts` when
+the exports or arena layout change.
 
 ## Decisions
 

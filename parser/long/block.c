@@ -17,7 +17,7 @@
 //
 // Build: parser/long/build.sh
 
-#include <wasm_simd128.h>
+#include "../common/fields.h"
 
 // Bumped on any change to the exported surface or slab layout, so a stale
 // committed binary is an error at instantiate, not a wrong number.
@@ -52,9 +52,8 @@
 
 #define INVALID 0xFFFFFFFFu
 #define NO_AREA INVALID
-// Feb 29 is dropped on purpose; INVALID is an unreadable date. Kept apart so
-// only the second refuses the load.
-#define FEB29   0xFFFFFFFEu
+// An unreadable date is INVALID: fields.h's NO_DAY, the same value.
+_Static_assert(NO_DAY == INVALID, "a date parse failure must read as INVALID");
 
 static unsigned char inbuf[INBUF_BYTES];
 static unsigned char arena[ARENA_BYTES] __attribute__((aligned(16)));
@@ -174,85 +173,6 @@ static inline unsigned fnv1a(const unsigned char* p, const unsigned char* e) {
   unsigned h = 0x811c9dc5u;
   for (; p < e; p++) { h ^= *p; h *= 0x01000193u; }
   return h;
-}
-
-// Days before each month, non-leap; Feb 29 rows are skipped.
-static const unsigned short CUM[12] = {0,31,59,90,120,151,181,212,243,273,304,334};
-
-// f64 digit accumulation; see parse_float in parser/wide/block.c for why not
-// Eisel-Lemire. Exponent notation (`7E-05`) appears in real exports for
-// near-zero values and must parse, or the cell silently reads as absent.
-static inline float parse_float(const unsigned char* p, const unsigned char* e) {
-  if (e <= p) return 0.0f / 0.0f;
-  int neg = 0;
-  if (*p == '-') { neg = 1; p++; }
-  else if (*p == '+') { p++; }
-
-  // Rounds twice where strtod rounds once: a 1-ulp float32 difference in 8 of
-  // 18,834,000 cells on two 8-digit money columns. Measured, do not "fix":
-  // a single-division f64 mantissa is 20% slower and changes none of them.
-  double ip = 0.0;
-  while (p < e) {
-    unsigned d = (unsigned)(*p - '0');
-    if (d > 9) break;
-    ip = ip * 10.0 + (double)d;
-    p++;
-  }
-  double v = ip;
-  if (p < e && *p == '.') {
-    p++;
-    double f = 0.0, sc = 1.0;
-    while (p < e) {
-      unsigned d = (unsigned)(*p - '0');
-      if (d > 9) break;
-      f = f * 10.0 + (double)d;
-      sc *= 10.0;
-      p++;
-    }
-    v += f / sc;
-  }
-  if (p < e && (*p == 'e' || *p == 'E')) {
-    p++;
-    int eneg = 0;
-    if (p < e && (*p == '-' || *p == '+')) { eneg = (*p == '-'); p++; }
-    int ex = 0;
-    while (p < e) {
-      unsigned d = (unsigned)(*p - '0');
-      if (d > 9) break;
-      ex = ex * 10 + (int)d;
-      if (ex > 400) ex = 400;   // past f32 range either way
-      p++;
-    }
-    // Exponentiation by squaring (no libm).
-    double scale = 1.0, base = 10.0;
-    for (int k = ex; k; k >>= 1) { if (k & 1) scale *= base; base *= base; }
-    v = eneg ? v / scale : v * scale;
-  }
-
-  // Leftover characters make it NaN rather than a partial, plausible number.
-  if (p != e) return 0.0f / 0.0f;
-  return (float)(neg ? -v : v);
-}
-
-static inline unsigned parse_uint(const unsigned char* p, const unsigned char* e) {
-  unsigned v = 0;
-  for (; p < e; p++) {
-    unsigned d = (unsigned)(*p - '0');
-    if (d > 9) break;
-    v = v * 10u + d;
-  }
-  return v;
-}
-
-// M/D/YYYY -> day-of-year. FEB29 for Feb 29 (dropped), INVALID if unreadable.
-static inline unsigned date_to_day(const unsigned char* p, const unsigned char* e) {
-  unsigned month = 0, day = 0;
-  while (p < e && *p != '/') { month = month * 10u + (unsigned)(*p - '0'); p++; }
-  p++;
-  while (p < e && *p != '/') { day = day * 10u + (unsigned)(*p - '0'); p++; }
-  if (month < 1 || month > 12 || day < 1 || day > 31) return INVALID;
-  if (month == 2 && day == 29) return FEB29;
-  return CUM[month - 1] + day - 1;
 }
 
 // ---------------------------------------------------------------- axis scan
@@ -413,7 +333,7 @@ unsigned parse_block(unsigned len) {
       unsigned e = (END);                                                       \
       if (e > fs && b[e - 1] == '\r') e--;                                      \
       if (col == 0u) {                                                          \
-        rowDay = date_to_day(b + fs, b + e);                                    \
+        rowDay = date_to_day(b + fs, b + e, 0);                                 \
       } else if (col == 1u) {                                                   \
         rowHourOfDay = parse_uint(b + fs, b + e);                               \
       } else if (col == 2u) {                                                   \
@@ -460,7 +380,7 @@ unsigned parse_block(unsigned len) {
       }                                                                         \
     }
 
-  #define EMIT(AT)                                                              \
+  #define EMIT(AT, BYTE)                                                        \
     {                                                                           \
       unsigned at = (AT);                                                       \
       unsigned start = fs;                                                      \
@@ -481,24 +401,7 @@ unsigned parse_block(unsigned len) {
       }                                                                         \
     }
 
-  const v128_t vcomma = wasm_i8x16_splat(',');
-  const v128_t vnl    = wasm_i8x16_splat('\n');
-  unsigned i = 0;
-
-  for (; i + 16 <= len; i += 16) {
-    v128_t chunk = wasm_v128_load(b + i);
-    v128_t hit   = wasm_v128_or(wasm_i8x16_eq(chunk, vcomma), wasm_i8x16_eq(chunk, vnl));
-    unsigned mask = (unsigned)wasm_i8x16_bitmask(hit);
-    while (mask) {
-      unsigned pos = i + (unsigned)__builtin_ctz(mask);
-      mask &= mask - 1;
-      EMIT(pos)
-    }
-  }
-  for (; i < len; i++) {
-    unsigned char c = b[i];
-    if (c == ',' || c == '\n') EMIT(i)
-  }
+  FOR_EACH_DELIMITER(b, len, EMIT)
   #undef EMIT
   #undef FIELD
   return g_rows;

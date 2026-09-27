@@ -9,3 +9,7 @@ parser/**/*.wasm
 *.md
 index.html
 data/
+
+# Local, untracked: an archive kept as it was put there, and audit output.
+_archive/
+.audit/

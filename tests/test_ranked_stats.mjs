@@ -246,7 +246,7 @@ function oracle(cube, start, mask) {
   const { createRankMemo } = await import('../src/kernels.ts');
   assert.ok(createRankMemo().byCube instanceof WeakMap, 'held weakly, so a dropped Case takes it');
   const main = (await import('node:fs')).readFileSync(
-    new URL('../src/main.ts', import.meta.url),
+    new URL('../src/app/browse-wiring.ts', import.meta.url),
     'utf8',
   );
   for (const declare of [
@@ -256,10 +256,10 @@ function oracle(cube, start, mask) {
     'declareInterfaceTabs',
   ]) {
     const call = main.slice(main.indexOf(`...${declare}(`)).match(/^[\s\S]*?\n\s*(?:\.\.\.|\])/);
-    assert.ok(call, `${declare} is called from main.ts`);
+    assert.ok(call, `${declare} is called from the browse wiring`);
     assert.match(call[0], /browseRanks/, `${declare} is handed the kept rankings`);
   }
-  ok("the composition root owns one kept-ranking memo and hands it to every kind's tabs");
+  ok("the browse wiring owns one kept-ranking memo and hands it to every kind's tabs");
 }
 
 console.log(`\n${checks} checks passed.`);

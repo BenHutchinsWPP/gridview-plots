@@ -77,7 +77,7 @@ const { attachLookup, clearLookups } = await import('../src/lookups/store.ts');
 const { resolveGeneratorSeries } = await import('../src/tables/generator/series.ts');
 const { resolveAreaSeries } = await import('../src/tables/area/series.ts');
 const { CASE_GROUP_BY, createSeriesBuffers, specFromRow } = await import('../src/series/model.ts');
-const { setGroupings } = await import('../src/lookups/groupings.ts');
+const { setGroupings } = await import('../src/tables/area/groupings.ts');
 const {
   BAR_HEIGHT_PX,
   PANE_HEADER_PX,
@@ -4328,14 +4328,8 @@ console.log(`\n${checks} checks passed.`);
   );
 
   // Likewise `lookups`: a second GeneratorList merges under the same source
-  // name, so the term must name the list objects.
-
-  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
-  // Up to the next field of the record, however prettier wraps it.
-  const term = main.match(/^\s*lookups: ([\s\S]*?),\n\s*groupingsRev,/m);
-  assert.ok(term, "main.ts names a `lookups` term in the drawer's signature");
-  assert.match(term[1], /identityOf/, 'and it names the list objects, not their file names');
-  ok("the drawer's lookup term moves when a list is merged into, not only when it is renamed");
+  // name, so the term must name the list objects. Asserted through the render
+  // frame, which builds that term, in tests/test_render_frame.mjs.
 }
 
 // ----------------------------------------- a group-by the build declined
@@ -4530,12 +4524,9 @@ console.log(`\n${checks} checks passed.`);
   const start = main.indexOf('\nfunction render(');
   assert.ok(start >= 0, 'main.ts declares render()');
   const render = main.slice(start, main.indexOf('\n}\n', start) + 2);
-  const writes = render.match(/\bseries = [^;]*;/g) ?? [];
-  assert.ok(writes.length > 0, 'render() assigns the drawn series');
-  for (const write of writes) {
-    assert.match(write, /^series = resolveDraws\(drawContext, draws\);$/, write);
-  }
-  assert.match(render, /const draws = allBrowseDraws\(\);/);
+  assert.match(render, /draws: allBrowseDraws\(\),/, 'the frame draws the pins and preview');
+  // The frame resolves exactly the draws it is handed and draws nothing
+  // else: behaviour in tests/test_render_frame.mjs ("only the draws are drawn").
   ok('only pins and the preview are drawn, so the Selected tab lists every line');
 }
 
@@ -4712,9 +4703,9 @@ console.log(`\n${checks} checks passed.`);
   // The switch lands through its own drawer call, never the bundle-restore
   // one, and the kind's tabs follow before the pins land.
   const { readFileSync } = await import('node:fs');
-  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../src/app/browse-wiring.ts', import.meta.url), 'utf8');
   const at = main.indexOf('onSelectedVariableChange(variable)');
-  assert.ok(at >= 0, 'main.ts handles a Selected-tab variable change');
+  assert.ok(at >= 0, 'the browse wiring handles a Selected-tab variable change');
   const body = main.slice(at, main.indexOf('\n  },', at));
   assert.ok(body.indexOf('browse.set(') < body.indexOf('browseDrawer.replacePins('));
   ok('a Selected-tab switch moves the tabs, then the pins, in one render');
@@ -4882,6 +4873,22 @@ console.log(`\n${checks} checks passed.`);
   // Pins across two Cases switch together: mixed shows as none of them, and
   // a pin already in the target takes it by staying.
   const avB = area('b', 'AREA_AV');
+  // Pins that become one series become one pin, and switching back does not
+  // split them (AGENTS.md, "A Selected-tab switch never goes partway").
+  {
+    const one = retargetCase(
+      [
+        { ref: av, color: '#a' },
+        { ref: avB, color: '#b' },
+      ],
+      'c',
+      cases,
+      kinds,
+    );
+    assert.equal(one.length, 1, 'P in A and P in B, switched to C, is one pin');
+    assert.equal(one[0].color, '#a', 'the first keeps its colour');
+    assert.equal(retargetCase(one, 'a', cases, kinds).length, 1, 'and back is still one');
+  }
   const spread = caseSwitch([av, avB], kinds, cases);
   assert.equal(spread.caseId, '');
   assert.equal(spread.refusal, undefined);
@@ -5339,7 +5346,7 @@ console.log(`\n${checks} checks passed.`);
   // The Selected tab's % click goes to the root, which moves the drawer's
   // mode before the pins land; the drawer never flips its mode on that click.
   const { readFileSync } = await import('node:fs');
-  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../src/app/browse-wiring.ts', import.meta.url), 'utf8');
   const at = main.indexOf('onSelectedPercent(on)');
   const body = main.slice(at, main.indexOf('\n  },', at));
   assert.ok(body.indexOf('browseDrawer.setPerUnit(') >= 0);

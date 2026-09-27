@@ -1,16 +1,19 @@
-// src/ui/interval-plot.ts
+// src/ui/panes/interval.ts
 //
-// The interval pane: one series cut into days, weeks or months
+// The interval chart type: one series cut into days, weeks or months
 // (`src/series/interval.ts`), every period drawn over one shared axis and
 // coloured from the earliest period to the latest, so a drift through the
 // year reads as a change of colour. Hand-drawn, because uPlot would need a
 // series per period and a year of days is 365 of them.
 //
 // One series, as the heatmap: the pane names which of the drawn lines it
-// took. Geometry and the picked period are owned by charts.ts via `deps`.
+// took. `periodColour` is the one colour rule the pane and its print figure
+// share. A clicked period stays picked while it is still drawn.
 
-import type { CaseSeries } from './charts';
-import { DAY_NAMES, MONTH_NAMES } from '../model/calendar';
+import type { CaseSeries, PaneInterval } from '../charts';
+import { DAY_NAMES, MONTH_NAMES } from '../../model/calendar';
+import { DAYS_PER_YEAR, weekdayOf } from '../../model/date-range';
+import { NO_YEAR } from '../../app/boxes';
 import {
   axisHours,
   axisLabel,
@@ -19,8 +22,17 @@ import {
   periodSummary,
   type IntervalLength,
   type Period,
-} from '../series/interval';
-import { viridisColor } from './heatmap-plot';
+} from '../../series/interval';
+import { clip, formatNumber } from '../chart-format';
+import { viridisColor } from './heatmap';
+import {
+  figureShot,
+  pinnedOf,
+  type PaneAdapter,
+  type PaneElements,
+  type PaneFrame,
+  type PaneHost,
+} from './adapter';
 
 export type IntervalColour = 'time' | 'weekday' | 'month';
 
@@ -31,7 +43,7 @@ export interface IntervalOptions {
   band: boolean;
 }
 
-export interface IntervalGeometry {
+interface IntervalGeometry {
   series: CaseSeries;
   options: IntervalOptions;
   periods: Period[];
@@ -47,32 +59,6 @@ export interface IntervalGeometry {
   plotHeight: number;
   /** The period clicked out over the rest, by label. */
   picked: string | null;
-}
-
-export interface IntervalPlotDeps {
-  paneBodies: HTMLElement[];
-  slotCanvases: HTMLCanvasElement[];
-  slotTips: HTMLElement[];
-  slotIntervalGeometry: (IntervalGeometry | null)[];
-  paneSize(body: HTMLElement): { width: number; height: number };
-  formatNumber(value: number): string;
-  clip(context: CanvasRenderingContext2D, text: string, maxWidth: number): string;
-}
-
-export interface IntervalPlot {
-  draw(
-    slot: number,
-    series: CaseSeries,
-    options: IntervalOptions,
-    weekday: (day: number) => number,
-  ): void;
-  /** Repaint at the pane's current size, keeping the pick. */
-  redraw(slot: number): void;
-  clear(slot: number): void;
-  hover(slot: number, px: number, py: number): void;
-  clearHover(slot: number): void;
-  /** Pick the period under the pointer, or drop the pick. */
-  click(slot: number, px: number, py: number): void;
 }
 
 /** Which colours a length can take: a week always starts on a Monday and a
@@ -154,22 +140,72 @@ function niceTicks(low: number, high: number): { low: number; high: number; step
   return { low: Math.floor(low / step) * step, high: Math.ceil(high / step) * step, step };
 }
 
-export function createIntervalPlot(deps: IntervalPlotDeps): IntervalPlot {
-  const { paneBodies, slotCanvases, slotTips, slotIntervalGeometry, paneSize, formatNumber, clip } =
-    deps;
+const LENGTHS: readonly IntervalLength[] = ['day', 'week', 'month'];
 
-  function clear(slot: number): void {
-    slotIntervalGeometry[slot] = null;
-    slotTips[slot].style.display = 'none';
+/** Grey out the colours a length cannot take. */
+function offerColours(length: IntervalLength, colour: HTMLSelectElement): IntervalColour[] {
+  const offered = coloursFor(length);
+  for (const option of colour.options) {
+    option.disabled = !offered.includes(option.value as IntervalColour);
+  }
+  return offered;
+}
+
+/** A pane's interval settings, as a bundle carries them. */
+export function intervalSettings(controls: PaneElements): PaneInterval {
+  return {
+    length: controls.intervalBy.value,
+    colour: controls.intervalColour.value,
+    mean: controls.intervalMean.checked,
+    band: controls.intervalBand.checked,
+  };
+}
+
+/** Put back saved settings; a value this build does not know, or none
+ * saved, takes the default. */
+export function restoreIntervalSettings(
+  controls: PaneElements,
+  entry: PaneInterval | undefined,
+): void {
+  const length: IntervalLength = LENGTHS.includes(entry?.length as IntervalLength)
+    ? (entry!.length as IntervalLength)
+    : 'day';
+  controls.intervalBy.value = length;
+  const offered = offerColours(length, controls.intervalColour);
+  controls.intervalColour.value = offered.includes(entry?.colour as IntervalColour)
+    ? entry!.colour
+    : 'time';
+  controls.intervalMean.checked = typeof entry?.mean === 'boolean' ? entry.mean : true;
+  controls.intervalBand.checked = typeof entry?.band === 'boolean' ? entry.band : false;
+}
+
+export function createIntervalAdapter(host: PaneHost): PaneAdapter {
+  const { body, canvas, tip } = host;
+  const { intervalBy, intervalColour, intervalMean, intervalBand } = host.controls;
+  let frame: PaneFrame | null = null;
+  let current: IntervalGeometry | null = null;
+
+  // A length offers only the colours that mean something for it; first, so
+  // the render below sees the corrected colour.
+  intervalBy.addEventListener('change', () => {
+    const offered = offerColours(intervalBy.value as IntervalLength, intervalColour);
+    if (!offered.includes(intervalColour.value as IntervalColour)) intervalColour.value = 'time';
+  });
+  for (const control of [intervalBy, intervalColour, intervalMean, intervalBand]) {
+    control.addEventListener('change', () => host.rerender());
+  }
+
+  function clear(): void {
+    current = null;
+    tip.style.display = 'none';
   }
 
   function draw(
-    slot: number,
     series: CaseSeries,
     options: IntervalOptions,
     weekday: (day: number) => number,
   ): void {
-    const previous = slotIntervalGeometry[slot];
+    const previous = current;
     const periods = cutPeriods(series.values ?? [], options.length, weekday);
     const span = axisHours(options.length);
     const summary = periodSummary(periods, span);
@@ -195,7 +231,7 @@ export function createIntervalPlot(deps: IntervalPlotDeps): IntervalPlot {
       periods.some((p) => p.label === previous.picked)
         ? previous.picked
         : null;
-    slotIntervalGeometry[slot] = {
+    current = {
       series,
       options,
       periods,
@@ -210,15 +246,14 @@ export function createIntervalPlot(deps: IntervalPlotDeps): IntervalPlot {
       plotHeight: 0,
       picked,
     };
-    redraw(slot);
+    redraw();
   }
 
-  function redraw(slot: number): void {
-    const geometry = slotIntervalGeometry[slot];
+  function redraw(): void {
+    const geometry = current;
     if (!geometry) return;
-    const { width, height } = paneSize(paneBodies[slot]);
+    const { width, height } = host.size();
     const ratio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    const canvas = slotCanvases[slot];
     canvas.width = Math.floor(width * ratio);
     canvas.height = Math.floor(height * ratio);
     canvas.style.display = '';
@@ -455,9 +490,8 @@ export function createIntervalPlot(deps: IntervalPlotDeps): IntervalPlot {
     return best;
   }
 
-  function hover(slot: number, px: number, py: number): void {
-    const geometry = slotIntervalGeometry[slot];
-    const tip = slotTips[slot];
+  function hover(px: number, py: number): void {
+    const geometry = current;
     const hit = geometry && nearest(geometry, px, py);
     if (!geometry || !hit) {
       tip.style.display = 'none';
@@ -479,22 +513,74 @@ export function createIntervalPlot(deps: IntervalPlotDeps): IntervalPlot {
     row.append(dot, name, num);
     tip.replaceChildren(head, row);
     tip.style.display = '';
-    const right = px < paneBodies[slot].clientWidth / 2;
+    const right = px < body.clientWidth / 2;
     tip.style.left = right ? 'auto' : '6px';
     tip.style.right = right ? '6px' : 'auto';
   }
 
-  function clearHover(slot: number): void {
-    slotTips[slot].style.display = 'none';
-  }
-
-  function click(slot: number, px: number, py: number): void {
-    const geometry = slotIntervalGeometry[slot];
+  function click(px: number, py: number): void {
+    const geometry = current;
     if (!geometry) return;
     const hit = nearest(geometry, px, py);
     geometry.picked = hit && hit.period.label !== geometry.picked ? hit.period.label : null;
-    redraw(slot);
+    redraw();
   }
 
-  return { draw, redraw, clear, hover, clearHover, click };
+  return {
+    surface: 'canvas',
+    controls: () => ['interval'],
+    draw(next) {
+      frame = next;
+      const { input, drawable, zeroText } = next;
+      // One series, as the heatmap: overlaying every period of two lines
+      // would give no colour to tell them apart.
+      const s = drawable[0];
+      host.note(`${s.name}${drawable.length > 1 ? ` (1 of ${drawable.length})` : ''}`);
+      const year = input.yearOf?.(s);
+      draw(
+        s,
+        {
+          length: intervalBy.value as IntervalLength,
+          colour: intervalColour.value as IntervalColour,
+          mean: intervalMean.checked,
+          band: intervalBand.checked,
+        },
+        // With no year, weekdays are the box plot's.
+        (day) => weekdayOf(year ?? NO_YEAR, day),
+      );
+      if (zeroText) host.banner('note', zeroText);
+    },
+    leave() {
+      frame = null;
+      clear();
+    },
+    resize: redraw,
+    hover,
+    unhover() {
+      tip.style.display = 'none';
+    },
+    click,
+    figure: {
+      offered: () => true,
+      capture() {
+        // The line the pane cut, first; the pinned lines it left out ride
+        // along, named as such.
+        const painted = current?.series;
+        if (!frame || !current || !painted || painted.dashed) return null;
+        const drawn = current;
+        const pinned = pinnedOf(frame.input.series);
+        return figureShot(host, frame.input, {
+          pane: 'interval',
+          ordered: [painted, ...pinned.filter((s) => s !== painted)],
+          xWindow: [0, 1],
+          onlyOne: 'An interval chart draws one series.',
+          interval: {
+            ...drawn.options,
+            picked: drawn.picked,
+            weekdays: Array.from({ length: DAYS_PER_YEAR }, (_, day) => drawn.weekday(day)),
+          },
+        });
+      },
+    },
+  };
 }

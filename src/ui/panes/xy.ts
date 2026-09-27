@@ -1,16 +1,19 @@
-// src/ui/xy-plot.ts
+// src/ui/panes/xy.ts
 //
-// The hand-drawn X-Y scatter pane. uPlot panes assume an ascending x of
+// The X-Y scatter chart type. uPlot panes assume an ascending x of
 // hour-of-year, which a scatter's x (one series' values) is not; drawing it
-// directly is simpler than bending uPlot and its helpers around it. No state:
-// arrays come from createCharts through `deps`, and it shares the box plot's
-// canvas and hover tip. `fitLine` is exported for its own test, since the
-// arithmetic is the half that can be silently wrong.
+// directly is simpler than bending uPlot and its helpers around it. It draws
+// exactly two series or refuses: plotting the first two of five would
+// misstate what was compared. `fitLine` is exported for its own test and the
+// print figure, since the arithmetic is the half that can be silently wrong.
 
-import type { CaseSeries } from './charts';
+import { scalesOf } from '../../series/scales';
+import type { CaseSeries } from '../charts';
+import { clip, formatNumber, hourLabel } from '../chart-format';
+import { figureShot, pinnedOf, type PaneAdapter, type PaneFrame, type PaneHost } from './adapter';
 
 /** One plotted pair, with its canvas position for hover hit-testing. */
-export interface XyPoint {
+interface XyPoint {
   x: number;
   y: number;
   hour: number;
@@ -19,34 +22,13 @@ export interface XyPoint {
 }
 
 /** The plot rectangle plus the two series' names and colours, for hovers. */
-export interface XyGeometry {
+interface XyGeometry {
   marginLeft: number;
   marginTop: number;
   plotWidth: number;
   plotHeight: number;
   x: { name: string; color: string };
   y: { name: string; color: string };
-}
-
-export interface XyPlotDeps {
-  paneBodies: HTMLElement[];
-  slotCanvases: HTMLCanvasElement[];
-  slotTips: HTMLElement[];
-  slotXyGeometry: (XyGeometry | null)[];
-  slotXyHits: XyPoint[][];
-  paneSize(body: HTMLElement): { width: number; height: number };
-  scalesOf(series: { unit: string }[]): { scale: string; label: string }[];
-  formatNumber(value: number): string;
-  hourLabel(hour: number): string;
-  banner(body: HTMLElement, kind: 'refusal' | 'note', text: string): void;
-  clip(context: CanvasRenderingContext2D, text: string, maxWidth: number): string;
-}
-
-export interface XyPlot {
-  draw(slotIndex: number, xs: CaseSeries, ys: CaseSeries, fit?: boolean): void;
-  /** Erase the pane and drop its hover state, leaving the canvas hidden. */
-  clear(slotIndex: number): void;
-  hover(slotIndex: number, px: number, py: number): void;
 }
 
 /** Point alpha: a year of pairs overplots, and alpha shows density. */
@@ -127,20 +109,39 @@ export function fitCaption(fit: XyFit): string {
   );
 }
 
-export function createXyPlot(deps: XyPlotDeps): XyPlot {
-  const {
-    paneBodies,
-    slotCanvases,
-    slotTips,
-    slotXyGeometry,
-    slotXyHits,
-    paneSize,
-    scalesOf,
-    formatNumber,
-    hourLabel,
-    banner,
-    clip,
-  } = deps;
+export function createXyAdapter(host: PaneHost): PaneAdapter {
+  const { body, canvas, tip } = host;
+  const { xySwap, xyFit } = host.controls;
+  let frame: PaneFrame | null = null;
+  let geometry: XyGeometry | null = null;
+  let hits: XyPoint[] = [];
+  /** The pair as drawn, X first, for the resize path and the Figure. */
+  let pair: [CaseSeries, CaseSeries] | null = null;
+  /** The series this pane last put on X, by its FULL label, or null for
+   * selection order. A label, not an index, so a changed selection cannot
+   * reassign the user's choice; not `name`, which is relative to the other
+   * drawn line and moves when it does. Kept across types. */
+  let xLabel: string | null = null;
+
+  // Redraw this pane only; the fit changes nothing else.
+  xyFit.addEventListener('change', () => {
+    if (pair) draw(pair[0], pair[1], xyFit.checked);
+  });
+  xySwap.addEventListener('click', () => {
+    if (!frame || frame.drawable.length !== 2) return;
+    const next = xyPair(frame.drawable)[1];
+    xLabel = next.detail ?? next.name;
+    host.rerender();
+  });
+
+  /** The ordered pair to draw. A stored X no longer selected falls back to
+   * selection order. */
+  function xyPair(drawable: CaseSeries[]): [CaseSeries, CaseSeries] {
+    const stored = xLabel;
+    const x = stored == null ? -1 : drawable.findIndex((s) => (s.detail ?? s.name) === stored);
+    const xAxis = x >= 0 ? x : 0;
+    return [drawable[xAxis], drawable[1 - xAxis]];
+  }
 
   /** One axis's label from THAT series' scale rules: the axes are different
    * quantities, and a shared read would borrow the other axis's numbers. */
@@ -148,32 +149,30 @@ export function createXyPlot(deps: XyPlotDeps): XyPlot {
     return scalesOf([series])[0]?.label ?? series.unit;
   }
 
-  function clear(slotIndex: number): void {
-    slotXyGeometry[slotIndex] = null;
-    slotXyHits[slotIndex] = [];
-    slotTips[slotIndex].style.display = 'none';
-    slotCanvases[slotIndex].style.display = 'none';
+  function clear(): void {
+    geometry = null;
+    hits = [];
+    tip.style.display = 'none';
+    canvas.style.display = 'none';
   }
 
-  function hover(slotIndex: number, px: number, py: number): void {
-    const geometry = slotXyGeometry[slotIndex];
+  function hover(px: number, py: number): void {
     if (!geometry) return;
     let best = -1;
     let bestDistance = Infinity;
-    slotXyHits[slotIndex].forEach((point, index) => {
+    hits.forEach((point, index) => {
       const distance = (point.px - px) ** 2 + (point.py - py) ** 2;
       if (distance < bestDistance) {
         bestDistance = distance;
         best = index;
       }
     });
-    const tip = slotTips[slotIndex];
     if (best < 0 || bestDistance > HOVER_RADIUS_PX * HOVER_RADIUS_PX) {
       tip.style.display = 'none';
       return;
     }
 
-    const point = slotXyHits[slotIndex][best];
+    const point = hits[best];
     const head = document.createElement('div');
     head.className = 'chart-tip-x';
     head.textContent = hourLabel(point.hour);
@@ -197,17 +196,15 @@ export function createXyPlot(deps: XyPlotDeps): XyPlot {
 
     tip.replaceChildren(head, ...rows);
     tip.style.display = '';
-    const right = px < paneBodies[slotIndex].clientWidth / 2;
+    const right = px < body.clientWidth / 2;
     tip.style.left = right ? 'auto' : '6px';
     tip.style.right = right ? '6px' : 'auto';
   }
 
-  function draw(slotIndex: number, xs: CaseSeries, ys: CaseSeries, fit = false): void {
-    const body = paneBodies[slotIndex];
+  function draw(xs: CaseSeries, ys: CaseSeries, fit = false): void {
     body.querySelectorAll('.pane-banner').forEach((node) => node.remove());
-    const { width, height } = paneSize(body);
+    const { width, height } = host.size();
     const ratio = window.devicePixelRatio || 1;
-    const canvas = slotCanvases[slotIndex];
     canvas.width = Math.floor(width * ratio);
     canvas.height = Math.floor(height * ratio);
     canvas.style.width = `${width}px`;
@@ -241,11 +238,10 @@ export function createXyPlot(deps: XyPlotDeps): XyPlot {
       }
     }
     if (points.length === 0) {
-      slotXyGeometry[slotIndex] = null;
-      slotXyHits[slotIndex] = [];
+      geometry = null;
+      hits = [];
       canvas.style.display = 'none';
-      banner(
-        body,
+      host.banner(
         'refusal',
         'No kept hour has a value in both series, so there is no point to plot. ' +
           'The filters may not overlap.',
@@ -361,7 +357,7 @@ export function createXyPlot(deps: XyPlotDeps): XyPlot {
       context.font = '10px system-ui, sans-serif';
     }
 
-    slotXyGeometry[slotIndex] = {
+    geometry = {
       marginLeft,
       marginTop,
       plotWidth,
@@ -369,8 +365,63 @@ export function createXyPlot(deps: XyPlotDeps): XyPlot {
       x: { name: xs.name, color: xs.color },
       y: { name: ys.name, color: ys.color },
     };
-    slotXyHits[slotIndex] = points;
+    hits = points;
   }
 
-  return { draw, clear, hover };
+  return {
+    surface: 'canvas',
+    // The swap and fit need exactly two series; a scatter has no zoom and no
+    // hour axis to download.
+    controls: (shown) => (shown.drawable.length === 2 ? ['xy'] : []),
+    draw(next) {
+      frame = next;
+      tip.style.display = 'none';
+      const { drawable, zeroText } = next;
+      if (drawable.length !== 2) {
+        pair = null;
+        clear();
+        host.banner(
+          'refusal',
+          `Select exactly two series to plot one against the other — ${
+            drawable.length === 1 ? '1 is' : `${drawable.length} are`
+          } drawn.`,
+        );
+        return;
+      }
+      const [xs, ys] = xyPair(drawable);
+      pair = [xs, ys];
+      xySwap.title = `Put ${ys.name} on X and ${xs.name} on Y`;
+      host.note(`X ${xs.name} / Y ${ys.name}`);
+      draw(xs, ys, xyFit.checked);
+      if (zeroText) host.banner('note', zeroText);
+    },
+    leave() {
+      frame = null;
+      pair = null;
+      clear();
+    },
+    resize() {
+      if (pair) draw(pair[0], pair[1], xyFit.checked);
+    },
+    hover,
+    unhover() {
+      tip.style.display = 'none';
+    },
+    figure: {
+      // A pair with the preview in it would lose an axis.
+      offered: () => !pair?.some((s) => s.dashed),
+      capture() {
+        if (!frame || !pair) return null;
+        const pinned = pinnedOf(frame.input.series);
+        return figureShot(host, frame.input, {
+          pane: 'xy',
+          // X first, as the pane holds it after any swap.
+          ordered: [...pair, ...pinned.filter((s) => s.values === null)],
+          // No zoom: a scatter's window is its pair's own values.
+          xWindow: [0, 1],
+          xy: { fit: xyFit.checked },
+        });
+      },
+    },
+  };
 }

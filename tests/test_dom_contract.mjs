@@ -4,7 +4,9 @@
 // one `<template>`, so a global by-id lookup silently wires one section's
 // controls to another's charts; nothing throws, so only a scan catches it.
 // Read as text because charts.ts imports uplot and CSS (and there is no
-// jsdom here).
+// jsdom here). The few rules that belong to a module Node can load (the
+// drawer's detents, a pane's banner, the chrome's readout, the date strip's
+// keys) are run against the fake DOM in tests/test_fixtures_dom.mjs instead.
 //
 //   (a) no global element lookup in any section/modal module
 //   (b) every `data-` hook those modules query exists in the template
@@ -12,13 +14,27 @@
 //   (d) every `#id` those modules resolve exists in index.html
 //   (e) drawer drag couplings, and the drawer and dialog wiring below
 //
-// It globs `src/ui/`, `src/figure/` and `src/tables/*/ui/`, so new modules are
+// It globs `src/ui/`, `src/ui/panes/`, `src/figure/` and `src/tables/*/ui/`, so new modules are
 // covered.
 
+import './test_loader.mjs';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  FakeElement,
+  fakeChrome,
+  frameOf,
+  installFakeDom,
+  paneElements,
+} from './test_fixtures_dom.mjs';
+
+installFakeDom();
+const { createBrowseDetent } = await import('../src/ui/browse-detent.ts');
+const { createPane } = await import('../src/ui/panes/pane.ts');
+const { createChrome } = await import('../src/ui/shell.ts');
+const { createDateStrip } = await import('../src/ui/date-strip.ts');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => readFileSync(join(root, relative), 'utf8');
@@ -59,6 +75,7 @@ function tableUiDirectories() {
 
 const modulePaths = [
   tsFilesIn('src/ui'),
+  tsFilesIn('src/ui/panes'),
   tsFilesIn('src/figure'),
   ...tableUiDirectories().map(tsFilesIn),
 ].flat();
@@ -78,10 +95,19 @@ assert.ok(
   `the glob found src/ui/charts.ts (found: ${modulePaths.join(', ')})`,
 );
 assert.ok(
-  modulePaths.includes('src/tables/area/ui/section.ts') &&
+  modulePaths.includes('src/ui/filter-rail.ts') && modulePaths.includes('src/ui/pane-focus.ts'),
+  'the glob found the rail and focus mode, which resolve hooks in the section clone ' +
+    `(found: ${modulePaths.join(', ')})`,
+);
+assert.ok(
+  modulePaths.includes('src/ui/panes/pane.ts') && modulePaths.includes('src/ui/panes/box.ts'),
+  `the glob reaches src/ui/panes/, where the chart panes build their DOM (found: ${modulePaths.join(', ')})`,
+);
+assert.ok(
+  modulePaths.includes('src/ui/section.ts') &&
     modulePaths.includes('src/tables/interface/ui/picker.ts'),
-  "the glob still reaches src/tables/*/ui/ -- a kind's section resolves its own hooks, and " +
-    `every kind's picker builds a modal subtree (found: ${modulePaths.join(', ')})`,
+  'the glob reaches the section, which resolves its hooks in the clone, and src/tables/*/ui/, ' +
+    `where every kind's picker builds a modal subtree (found: ${modulePaths.join(', ')})`,
 );
 
 const modules = modulePaths.map((path) => [path, read(path)]);
@@ -175,6 +201,20 @@ assert.deepEqual(
   }
   assert.ok(!/<option[^>]* selected/.test(headers[0]), 'the layout, not the markup, picks a type');
   console.log('ok - the four pane headers are identical but for the pane number');
+
+  // A header icon has no words, so its name is its aria-label and its tooltip.
+  const icons = [...headers[0].matchAll(/<button[^>]*>\s*<svg[\s\S]*?<\/button>/g)].map(
+    (m) => m[0],
+  );
+  assert.ok(icons.length >= 3, 'Download, Figure and Reset zoom are header icons');
+  for (const icon of icons) {
+    assert.match(
+      icon,
+      /^<button[^>]* aria-label="[^"]+"/,
+      `a header icon has an aria-label: ${icon}`,
+    );
+    assert.match(icon, /^<button[^>]* title="[^"]+"/, `a header icon has a title: ${icon}`);
+  }
 }
 
 // The Slicers pane is in the section clone's rail, but the drawer (global
@@ -188,7 +228,7 @@ assert.ok(
 );
 assert.match(
   read('src/main.ts'),
-  /createBrowseDrawer\([\s\S]*?within\(areaRoot, '\[data-el="slicer-pane"\]'\),\s*\);/,
+  /createBrowseDrawer\([\s\S]*?within\(sectionRoot, '\[data-el="slicer-pane"\]'\),\s*\);/,
   'main.ts hands the drawer the Slicers pane found inside the section root',
 );
 console.log('ok - the Slicers pane is in the section rail and handed to the drawer by main.ts');
@@ -311,23 +351,51 @@ assert.ok(
     'line changed to add a term, check the drag is not the reason.',
 );
 
-const applyAt = drawer.indexOf('function applyHeight');
-assert.ok(applyAt >= 0, 'browse-drawer.ts defines applyHeight');
-const applyEnd = drawer.indexOf('\n  }', applyAt);
-assert.ok(applyEnd > applyAt, 'applyHeight has a body to check');
-assert.ok(
-  !drawer.slice(applyAt, applyEnd).includes('draw('),
-  'applyHeight resizes the drawer without calling draw(): a drag fires one call per ' +
-    'pointermove, and draw() re-renders tabs. Height is CSS-only, and it stays that way.',
-);
-
-// Opening must repaint (renders are skipped while closed), keyed on the
-// transition out of closed so dragging between open heights stays free.
-assert.match(
-  drawer,
-  /const opening = detent === 'closed' && next !== 'closed';[\s\S]{0,400}?if \(opening\) deps\.onOpen\(\);/,
-  'browse-detent.ts calls onOpen exactly when the detent leaves closed',
-);
+// The detents' one way to the drawer's tab build is `onOpen`, which the
+// drawer answers with draw(). Opening must repaint (renders are skipped while
+// closed), keyed on the transition out of closed, so a drag between open
+// heights stays free: it fires one call per pointermove.
+{
+  const grid = new FakeElement();
+  const drawerRoot = grid.appendChild(new FakeElement());
+  drawerRoot.rect = { bottom: 900, width: 400, height: 0 };
+  globalThis.getComputedStyle = () => ({ gridTemplateRows: '40px 800px 30px' });
+  const expand = new FakeElement('button');
+  const collapse = new FakeElement('button');
+  let opened = 0;
+  const detents = createBrowseDetent({
+    root: drawerRoot,
+    handle: new FakeElement('button'),
+    resizeStrip: new FakeElement(),
+    expandButton: expand,
+    collapseButton: collapse,
+    closePopover: () => {},
+    onOpen: () => opened++,
+  });
+  detents.applyHeight({ detent: 'half', heightPx: 300 });
+  assert.equal(opened, 1, 'browse-detent.ts calls onOpen when the detent leaves closed');
+  for (const [detent, heightPx] of [
+    ['half', 320],
+    ['full', 600],
+    ['half', null],
+    ['full', null],
+  ]) {
+    detents.applyHeight({ detent, heightPx });
+  }
+  expand.fire('click');
+  collapse.fire('click');
+  assert.equal(
+    opened,
+    1,
+    'applyHeight resizes the drawer without reaching draw(): a drag fires one call per ' +
+      'pointermove, and draw() re-renders tabs. Height is CSS-only, and it stays that way.',
+  );
+  assert.equal(drawerRoot.style['--browse-drawer-height'], undefined, 'a detent clears the px');
+  collapse.fire('click');
+  assert.equal(detents.detent(), 'closed');
+  expand.fire('click');
+  assert.equal(opened, 2, 'and only a step out of closed repaints again');
+}
 assert.ok(
   drawer.includes('onOpen: () => draw(),'),
   'browse-drawer.ts answers onOpen with draw(), so a reopened drawer shows the current state',
@@ -692,11 +760,11 @@ assert.ok(
 // ------------------------------------------------------------ the tab ids
 //
 //   1. Each tab carries its own scope and `collectBrowseTabs` finds the
-//      active one; main.ts must not grow an if-chain over tab ids (behaviour
+//      active one; the browse wiring must not grow an if-chain over tab ids (behaviour
 //      is asserted in `tests/test_browse_tabs.mjs`).
 //   2. "Is a groups tab" is an argument the caller states; the scope module
 //      names no tab ids.
-const main = read('src/main.ts');
+const wiring = read('src/app/browse-wiring.ts');
 const browseScope = read('src/app/browse-scope.ts');
 assert.ok(
   !/'area-groups'/.test(browseScope) && !/"area-groups"/.test(browseScope),
@@ -705,16 +773,22 @@ assert.ok(
     'a second string comparison',
 );
 
-const renderBrowseAt = main.indexOf('function renderBrowse');
-assert.ok(renderBrowseAt > 0, 'main.ts defines renderBrowse');
-const renderBrowseBlock = main.slice(renderBrowseAt, main.indexOf('\n}\n', renderBrowseAt));
+// The browse wiring declares the tabs; the frame collects them and builds the signature.
+const declareAt = wiring.indexOf('function declareBrowseTabs');
+assert.ok(declareAt > 0, 'browse-wiring.ts defines declareBrowseTabs');
+const frameSource = read('src/app/render-frame.ts');
+const collectAt = frameSource.indexOf('function browseFrame');
+assert.ok(collectAt > 0, 'render-frame.ts defines browseFrame');
+const renderBrowseBlock =
+  wiring.slice(declareAt, wiring.indexOf('\n}\n', declareAt)) +
+  frameSource.slice(collectAt, frameSource.indexOf('\n}\n', collectAt));
 assert.ok(
   !/const shown =\s*active ===/.test(renderBrowseBlock),
   'the active tab\u2019s scope is not picked by an if-chain over ids -- the chain\u2019s ' +
     'last branch silently swallowed any tab id it had never heard of',
 );
 // Each kind declares its own tabs, in its own directory, and every declaration
-// carries the scope it reads. main.ts assembles them and resolves the active
+// carries the scope it reads. The browse wiring assembles them and resolves the active
 // one through collectBrowseTabs; it names no tab id of its own.
 const TAB_DECLARERS = {
   'src/tables/area/ui/browse.ts': ['area', 'area-groups'],
@@ -727,7 +801,7 @@ for (const [file, ids] of Object.entries(TAB_DECLARERS)) {
   for (const id of ids) {
     assert.ok(
       source.includes(`id: '${id}'`),
-      `${file} must declare its own '${id}' tab -- a tab declared in main.ts is a tab whose ` +
+      `${file} must declare its own '${id}' tab -- a tab declared in the root is a tab whose ` +
         `kind cannot see it`,
     );
   }
@@ -739,11 +813,11 @@ for (const [file, ids] of Object.entries(TAB_DECLARERS)) {
 }
 assert.ok(
   renderBrowseBlock.includes('collectBrowseTabs('),
-  'main.ts resolves the active tab through collectBrowseTabs rather than an id chain of its own',
+  'the render frame resolves the active tab through collectBrowseTabs rather than an id chain of its own',
 );
 assert.ok(
   !/id: '(area|bus|generator|interface)/.test(renderBrowseBlock),
-  'main.ts names no browse tab id: the kind that owns the tab is the module that declares it',
+  'the browse wiring names no browse tab id: the kind that owns the tab is the module that declares it',
 );
 assert.ok(
   !/signature:\s*\[/.test(renderBrowseBlock),
@@ -756,8 +830,8 @@ assert.ok(
   'the generator groups tab is declared beside the generator tab, built as a group tab',
 );
 assert.ok(
-  /const PAIRED_TABS[\s\S]*?'generator-groups'[\s\S]*?\};/.test(main),
-  'main.ts declares the tab pairing as one map -- an entity tab and its groups tab are ' +
+  /const PAIRED_TABS[\s\S]*?'generator-groups'[\s\S]*?\};/.test(wiring),
+  'the browse wiring declares the tab pairing as one map -- an entity tab and its groups tab are ' +
     'one variable seen two ways, stated once rather than branched per tab',
 );
 
@@ -928,7 +1002,7 @@ console.log(
 );
 // -------------------------------------------------------------------
 //
-// Every tab action an adapter emits is routed in main.ts; an unrouted id is a
+// Every tab action an adapter emits is routed in the browse wiring; an unrouted id is a
 // button that does nothing. Read from each kind's adapter, so new ones are
 // covered.
 const actionIds = new Set();
@@ -947,11 +1021,11 @@ assert.ok(
   'the scan finds the tab actions the adapters emit -- if this drops to nothing, the `actions` ' +
     `idiom moved and the assertion below is checking nothing (found: ${[...actionIds].join(', ')})`,
 );
-const unrouted = [...actionIds].filter((id) => !main.includes(`'${id}'`));
+const unrouted = [...actionIds].filter((id) => !wiring.includes(`'${id}'`));
 assert.deepEqual(
   unrouted,
   [],
-  'every tab action id is routed in src/main.ts -- an id only one side knows is a button that ' +
+  'every tab action id is routed in src/app/browse-wiring.ts -- an id only one side knows is a button that ' +
     'renders and does nothing. Unrouted:\n' +
     unrouted.join('\n'),
 );
@@ -959,14 +1033,14 @@ assert.deepEqual(
 // The groups tab's editor asks for the UNITS tab's filtered rows by name;
 // losing that call would silently drop the narrowing.
 assert.ok(
-  main.includes("filteredRows('generator')"),
-  "main.ts opens the generator group editor with the Generator tab's filtered units, read " +
+  wiring.includes("filteredRows('generator')"),
+  "the browse wiring opens the generator group editor with the Generator tab's filtered units, read " +
     'from the drawerModule by tab id -- the groups tab that carries the button has group rows, not ' +
     'units, so this call is the only way that set reaches the editor',
 );
 
 console.log(
-  `ok - ${actionIds.size} tab action id(s) emitted by the browse adapters are routed in main.ts, ` +
+  `ok - ${actionIds.size} tab action id(s) emitted by the browse adapters are routed in the browse wiring, ` +
     "and the group editor reads the Generator tab's filtered units",
 );
 
@@ -1112,19 +1186,22 @@ assert.ok(
   html.includes('<button type="button" id="memory-readout"'),
   'the memory readout is a button in index.html',
 );
-assert.ok(
-  read('src/ui/shell.ts').includes(
-    "memoryReadout.addEventListener('click', () => handlers.onContents())",
-  ),
-  'the readout opens the Contents panel through the chrome handlers',
-);
 {
+  const chrome = fakeChrome();
+  let opened = 0;
+  createChrome(chrome, { onContents: () => opened++ });
+  chrome.querySelector('#memory-readout').fire('click');
+  assert.equal(opened, 1, 'the readout opens the Contents panel through the chrome handlers');
+}
+{
+  // A drop's order is behaviour in test_drop_load.mjs, and Load…'s in
+  // test_save_restore.mjs; here, that the root hands both the closer.
   const main = read('src/main.ts');
-  const loadFilesAt = main.indexOf('async function loadFiles(');
-  const loadAllAt = main.indexOf('async function loadAll(');
   assert.ok(
-    main.indexOf('closeContents();', loadFilesAt) < main.indexOf('setBusyFloor(', loadFilesAt) &&
-      main.indexOf('closeContents();', loadAllAt) < main.indexOf("setBusy('Loading…')", loadAllAt),
+    /const dropLoad = createDropLoad\(\{[\s\S]*?\n  closeContents: contents\.close,\n/.test(main) &&
+      /const saveRestore = createSaveRestore\(\{[\s\S]*?\n  closeContents: contents\.close,\n/.test(
+        main,
+      ),
     'both load paths close the Contents panel before they start',
   );
 }
@@ -1140,7 +1217,7 @@ assert.ok(
 assert.ok(
   contentsPanel.includes("document.createElement('textarea')") &&
     contentsPanel.includes('about.readOnly = source.loading()') &&
-    /loading: \(\) => loadInFlight \|\| busy !== null/.test(read('src/main.ts')),
+    /loading: \(\) => dropLoad\.running\(\) \|\| busy !== null/.test(read('src/main.ts')),
   'the About note is a textarea, read-only while a load runs',
 );
 console.log(
@@ -1170,11 +1247,29 @@ console.log(
   // Hidden on a refused pane: decided after the panes paint, from the
   // refusal banner a pane shows in place of its chart, whichever pane type
   // refused and why.
-  assert.match(
-    charts,
-    /element\.className = `pane-banner pane-banner-\$\{kind\}`/,
-    'a refusal banner carries pane-banner-refusal',
-  );
+  {
+    const elements = paneElements();
+    const refusing = (host) => ({
+      surface: 'canvas',
+      controls: () => [],
+      draw: () => host.banner('refusal', 'SAMPLE refusal'),
+      leave() {},
+      resize() {},
+    });
+    const factories = Object.fromEntries(
+      ['time', 'duration', 'stacked', 'box', 'xy', 'heatmap', 'interval', 'legend'].map((type) => [
+        type,
+        refusing,
+      ]),
+    );
+    const series = { name: 'SAMPLE', color: '#1f77b4', unit: 'MW', values: new Float32Array(8760) };
+    createPane(0, elements, {}, factories, 'box').render(frameOf([series]));
+    assert.deepEqual(
+      elements.body.querySelectorAll('.pane-banner-refusal').map((node) => node.textContent),
+      ['SAMPLE refusal'],
+      'a refusal banner carries pane-banner-refusal',
+    );
+  }
   const decide = charts.slice(charts.indexOf('function updateFigureButtons'));
   assert.match(
     decide.slice(0, decide.indexOf('\n  }\n')),
@@ -1188,7 +1283,7 @@ console.log(
   );
   assert.match(
     charts,
-    /renderSlots\(paneContext\);\n\s*updateFigureButtons\(drawable\);/,
+    /for \(const pane of panes\) pane\.render\(frame\);\n\s*updateFigureButtons\(drawable\);/,
     'the Figure buttons are decided after the panes have painted their refusals',
   );
   const dialog = read('src/figure/dialog.ts');
@@ -1217,18 +1312,34 @@ console.log(
   for (const gone of ['month-chips', 'day-of-month-chips', 'data-filter="months"']) {
     assert.ok(!template.includes(gone), `${gone} is gone from the template`);
   }
-  const strip = read('src/ui/date-strip.ts');
-  const keys = strip.slice(strip.indexOf("strip.addEventListener('keydown'"));
-  assert.match(
-    keys.slice(0, keys.indexOf('\n  });')),
-    /event\.stopPropagation\(\)/,
-    'arrow keys on the strip stop there',
-  );
-  assert.match(
-    strip,
-    /strip\.addEventListener\('contextmenu', \(event\) => event\.preventDefault\(\)\)/,
-    'a Ctrl-click on the strip opens no menu on macOS, where it is a right-click',
-  );
+  {
+    const host = new FakeElement();
+    const changes = [];
+    createDateStrip(host, (dates) => changes.push(dates)).render([{ start: 10, end: 12 }], [2031]);
+    const strip = host.querySelector('.ds-strip');
+    const stopped = [];
+    const event = (key) => ({
+      key,
+      altKey: false,
+      shiftKey: false,
+      preventDefault: () => stopped.push(`${key} default`),
+      stopPropagation: () => stopped.push(`${key} propagation`),
+    });
+    strip.fire('keydown', event('ArrowRight'));
+    assert.deepEqual(
+      stopped,
+      ['ArrowRight default', 'ArrowRight propagation'],
+      'arrow keys on the strip stop there',
+    );
+    assert.equal(changes.length, 1, 'and step the dates');
+    stopped.length = 0;
+    strip.fire('contextmenu', event('menu'));
+    assert.deepEqual(
+      stopped,
+      ['menu default'],
+      'a Ctrl-click on the strip opens no menu on macOS, where it is a right-click',
+    );
+  }
   const charts = read('src/ui/charts.ts');
   const guard = charts.slice(charts.indexOf('function datesFromPane'));
   assert.match(

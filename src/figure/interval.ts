@@ -12,7 +12,7 @@
 
 import { DAY_NAMES, MONTH_NAMES } from '../model/calendar';
 import { axisHours, cutPeriods, periodSummary, type IntervalLength } from '../series/interval';
-import { viridisColor } from '../ui/heatmap-plot';
+import { viridisColor } from '../ui/panes/heatmap';
 import {
   PERIOD_COLORS,
   WEEKDAY_COLORS,
@@ -20,7 +20,7 @@ import {
   namesPeriods,
   periodColour,
   type IntervalColour,
-} from '../ui/interval-plot';
+} from '../ui/panes/interval';
 import { hex } from './heatmap';
 import { MEASURE_SLACK } from './legend';
 import { polygon, polyline, rect, text, tint } from './svg';

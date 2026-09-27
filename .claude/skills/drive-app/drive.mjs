@@ -1,6 +1,9 @@
 // .claude/skills/drive-app/drive.mjs
 //
 // Playwright helpers for driving GridView Plots headless. See SKILL.md.
+// Every wait is on something the app shows (`body.is-busy`, a dialog, a tab
+// turning active, the pin count), so a slow load waits longer instead of
+// racing a fixed sleep.
 import { chromium } from 'playwright';
 // Where the invented CSVs, screenshots and saved bundles live: the session
 // scratchpad, passed as GV_WORK, never the repo.
@@ -18,66 +21,145 @@ export async function open(browser) {
   await page.goto(process.env.GV_URL ?? 'http://localhost:5199/');
   return { context, page };
 }
-export async function loadStudy(page) {
-  await page.setInputFiles('#file-input', [`${S}/data/SAMPLE_BusList.csv`]);
-  await page.waitForTimeout(500);
-  const files = ['A_BusLMP', 'B_BusLMP', 'A_InterfaceFlow', 'B_InterfaceFlow'];
+/**
+ * Drop `files` (names under data/), give file `i` to Case `caseOf(i)` in the
+ * import dialog, and wait for the load to finish.
+ */
+async function loadIntoCases(page, files, caseOf) {
+  await idle(page);
   await page.setInputFiles(
     '#file-input',
-    files.map((f) => `${S}/data/SAMPLE_CASE${f}.csv`),
+    files.map((f) => `${S}/data/${f}`),
   );
   await page.getByText('Assign each file individually').click();
   const inputs = page.locator('input.modal-filter:visible');
-  const n = await inputs.count();
-  for (let i = 0; i < n; i++) {
-    await inputs.nth(i).fill(i % 2 === 0 ? 'SAMPLE_Summer' : 'SAMPLE_Winter');
+  await inputs.nth(files.length - 1).waitFor();
+  for (let i = 0; i < files.length; i++) {
+    await inputs.nth(i).fill(caseOf(i));
     await inputs.nth(i).press('Tab');
   }
   await page.getByRole('button', { name: 'Load everything' }).click();
-  await page.waitForFunction(() => /2 cases/.test(document.body.innerText), null, {
-    timeout: 30000,
-  });
   await idle(page);
+}
+/** Drop lookup-only files, which open no dialog, and wait for the load. */
+async function loadLookups(page, files) {
+  await idle(page);
+  await page.setInputFiles(
+    '#file-input',
+    files.map((f) => `${S}/data/${f}`),
+  );
+  await idle(page);
+}
+export async function loadStudy(page) {
+  await loadLookups(page, ['SAMPLE_BusList.csv']);
+  const files = ['A_BusLMP', 'B_BusLMP', 'A_InterfaceFlow', 'B_InterfaceFlow'];
+  await loadIntoCases(
+    page,
+    files.map((f) => `SAMPLE_CASE${f}.csv`),
+    (i) => (i % 2 === 0 ? 'SAMPLE_Summer' : 'SAMPLE_Winter'),
+  );
 }
 export { chromium };
 export async function tab(page, name) {
   const button = page.locator('.browse-tab', { hasText: new RegExp(`^${name}( \\(\\d+\\))?$`) });
-  await page.waitForTimeout(300);
-  if (!(await button.isVisible())) {
+  // The drawer's detent is settled by the time a load ends, so after idle()
+  // a closed drawer stays closed until the handle opens it.
+  await idle(page);
+  if ((await page.locator('#browse-drawer').getAttribute('data-detent')) === 'closed') {
     await page.locator('#browse-handle').click();
-    await button.waitFor({ state: 'visible' });
   }
   await button.click();
-  await page.waitForTimeout(300);
+  await page
+    .locator('.browse-tab.active', { hasText: new RegExp(`^${name}( \\(\\d+\\))?$`) })
+    .waitFor();
+}
+/** How many rows are pinned, from the Selected tab's label. */
+async function pinnedCount(page) {
+  const label = await page.locator('.browse-tab', { hasText: /^Selected \(\d+\)$/ }).textContent();
+  return Number(label.match(/\d+/)[0]);
 }
 /** Tick the drawer row whose text contains every one of `needles`. */
 export async function pinRow(page, ...needles) {
   let row = page.locator('#browse-drawer .browse-row');
   for (const n of needles) row = row.filter({ hasText: n });
-  await row.first().locator('input[type=checkbox]').check();
-  await page.waitForTimeout(300);
+  const box = row.first().locator('input[type=checkbox]');
+  if (await box.isChecked()) return;
+  const before = await pinnedCount(page);
+  await box.check();
+  await page.waitForFunction(
+    (before) =>
+      [...document.querySelectorAll('.browse-tab')].some((b) => {
+        const m = /^Selected \((\d+)\)$/.exec(b.textContent);
+        return m && Number(m[1]) > before;
+      }),
+    before,
+  );
+}
+/**
+ * The shared membership editor. `beforeApply` runs with the edits made and
+ * the modal still open, for a control only one kind's editor has.
+ */
+async function editMembers(page, tabName, { group, create, add, remove }, beforeApply) {
+  await tab(page, tabName);
+  await page.getByRole('button', { name: /Edit Groups/ }).click();
+  const modal = page.locator('.modal-backdrop');
+  const lists = modal.locator('.groups-list');
+  if (create) {
+    await page.getByPlaceholder('New group…').fill(group);
+    await page.getByRole('button', { name: 'Add', exact: true }).click();
+  } else {
+    await lists.nth(0).locator('.groups-item', { hasText: group }).first().click();
+  }
+  for (const name of add)
+    await lists.nth(2).locator('.groups-item', { hasText: name }).first().dblclick();
+  for (const name of remove)
+    await lists.nth(1).locator('.groups-item', { hasText: name }).first().dblclick();
+  if (beforeApply) await beforeApply(modal);
+  await modal.locator('.btn-primary').click();
+  await modal.waitFor({ state: 'detached' });
+  await idle(page);
 }
 export async function makeGroup(page, name, reversedIndex) {
-  await tab(page, 'Interface Groups');
-  await page.getByRole('button', { name: /Edit Groups/ }).click();
-  await page.getByPlaceholder('New group…').fill(name);
-  await page.getByRole('button', { name: 'Add', exact: true }).click();
-  for (const p of ['SAMPLE_P01', 'SAMPLE_P02', 'SAMPLE_P03'])
-    await page.getByText(p, { exact: true }).last().dblclick();
-  if (reversedIndex !== undefined) await page.locator('.groups-mark').nth(reversedIndex).click();
-  await page.getByRole('button', { name: 'Apply groups' }).click();
-  await page.waitForTimeout(500);
+  const add = ['SAMPLE_P01', 'SAMPLE_P02', 'SAMPLE_P03'];
+  await editMembers(
+    page,
+    'Interface Groups',
+    { group: name, create: true, add, remove: [] },
+    (modal) =>
+      reversedIndex === undefined
+        ? undefined
+        : modal.locator('.groups-mark').nth(reversedIndex).click(),
+  );
 }
 export async function selectedRows(page) {
   await tab(page, 'Selected');
+  // The table redraws after the tab turns active: wait until it holds one
+  // row per pin under the Selected tab's own columns.
+  const pinned = await pinnedCount(page);
+  await page.waitForFunction((pinned) => {
+    const heads = [...document.querySelectorAll('#browse-drawer .tabulator-col')];
+    const rows = document.querySelectorAll('#browse-drawer .browse-row').length;
+    return (
+      heads.some((th) => /^Kind\b/.test(th.innerText.trim())) && (rows === pinned || rows >= 20)
+    );
+  }, pinned);
   return page.evaluate(() => {
     // Tabulator's header cells and row cells both open with the tick column.
+    // A header's first line is its name: the Selected tab's Case, Variable and
+    // Unit headers carry the "Switch all" control under it.
     const heads = [...document.querySelectorAll('#browse-drawer .tabulator-col')].map((th) =>
-      th.innerText.replace(/[▾▲▼\s]+$/, '').trim(),
+      th.innerText
+        .trim()
+        .split('\n')[0]
+        .replace(/[▾▲▼\s]+$/, '')
+        .trim(),
     );
     // Only rows scrolled into view are in the DOM; the Selected tab is short.
     return [...document.querySelectorAll('#browse-drawer .browse-row')].map((tr) => {
-      const cells = [...tr.querySelectorAll('.tabulator-cell')].map((td) => td.innerText.trim());
+      const cells = [...tr.querySelectorAll('.tabulator-cell')].map(
+        // A row's own switch is a select: its value is the picked option.
+        (td) => td.querySelector('select')?.selectedOptions[0]?.text ?? td.innerText.trim(),
+      );
       const o = {};
       heads.forEach((h, i) => {
         if (h && ['Case', 'Kind', 'Entity', 'Drawn', 'Average'].includes(h)) o[h] = cells[i];
@@ -98,7 +180,7 @@ export async function loadLimits(page, file, caseName = null) {
   await select.waitFor({ state: 'visible' });
   if (caseName !== null) await select.selectOption(caseName);
   await page.getByRole('button', { name: 'Load everything' }).click();
-  await page.waitForTimeout(800);
+  await idle(page);
 }
 /** The saved bundle's manifest: bytes 0-3 `GVMB`, 4-7 its length (LE). */
 export async function manifestOf(path) {
@@ -114,37 +196,24 @@ export async function loadGroupStudy(page, { sharedArea = false } = {}) {
   // `sharedArea` swaps in the lists whose units and buses sit inside the
   // area export's own areas, which is what the stack overlap check needs.
   const suffix = sharedArea ? '_SharedArea' : '';
-  const refs = [`SAMPLE_BusList${suffix}.csv`, `SAMPLE_GeneratorList${suffix}.csv`];
-  await page.setInputFiles(
-    '#file-input',
-    refs.map((f) => `${S}/data/${f}`),
-  );
-  await page.waitForTimeout(800);
+  await loadLookups(page, [`SAMPLE_BusList${suffix}.csv`, `SAMPLE_GeneratorList${suffix}.csv`]);
   const files = ['AreaLoad', 'BusLoad', 'GenEnergy', 'InterfaceFlow'];
   if (sharedArea) files.push('BusEnergy');
-  await page.setInputFiles(
-    '#file-input',
-    files.map((f) => `${S}/data/SAMPLE_CASEA_${f}.csv`),
+  await loadIntoCases(
+    page,
+    files.map((f) => `SAMPLE_CASEA_${f}.csv`),
+    () => 'SAMPLE_Summer',
   );
-  await page.getByText('Assign each file individually').click();
-  const inputs = page.locator('input.modal-filter:visible');
-  const n = await inputs.count();
-  for (let i = 0; i < n; i++) {
-    await inputs.nth(i).fill('SAMPLE_Summer');
-    await inputs.nth(i).press('Tab');
-  }
-  await page.getByRole('button', { name: 'Load everything' }).click();
-  await page.waitForFunction(() => /1 case/.test(document.body.innerText), null, {
-    timeout: 30000,
-  });
-  await idle(page);
   // A key/group file cannot always say which kind it groups. When it cannot,
-  // a pane asks, with Areas the default for Name,Grouping columns.
+  // a pane asks, with Areas the default for Name,Grouping columns. The drop
+  // stays busy while the pane is open, so wait for the pane or the end.
   await page.setInputFiles('#file-input', [`${S}/data/SAMPLE_Groupings.csv`]);
-  await page.waitForTimeout(1000);
+  await page.waitForFunction(
+    () => !document.body.classList.contains('is-busy') || document.querySelector('.modal-backdrop'),
+  );
   const ask = page.locator('.modal-backdrop').getByRole('button', { name: 'Load', exact: true });
   if (await ask.isVisible()) await ask.click();
-  await page.waitForTimeout(800);
+  await idle(page);
 }
 /**
  * Edit one group in the shared membership editor, from its groups tab.
@@ -153,24 +222,12 @@ export async function loadGroupStudy(page, { sharedArea = false } = {}) {
  * `.groups-list` columns are groups, members, then the axis to add from.
  */
 export async function editGroup(page, tabName, { group, create = false, add = [], remove = [] }) {
-  await tab(page, tabName);
-  await page.getByRole('button', { name: /Edit Groups/ }).click();
-  const lists = page.locator('.modal-backdrop .groups-list');
-  if (create) {
-    await page.getByPlaceholder('New group…').fill(group);
-    await page.getByRole('button', { name: 'Add', exact: true }).click();
-  } else {
-    await lists.nth(0).locator('.groups-item', { hasText: group }).first().click();
-  }
-  for (const name of add)
-    await lists.nth(2).locator('.groups-item', { hasText: name }).first().dblclick();
-  for (const name of remove)
-    await lists.nth(1).locator('.groups-item', { hasText: name }).first().dblclick();
-  await page.locator('.modal-backdrop .btn-primary').click();
-  await page.waitForTimeout(800);
+  await editMembers(page, tabName, { group, create, add, remove });
 }
 /** Wait until no load is running. A drop made while one runs is refused
- * with "A load is already running", and `body.is-busy` is what says so. */
+ * with "A load is already running", and `body.is-busy` is what says so.
+ * A drop sets it synchronously, so idle() straight after `setInputFiles`
+ * waits for that drop, including while its dialog is open. */
 export async function idle(page) {
   await page.waitForFunction(() => !document.body.classList.contains('is-busy'), null, {
     timeout: 60000,
@@ -184,8 +241,8 @@ export async function idle(page) {
 export async function stackedSlot(page, n = 4) {
   const pane = page.locator('.pane', { has: page.locator(`[data-el="slot-type-${n}"]`) });
   await pane.locator(`[data-el="slot-type-${n}"]`).selectOption('stacked');
-  await page.waitForTimeout(600);
   const refusal = pane.locator('.pane-banner-refusal');
+  await refusal.or(pane.locator('canvas:visible')).first().waitFor();
   return (await refusal.count()) ? (await refusal.allInnerTexts()).join(' | ') : null;
 }
 /**
@@ -193,19 +250,5 @@ export async function stackedSlot(page, n = 4) {
  * wait for the load. For a study none of the fixed loaders above builds.
  */
 export async function loadCaseFiles(page, files, caseName = 'SAMPLE_Summer') {
-  await idle(page);
-  await page.setInputFiles(
-    '#file-input',
-    files.map((f) => `${S}/data/${f}`),
-  );
-  await page.getByText('Assign each file individually').click();
-  const inputs = page.locator('input.modal-filter:visible');
-  const n = await inputs.count();
-  for (let i = 0; i < n; i++) {
-    await inputs.nth(i).fill(caseName);
-    await inputs.nth(i).press('Tab');
-  }
-  await page.getByRole('button', { name: 'Load everything' }).click();
-  await page.waitForTimeout(800);
-  await idle(page);
+  await loadIntoCases(page, files, () => caseName);
 }

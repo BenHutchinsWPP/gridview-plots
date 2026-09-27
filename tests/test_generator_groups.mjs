@@ -549,11 +549,11 @@ function reset() {
 
 {
   // The plan's decision, as an executable rule: the area map stays the AREA
-  // map. Folding generator membership into src/lookups/groupings.ts would give the
-  // shared map a resolution step only one side has.
-  const area = readFileSync(new URL('../src/lookups/groupings.ts', import.meta.url), 'utf8');
-  assert.ok(!/generator/i.test(area), 'src/lookups/groupings.ts speaks of generators');
-  ok('src/lookups/groupings.ts carries no generator content — the two maps stay two');
+  // map. Folding generator membership into src/tables/area/groupings.ts would give the
+  // Area map a resolution step only one side has.
+  const area = readFileSync(new URL('../src/tables/area/groupings.ts', import.meta.url), 'utf8');
+  assert.ok(!/generator/i.test(area), 'src/tables/area/groupings.ts speaks of generators');
+  ok('src/tables/area/groupings.ts carries no generator content — the two maps stay two');
 
   const source = readFileSync(
     new URL('../src/tables/generator/groups.ts', import.meta.url),

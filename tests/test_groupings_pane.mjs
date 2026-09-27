@@ -1,9 +1,8 @@
 // tests/test_groupings_pane.mjs
 //
-// The mapping pane's subtitle, asserted as TEXT. `groupings-mapping.ts`
-// builds it inside a DOM modal and this suite has no DOM, so the string is
-// read out of the source: the concatenated literals assigned to
-// `subtitle.textContent`.
+// The mapping pane's subtitle, as the pane shows it: `showGroupingsMapping`
+// is opened against the fake DOM (tests/test_fixtures_dom.mjs) and the
+// modal's first `.modal-subtitle` is read.
 //
 // The subtitle is the pane's one sentence on why it asks, and it has been
 // wrong in both directions: it named three of the four entities, and it said
@@ -14,13 +13,25 @@
 //
 // Run: node tests/test_groupings_pane.mjs
 
+import './test_loader.mjs';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { installFakeDom } from './test_fixtures_dom.mjs';
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const src = readFileSync(join(root, 'src/ui/groupings-mapping.ts'), 'utf8');
+installFakeDom();
+const { showGroupingsMapping } = await import('../src/ui/groupings-mapping.ts');
+
+// Opened on the ambiguous header and on a bus/unit pair: the subtitle is the
+// pane's, not the file's, so it is the same sentence either way.
+const subtitles = [];
+for (const header of [
+  ['Name', 'Grouping'],
+  ['Bus Number', 'Unit ID', 'Grouping'],
+]) {
+  void showGroupingsMapping({ fileName: 'SAMPLE.csv', header, hasGeneratorList: false });
+  const modal = document.body.children.at(-1);
+  subtitles.push(modal.querySelector('.modal-subtitle')?.textContent ?? '');
+}
+const [subtitle] = subtitles;
 
 let failed = 0;
 function ok(name, fn) {
@@ -33,13 +44,9 @@ function ok(name, fn) {
   }
 }
 
-const assignment = src.match(/subtitle\.textContent\s*=([\s\S]*?);\n/);
-const subtitle = assignment
-  ? [...assignment[1].matchAll(/'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]).join('')
-  : '';
-
-ok('the subtitle is found in the source', () => {
-  assert.ok(subtitle.length > 0, 'no `subtitle.textContent = ...;` literal found');
+ok('the pane shows a subtitle', () => {
+  assert.ok(subtitle.length > 0, 'the modal has no .modal-subtitle text');
+  assert.equal(subtitles[1], subtitle, 'and the same one whichever header opened it');
 });
 
 ok('the subtitle names all four entities the pane answers for', () => {

@@ -70,6 +70,13 @@ cannot be a number belongs in `src/tables/<kind>/`. Asserted by
 `parser/long/block.c` and `parser/wide/block.c` are the two shape readers;
 `src/tables/long/` and `src/tables/wide/` are their TypeScript halves.
 
+`parser/common/fields.h` holds the cell readers both include (number, hour,
+date, the delimiter walk), so a cell reads the same whichever shape carried
+it. **A change there is a change to both binaries**: rebuild and commit both.
+To show a C change alters no behaviour, compare the rebuilt code section with
+the committed one. Whole files never match, because the build writes its
+output filename into the name section.
+
 The long reader says `area` where it means entity (`numAreas`, `rowArea`,
 `area_table_put`). Those reach wasm export names, so renaming them is an ABI
 change and a binary rebuild.
@@ -146,8 +153,8 @@ manifest's `cases`, never by a Case id.** Restore mints fresh ids, so id-keyed
 entries need a remap on every restore path. A pin's row id is rebuilt at
 restore by `rowIdOf`. Older bundles with id-keyed `selections` and
 `limits.cases` are migrated on read and never written. Asserted by
-`tests/test_storage.mjs`, including that both restore paths in `main.ts` adopt
-limits.
+`tests/test_storage.mjs`, and by `tests/test_save_restore.mjs` that both
+restore paths adopt limits by the Cases made.
 
 A pin's `perUnit` field and the `p.u.` token in its row id are wire format:
 renaming either orphans every saved "% of range" pin.
@@ -163,7 +170,7 @@ adopted, so the strip never names a file whose content was not taken up.
 ### UI
 
 - **A groups tab offers only what it can answer.** `TAB_OFFERS` in
-  `src/main.ts` names tabs that answer for some quantities; the predicate is
+  `src/app/browse-wiring.ts` names tabs that answer for some quantities; the predicate is
   the kind's own (`combinesAcrossAreas`, `combinesAcrossBuses`,
   `combinesAcrossGenerators`, `combinesAcrossInterfaces`). A quantity the tab could only refuse is left
   out of its dropdown, so the refusal lands where the choice is made. That
@@ -187,9 +194,12 @@ adopted, so the strip never names a file whose content was not taken up.
   row's own controls move that pin alone. A control offers only what every
   pin it moves can take: the header lists a blocked Case disabled, naming the
   pins that block it, and a row leaves out what its pin cannot take. Pins
-  that differ are not a refusal: the header shows "Mixed" and still switches.
-  So pins never end up half moved and A → B → A returns the pins you started
-  with (`src/ui/browse-retarget.ts`).
+  that differ are not a refusal: the header shows "Mixed" and still switches,
+  so pins never end up half moved (`src/ui/browse-retarget.ts`).
+  **Pins that become one series become one pin.** P pinned in Case A and in
+  Case B, switched to C, is one row id, so the switch keeps the first
+  (`firstPerId`) and switching back does not split it. A second row for the
+  same series would draw one line twice under two colours.
   The toolbar's Variable and % are hidden on that tab, so one widget never
   both lists and rewrites. Switched pins land through `replacePins`;
   `setSelection` is bundle restore only. Asserted by `tests/test_browse.mjs`.
@@ -235,9 +245,14 @@ adopted, so the strip never names a file whose content was not taken up.
   that dash would read as a limit. Asserted by `tests/test_figure.mjs`.
 - **The four pane headers are one header with the pane number changed.**
   Any pane can hold any chart type, so a control written into one pane only
-  is a type that half works. `charts.ts` shows each pane the controls its
-  type uses, and a box pane's `by` is that pane's own, saved in a bundle as
+  is a type that half works. Each pane shows the controls its type's adapter
+  names, and a box pane's `by` is that pane's own, saved in a bundle as
   `boxDims`. Asserted by `tests/test_dom_contract.mjs`.
+- **A chart type is one adapter** (`PaneAdapter` in `src/ui/panes/`): its
+  drawing, refusals, hover, resize, teardown, Figure capture and controls.
+  A pane tears the old type down before the new one draws and routes input to
+  the drawn type only, so a rule written as a branch on type in `charts.ts`
+  is a second owner for it. Asserted by `tests/test_panes.mjs`.
 - **A pane's Figure button reads the pane's refusal banner**, after the
   panes paint, instead of restating each pane's refusal rules. A pane that
   refuses without `banner(body, 'refusal', …)` would still offer a figure.
@@ -255,23 +270,28 @@ with a collaborator gets a directory.
 `src/app/` holds sequences long enough to read on their own. **A module there
 that imported the store would be the root with extra steps.** The ingest
 engines take an `IngestHost` for that reason; `tests/test_integration.mjs`
-asserts neither reaches `attachTable`.
+asserts neither reaches `attachTable`. A part of the root that reads on its
+own moves there the same way: handed the store instances and accessors it
+reads, holding at most a cache or a dialog's lifetime, never state a restore
+would have to put back.
 
 **One ingest sequence per shape, not per kind.** A kind states its nouns,
 entity set and slot as a `WideBatch`/`AreaLongBatch`/`EntityLongBatch` value
-in `main.ts`. A new kind needing a new step gets a hook, never a copy of the
-sequence or a flag the engine branches on.
+in `src/app/ingest-kinds.ts`, which takes its readers from the root so
+`tests/test_ingest_kinds.mjs` runs each kind's batch without a Worker. A new
+kind needing a new step gets a hook, never a copy of the sequence or a flag
+the engine branches on.
 
 **The Contents inventory records a table only at the ingest host's
 `attach`**, which is handed the files behind it. Axis widening re-attaches
 every Area table through the Case store and must not record, or each widening
 would log its tables as freshly loaded. Notes reach a file's record by the
 `File` objects the engine's outcome names, never by a filename in the text.
-`loadFiles` brackets a drop with `beginDrop`/`endDrop` so its accepted files
+A drop (`src/app/drop-load.ts`) brackets itself with `beginDrop`/`endDrop` so its accepted files
 are one `loaded` event carrying the notes that name no file; a record made
 outside a drop logs itself at once. A refused or skipped file is logged, never
-recorded. Asserted by `tests/test_integration.mjs`, `tests/test_ingest_batch.mjs`
-and `tests/test_inventory.mjs`.
+recorded. Asserted by `tests/test_integration.mjs`, `tests/test_ingest_batch.mjs`,
+`tests/test_inventory.mjs` and `tests/test_drop_load.mjs`.
 
 ## Tests and formatting
 

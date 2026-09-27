@@ -190,23 +190,12 @@
            (tests/test_dom_contract.mjs): any pane can hold any chart type, so
            every control a type needs is in every header, and
            src/ui/charts.ts shows the ones the pane's type uses.
-             * The chart type is set from the layout, so no option is marked
-               selected here.
-             * Download writes the hours a time or stacked pane shows.
-             * limits: per pane, drawn on a time pane only, hidden until a
-               limits file is loaded.
-             * by / values: each box pane's own cut, saved in a bundle. The
-               last option is the table kind's own dimension, named by the
-               section that mounts the panes ("area"), because one template
-               serves every kind.
-             * follow dates / overview: a time pane only. Both write the
-               rail's dates; the overview sits under the body, so showing
-               it refits the chart.
-             * every / colour / mean / p10–p90: an interval pane. Colour
-               offers only what the length can mean (src/ui/interval-plot.ts).
-             * X ⇄ Y and fit: an X-Y pane with exactly two series drawn. A fit
-               is off by default: a trend line over hourly data is a claim
-               the pane would make on its own. -->
+             * No chart type is marked selected: the layout sets it.
+             * The box pane's last `by` option is the table kind's own
+               dimension, named by the section that mounts the panes
+               ("area"), because one template serves every kind.
+             * A fit is off by default: a trend line over hourly data is a
+               claim the pane would make on its own. -->
       <div data-pane="1" class="pane">
         <div class="pane-header">
           <select data-el="slot-type-1" class="pane-slot-type" title="Chart type">
@@ -220,14 +209,14 @@
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
-          <button type="button" data-el="download-1" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV">Download</button>
-          <button type="button" data-el="figure-1" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
-          <button type="button" data-el="zoom-reset-1" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
+          <button type="button" data-el="download-1" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV" aria-label="Download CSV"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5V10M4.5 6.5L8 10L11.5 6.5M3 13.5H13"/></svg></button>
+          <button type="button" data-el="figure-1" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report" aria-label="Figure"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M2.5 12L6.5 8L9 10.5L11 8.5L13.5 11"/><circle cx="10.5" cy="5.8" r="1"/></svg></button>
+          <button type="button" data-el="zoom-reset-1" class="pane-btn" style="display: none;" title="Reset the zoom on this chart" aria-label="Reset zoom"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.7 5.5A5 5 0 1 1 3.1 9"/><path d="M3.5 2V5.7H7.2"/></svg></button>
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-1" checked /> limits</label>
           <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-1" checked /> follow dates</label>
           <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-1" /> overview</label>
-          <label class="pane-control" style="display: none;">by
-            <select data-el="box-dim-select-1">
+          <label class="pane-control" style="display: none;" title="Group the boxes by">
+            <select data-el="box-dim-select-1" aria-label="Boxes by">
               <option value="case">case</option>
               <option value="month">month</option>
               <option value="hourOfDay">hour of day</option>
@@ -239,15 +228,15 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-1" /> values</label>
           <button type="button" data-el="xy-swap-1" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-1" /> fit</label>
-          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">every
-            <select data-el="interval-by-1">
+          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">
+            <select data-el="interval-by-1" aria-label="Overlay every">
               <option value="day">day</option>
               <option value="week">week</option>
               <option value="month">month</option>
             </select>
           </label>
           <label class="pane-control" style="display: none;" title="Colour each period by">
-            <select data-el="interval-colour-1">
+            <select data-el="interval-colour-1" aria-label="Colour periods by">
               <option value="time">early → late</option>
               <option value="weekday">weekday</option>
               <option value="month">month</option>
@@ -273,14 +262,14 @@
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
-          <button type="button" data-el="download-2" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV">Download</button>
-          <button type="button" data-el="figure-2" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
-          <button type="button" data-el="zoom-reset-2" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
+          <button type="button" data-el="download-2" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV" aria-label="Download CSV"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5V10M4.5 6.5L8 10L11.5 6.5M3 13.5H13"/></svg></button>
+          <button type="button" data-el="figure-2" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report" aria-label="Figure"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M2.5 12L6.5 8L9 10.5L11 8.5L13.5 11"/><circle cx="10.5" cy="5.8" r="1"/></svg></button>
+          <button type="button" data-el="zoom-reset-2" class="pane-btn" style="display: none;" title="Reset the zoom on this chart" aria-label="Reset zoom"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.7 5.5A5 5 0 1 1 3.1 9"/><path d="M3.5 2V5.7H7.2"/></svg></button>
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-2" checked /> limits</label>
           <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-2" checked /> follow dates</label>
           <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-2" /> overview</label>
-          <label class="pane-control" style="display: none;">by
-            <select data-el="box-dim-select-2">
+          <label class="pane-control" style="display: none;" title="Group the boxes by">
+            <select data-el="box-dim-select-2" aria-label="Boxes by">
               <option value="case">case</option>
               <option value="month">month</option>
               <option value="hourOfDay">hour of day</option>
@@ -292,15 +281,15 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-2" /> values</label>
           <button type="button" data-el="xy-swap-2" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-2" /> fit</label>
-          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">every
-            <select data-el="interval-by-2">
+          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">
+            <select data-el="interval-by-2" aria-label="Overlay every">
               <option value="day">day</option>
               <option value="week">week</option>
               <option value="month">month</option>
             </select>
           </label>
           <label class="pane-control" style="display: none;" title="Colour each period by">
-            <select data-el="interval-colour-2">
+            <select data-el="interval-colour-2" aria-label="Colour periods by">
               <option value="time">early → late</option>
               <option value="weekday">weekday</option>
               <option value="month">month</option>
@@ -326,14 +315,14 @@
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
-          <button type="button" data-el="download-3" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV">Download</button>
-          <button type="button" data-el="figure-3" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
-          <button type="button" data-el="zoom-reset-3" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
+          <button type="button" data-el="download-3" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV" aria-label="Download CSV"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5V10M4.5 6.5L8 10L11.5 6.5M3 13.5H13"/></svg></button>
+          <button type="button" data-el="figure-3" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report" aria-label="Figure"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M2.5 12L6.5 8L9 10.5L11 8.5L13.5 11"/><circle cx="10.5" cy="5.8" r="1"/></svg></button>
+          <button type="button" data-el="zoom-reset-3" class="pane-btn" style="display: none;" title="Reset the zoom on this chart" aria-label="Reset zoom"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.7 5.5A5 5 0 1 1 3.1 9"/><path d="M3.5 2V5.7H7.2"/></svg></button>
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-3" checked /> limits</label>
           <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-3" checked /> follow dates</label>
           <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-3" /> overview</label>
-          <label class="pane-control" style="display: none;">by
-            <select data-el="box-dim-select-3">
+          <label class="pane-control" style="display: none;" title="Group the boxes by">
+            <select data-el="box-dim-select-3" aria-label="Boxes by">
               <option value="case">case</option>
               <option value="month">month</option>
               <option value="hourOfDay">hour of day</option>
@@ -345,15 +334,15 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-3" /> values</label>
           <button type="button" data-el="xy-swap-3" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-3" /> fit</label>
-          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">every
-            <select data-el="interval-by-3">
+          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">
+            <select data-el="interval-by-3" aria-label="Overlay every">
               <option value="day">day</option>
               <option value="week">week</option>
               <option value="month">month</option>
             </select>
           </label>
           <label class="pane-control" style="display: none;" title="Colour each period by">
-            <select data-el="interval-colour-3">
+            <select data-el="interval-colour-3" aria-label="Colour periods by">
               <option value="time">early → late</option>
               <option value="weekday">weekday</option>
               <option value="month">month</option>
@@ -379,14 +368,14 @@
             <option value="legend">Legend</option>
           </select>
           <span class="pane-note"></span>
-          <button type="button" data-el="download-4" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV">Download</button>
-          <button type="button" data-el="figure-4" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report">Figure</button>
-          <button type="button" data-el="zoom-reset-4" class="pane-btn" style="display: none;" title="Reset the zoom on this chart">Reset zoom</button>
+          <button type="button" data-el="download-4" class="pane-btn" style="display: none;" title="Download the hours currently shown, as CSV" aria-label="Download CSV"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5V10M4.5 6.5L8 10L11.5 6.5M3 13.5H13"/></svg></button>
+          <button type="button" data-el="figure-4" class="pane-btn" style="display: none;" title="Export this chart as a figure for a report" aria-label="Figure"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M2.5 12L6.5 8L9 10.5L11 8.5L13.5 11"/><circle cx="10.5" cy="5.8" r="1"/></svg></button>
+          <button type="button" data-el="zoom-reset-4" class="pane-btn" style="display: none;" title="Reset the zoom on this chart" aria-label="Reset zoom"><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.7 5.5A5 5 0 1 1 3.1 9"/><path d="M3.5 2V5.7H7.2"/></svg></button>
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-4" checked /> limits</label>
           <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-4" checked /> follow dates</label>
           <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-4" /> overview</label>
-          <label class="pane-control" style="display: none;">by
-            <select data-el="box-dim-select-4">
+          <label class="pane-control" style="display: none;" title="Group the boxes by">
+            <select data-el="box-dim-select-4" aria-label="Boxes by">
               <option value="case">case</option>
               <option value="month">month</option>
               <option value="hourOfDay">hour of day</option>
@@ -398,15 +387,15 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="box-values-check-4" /> values</label>
           <button type="button" data-el="xy-swap-4" class="pane-btn" style="display: none;" title="Swap which series is on X and which on Y">X ⇄ Y</button>
           <label class="pane-control" style="display: none;" title="Least-squares fit of Y on X, with its equation and R²"><input type="checkbox" data-el="xy-fit-4" /> fit</label>
-          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">every
-            <select data-el="interval-by-4">
+          <label class="pane-control" style="display: none;" title="Cut the series into periods and overlay them">
+            <select data-el="interval-by-4" aria-label="Overlay every">
               <option value="day">day</option>
               <option value="week">week</option>
               <option value="month">month</option>
             </select>
           </label>
           <label class="pane-control" style="display: none;" title="Colour each period by">
-            <select data-el="interval-colour-4">
+            <select data-el="interval-colour-4" aria-label="Colour periods by">
               <option value="time">early → late</option>
               <option value="weekday">weekday</option>
               <option value="month">month</option>

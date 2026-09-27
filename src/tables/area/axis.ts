@@ -5,7 +5,7 @@
 // in -- which is what makes them testable in plain Node with no Worker, no
 // fetch and no DOM (tests/test_axis.mjs).
 //
-// The area axis is BATCH-COUPLED and global to the Area section: it is the
+// The area axis is BATCH-COUPLED and shared by every Area table: it is the
 // union of every file in a drop plus the axis already loaded, it
 // lives in module-global pool state, and growing it means every already-loaded
 // cube has to be rebuilt at the new indices. That rebuild is `reindexCase`,

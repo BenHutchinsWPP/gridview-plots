@@ -14,7 +14,7 @@ import { kindNoun } from '../series/label';
 import type { FigureNaming } from './facts';
 
 /** A filename at most this long, extension included. */
-export const FILENAME_MAX = 80;
+const FILENAME_MAX = 80;
 /** Every figure extension is three letters and a dot. */
 const EXTENSION_ROOM = 4;
 

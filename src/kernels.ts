@@ -129,7 +129,6 @@ export interface Quantiles {
 function percentile(sorted: Float32Array, q: number): number {
   const n = sorted.length;
   if (n === 0) return NaN;
-  if (n === 1) return sorted[0];
   const position = q * (n - 1);
   const lower = Math.floor(position);
   const upper = Math.ceil(position);

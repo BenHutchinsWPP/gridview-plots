@@ -19,7 +19,7 @@ import type { LegendColumn } from './facts';
 /** Measured widths are scaled by this before layout. */
 export const MEASURE_SLACK = 1.12;
 
-export const LEGEND_PT = 8.5;
+const LEGEND_PT = 8.5;
 const UNDER_PT = 7.5;
 const LEADING = 1.3;
 const SWATCH = 16;

@@ -9,8 +9,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import './test_loader.mjs';
+import { FakeElement, installFakeDom } from './test_fixtures_dom.mjs';
 
+installFakeDom();
 const { createNotesLedger } = await import('../src/app/notes-ledger.ts');
+const { createSectionHost } = await import('../src/ui/shell.ts');
 
 let passed = 0;
 function check(label, fn) {
@@ -97,31 +100,23 @@ check('two ledgers share nothing', () => {
 
 // ------------------------------------------------- who may write a channel
 //
-// Only `loadFiles` writes the four kind channels (one drop's account);
-// everything else (save, restore, group edit, their errors) writes
-// `session`, which the next drop clears. Checked in main.ts's source.
+// Only a drop (`src/app/drop-load.ts`, through its host's `say`) writes the
+// four kind channels (one drop's account); everything else (save, restore,
+// group edit, their errors) writes `session`, which the next drop clears.
+// Checked in main.ts's source; which channel a drop writes when is behaviour
+// in test_drop_load.mjs.
 
 const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
 
-check('only loadFiles fills a kind channel', () => {
-  const start = main.indexOf('async function loadFiles(');
-  assert.ok(start > 0, 'loadFiles is declared in src/main.ts');
-  // Brace-match to the end of the function, so the span is the body itself
-  // and not a line count that goes stale the next time it is edited.
-  let depth = 0;
-  let end = main.indexOf('{', start);
-  for (let i = end; i < main.length; i++) {
-    if (main[i] === '{') depth++;
-    else if (main[i] === '}' && --depth === 0) {
-      end = i;
-      break;
-    }
-  }
-
+check('only a drop fills a kind channel', () => {
+  assert.match(
+    main,
+    /say: \(channel, lines\) => notes\.set\(channel, lines\),/,
+    'the drop writes the ledger through its host',
+  );
   const offenders = [];
   for (const match of main.matchAll(/notes\.set\(\s*'(area|interface|bus|generator)'\s*,\s*/g)) {
     const at = match.index;
-    if (at > start && at < end) continue;
     // A CLEAR is not an account and cannot displace one: `adoptRestoredCases`
     // empties a channel because the study it described has been replaced.
     // Only a channel being FILLED from outside a drop is the failure here.
@@ -137,22 +132,12 @@ check('only loadFiles fills a kind channel', () => {
   );
 });
 
-check('a restore clears every kind channel, and neither session nor blocked', () => {
-  // A restore replaces every Case, so it clears all four kind channels itself
-  // (its callers each republish only one). Not `session` (Load… writes its
-  // receipt there afterwards) and not `blocked` (a browser fact).
-  const start = main.indexOf('function adoptRestoredCases(');
-  assert.ok(start > 0, 'adoptRestoredCases is declared in src/main.ts');
-  const body = main.slice(start, main.indexOf('\n}\n', start));
-  const cleared = [...body.matchAll(/notes\.set\('(\w+)', \[\]\)/g)].map((m) => m[1]).sort();
-  assert.deepEqual(cleared, ['area', 'bus', 'generator', 'interface']);
-});
+// A restore clears every kind channel and neither `session` nor `blocked`:
+// behaviour in tests/test_save_restore.mjs.
 
 check('the session channel is cleared by a drop, and blocked is not', () => {
-  assert.ok(
-    /loadInFlight = true;[\s\S]{0,600}?notes\.set\('session', \[\]\)/.test(main),
-    'loadFiles clears session once it has committed to running',
-  );
+  // That a drop clears `session` once it runs, and a refused one does not, is
+  // behaviour in test_drop_load.mjs.
   assert.ok(
     !main.includes("notes.set('blocked', [])"),
     'nothing clears `blocked`: it states a fact about this browser that does not stop being true',
@@ -161,33 +146,29 @@ check('the session channel is cleared by a drop, and blocked is not', () => {
 
 // ------------------------------------- a note nobody draws is not a note
 //
-// Warnings are handed over AFTER the series that raise them, and the surface
-// draws them whether or not a section is on screen.
+// Warnings are handed over AFTER the series that raise them (behaviour:
+// tests/test_render_frame.mjs), and the surface draws them whether or not a
+// section is on screen.
 
 check('the batch notes reach a surface, and the surface draws them either way', () => {
   assert.ok(
-    /const batchNotes = \[\.\.\.notes\.all\(\), \.\.\.series\.flatMap/.test(main),
-    'render() builds the batch notes from the ledger AND the series warnings',
+    /notes: notes\.all\(\),/.test(main),
+    "render() hands the frame the ledger's notes, which it joins to the series warnings",
   );
   assert.ok(
-    /sections\.sync\([\s\S]*?batchNotes\)/.test(main),
-    'and hands that list to the one surface that draws it',
-  );
-  const at = main.indexOf('const batchNotes');
-  assert.ok(
-    at > main.indexOf('series.flatMap') - 200 && at > main.indexOf('let series: CaseSeries[]'),
-    "built after the series exist, or it can only ever carry the previous render's warnings",
+    /sections\.sync\(hasCases, frame\.notes\)/.test(main),
+    "and hands the frame's notes to the one surface that draws them",
   );
 
-  const shell = readFileSync(new URL('../src/ui/shell.ts', import.meta.url), 'utf8');
-  const sync = shell.slice(
-    shell.indexOf('    sync(visible, notes) {'),
-    shell.indexOf('  };\n}\n\n// ------'),
-  );
-  assert.ok(sync.length > 0, 'createSectionHost still returns a sync');
-  assert.ok(/notesLine\.textContent = notes\.join/.test(sync), 'sync writes the notes out');
-  assert.ok(
-    !/visible \?/.test(sync.slice(sync.indexOf('notesLine'))),
+  const statusBar = new FakeElement();
+  const sections = createSectionHost(new FakeElement(), {}, statusBar);
+  const body = statusBar.querySelector('.sections-notes-body');
+  sections.sync(false, ['SAMPLE one', 'SAMPLE two']);
+  assert.equal(body.textContent, 'SAMPLE one\nSAMPLE two', 'sync writes the notes out');
+  sections.sync(true, ['SAMPLE three']);
+  assert.equal(
+    body.textContent,
+    'SAMPLE three',
     'and does NOT gate them on `visible`: a note shown only while the section ' +
       'is hidden is a note nobody reads once a case has loaded',
   );

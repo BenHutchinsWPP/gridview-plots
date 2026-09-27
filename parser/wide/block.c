@@ -25,7 +25,7 @@
 //
 // Build: ./build.sh
 
-#include <wasm_simd128.h>
+#include "../common/fields.h"
 
 // ---------------------------------------------------------------- dimensions
 //
@@ -107,106 +107,10 @@ __attribute__((export_name("last_overflow")))   unsigned     last_overflow(void)
 __attribute__((export_name("last_wide_field"))) unsigned     last_wide_field(void){ return g_wideField; }
 __attribute__((export_name("last_bad_row")))    unsigned     last_bad_row(void)  { return g_badRow; }
 __attribute__((export_name("last_feb29")))      unsigned     last_feb29(void)    { return g_feb29; }
-// Rows whose year differs from the file's first data row. date_to_day ignores
+// Rows whose year differs from the file's first data row. A day-of-year ignores
 // the year, so without this a two-year file would fold onto the same 8,760
 // hours. Counted here, refused by JS.
 __attribute__((export_name("last_year_mismatch"))) unsigned  last_year_mismatch(void){ return g_yearMismatch; }
-
-// Cumulative days before each month, non-leap; Feb 29 rows are skipped.
-static const unsigned short CUM[12] = {0,31,59,90,120,151,181,212,243,273,304,334};
-
-// f64 digit accumulation. Do NOT swap in fast_float's Eisel-Lemire: it lost on
-// wasm32 when measured. Re-measure before believing either result.
-// Exponent notation is real (`2.568664E-03` for near-zero values) and must
-// parse: NaN would silently read as an absent cell.
-static inline float parse_float(const unsigned char* p, const unsigned char* e) {
-  if (e <= p) return 0.0f / 0.0f;
-  int neg = 0;
-  if (*p == '-') { neg = 1; p++; }
-  else if (*p == '+') { p++; }
-
-  // Integer part, then `frac / scale`. This rounds twice where strtod rounds
-  // once: a 1-ulp float32 difference on a few cells of the widest columns.
-  // MEASURED, do not "fix": one f64 mantissa with a single division costs 20%
-  // throughput and changes none of those cells (they carry 18 significant
-  // digits). The reference comparison gates this at <= 1 ulp.
-  double ip = 0.0;
-  while (p < e) {
-    unsigned d = (unsigned)(*p - '0');
-    if (d > 9) break;
-    ip = ip * 10.0 + (double)d;
-    p++;
-  }
-  double v = ip;
-  if (p < e && *p == '.') {
-    p++;
-    double f = 0.0, sc = 1.0;
-    while (p < e) {
-      unsigned d = (unsigned)(*p - '0');
-      if (d > 9) break;
-      f = f * 10.0 + (double)d;
-      sc *= 10.0;
-      p++;
-    }
-    v += f / sc;
-  }
-  if (p < e && (*p == 'e' || *p == 'E')) {
-    p++;
-    int eneg = 0;
-    if (p < e && (*p == '-' || *p == '+')) { eneg = (*p == '-'); p++; }
-    int ex = 0;
-    while (p < e) {
-      unsigned d = (unsigned)(*p - '0');
-      if (d > 9) break;
-      ex = ex * 10 + (int)d;
-      if (ex > 400) ex = 400;   // past f32 range either way
-      p++;
-    }
-    // Exponentiation by squaring: no libm in a freestanding module.
-    double scale = 1.0, base = 10.0;
-    for (int k = ex; k; k >>= 1) { if (k & 1) scale *= base; base *= base; }
-    v = eneg ? v / scale : v * scale;
-  }
-
-  // Leftover characters make the field NaN: a partial parse of a mangled
-  // field would be a plausible wrong number.
-  if (p != e) return 0.0f / 0.0f;
-  return (float)(neg ? -v : v);
-}
-
-static inline unsigned parse_uint(const unsigned char* p, const unsigned char* e) {
-  unsigned v = 0;
-  for (; p < e; p++) {
-    unsigned d = (unsigned)(*p - '0');
-    if (d > 9) break;
-    v = v * 10u + d;
-  }
-  return v;
-}
-
-// M/D/YYYY -> day-of-year, with the year returned for the same-year check.
-// FEB29 (dropped on purpose) and NO_DAY (unreadable) are distinct, so the
-// leap day never looks like a mangled file.
-#define FEB29  0xFFFFFFFEu
-#define NO_DAY 0xFFFFFFFFu
-static inline unsigned date_to_day(const unsigned char* p, const unsigned char* e,
-                                   unsigned* yearOut) {
-  unsigned month = 0, day = 0, year = 0;
-  while (p < e && *p != '/') { month = month * 10u + (unsigned)(*p - '0'); p++; }
-  p++;
-  while (p < e && *p != '/') { day = day * 10u + (unsigned)(*p - '0'); p++; }
-  p++;
-  while (p < e) {
-    unsigned d = (unsigned)(*p - '0');
-    if (d > 9) break;
-    year = year * 10u + d;
-    p++;
-  }
-  *yearOut = year;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return NO_DAY;
-  if (month == 2 && day == 29) return FEB29;   // Feb 29 dropped
-  return CUM[month - 1] + day - 1;
-}
 
 /**
  * Lay the arena out for one block: `numMetrics` planes of `maxRows` rows, both
@@ -277,10 +181,6 @@ unsigned parse_block(unsigned len, unsigned year) {
   g_rows = 0; g_overflow = 0; g_wideField = 0; g_badRow = 0; g_feb29 = 0;
   g_yearMismatch = 0;
 
-  const v128_t vcomma = wasm_i8x16_splat(',');
-  const v128_t vnl    = wasm_i8x16_splat('\n');
-  unsigned i = 0;
-
   #define FIELD(END)                                                            \
     {                                                                           \
       unsigned e = (END);                                                       \
@@ -317,30 +217,18 @@ unsigned parse_block(unsigned len, unsigned year) {
       }                                                                         \
     }
 
-  for (; i + 16 <= len; i += 16) {
-    v128_t chunk = wasm_v128_load(b + i);
-    v128_t hit   = wasm_v128_or(wasm_i8x16_eq(chunk, vcomma), wasm_i8x16_eq(chunk, vnl));
-    unsigned mask = (unsigned)wasm_i8x16_bitmask(hit);
-    while (mask) {
-      unsigned pos = i + (unsigned)__builtin_ctz(mask);
-      mask &= mask - 1;
-      FIELD(pos)
-      fs = pos + 1;
-      col++;
-      /* g_rows counts EMITTED rows and is advanced when a slot is claimed, so
-         a newline only resets the per-row state. */
-      if (b[pos] == '\n') { col = 0; rowDay = NO_DAY; slot = NO_DAY; }
+  // g_rows counts EMITTED rows and is advanced when a slot is claimed, so a
+  // newline only resets the per-row state.
+  #define EMIT(AT, BYTE)                                                        \
+    {                                                                           \
+      FIELD(AT)                                                                 \
+      fs = (AT) + 1;                                                            \
+      col++;                                                                    \
+      if ((BYTE) == '\n') { col = 0; rowDay = NO_DAY; slot = NO_DAY; }         \
     }
-  }
-  for (; i < len; i++) {
-    unsigned char c = b[i];
-    if (c == ',' || c == '\n') {
-      FIELD(i)
-      fs = i + 1;
-      col++;
-      if (c == '\n') { col = 0; rowDay = NO_DAY; slot = NO_DAY; }
-    }
-  }
+
+  FOR_EACH_DELIMITER(b, len, EMIT)
+  #undef EMIT
   #undef FIELD
   return g_rows;
 }

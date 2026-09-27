@@ -48,10 +48,12 @@ const BOX_DIMS: Partial<
  * The year a series is partitioned by when nothing states one -- a series with
  * no `caseId`, or a case none of whose tables carries a year.
  *
- * A NON-LEAP year, and that is the whole reason a constant exists for it rather
- * than a literal at the call site: every cube is exactly 8,760 hours because
- * Feb 29 is dropped at ingest, so a leap calendar here would map the back half
- * of the year one day out and put June's hours in a May box.
+ * Any year is safe: `buildCalendar` lays out 365 days whatever the year, so a
+ * leap year skips Feb 29 and no hour lands in the wrong month. It only picks
+ * the weekdays, which such a series has none of in truth, so it is one
+ * constant for every caller to share: the box plot and the interval pane
+ * would otherwise disagree about a Monday. Changing it moves the weekday of
+ * every series with no stated year.
  */
 export const NO_YEAR = 2024;
 

@@ -1,23 +1,41 @@
-// tests/test_layout.mjs — the height chain and the drawer's closed edge, as
-// TEXT (no browser harness; charts.ts cannot load in Node). Each fact here
-// keeps the charts inside a short window:
+// tests/test_layout.mjs — the height chain and the drawer's closed edge.
+// Layout needs a browser, so the CSS and markup are read as TEXT; the
+// modules that load in Node (the drawer's detents, the stacked adapter over
+// tests/test_fixtures_uplot.mjs, the shell's notes and rail) are run against
+// the fake DOM. Each fact here keeps the charts inside a short window:
 //
 //   (a) `.pane` and `.pane-body` clip: canvases are fixed-size.
 //   (b) `paneSize()` reads the real box, with only a 1px floor for hidden
-//       panes (a larger floor makes canvases taller than their boxes).
+//       panes (a larger floor makes canvases taller than their boxes);
+//       asserted in tests/test_panes.mjs.
 //   (c) the closed drawer is a handle, not a bar: `.sections` reserves no
 //       strip, and the handle sits bottom-right of the chart cell.
 //   (d) the handle's count comes from the selection, above the closed early
 //       return, so closing the drawer never costs a tab build.
 
+import './test_loader.mjs';
+import './test_fixtures_uplot.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { plots } from './test_fixtures_uplot.mjs';
+import {
+  FakeElement,
+  fakeChrome,
+  frameOf,
+  installFakeDom,
+  keydown,
+  stubHost,
+} from './test_fixtures_dom.mjs';
+
+installFakeDom();
+const { createBrowseDetent } = await import('../src/ui/browse-detent.ts');
+const { createStackedAdapter } = await import('../src/ui/panes/line.ts');
+const { createChrome, createSectionHost } = await import('../src/ui/shell.ts');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const css = readFileSync(join(root, 'src/styles.css'), 'utf8');
-const charts = readFileSync(join(root, 'src/ui/charts.ts'), 'utf8');
 
 // Named rather than globbed, for the reason recorded beside the same list in
 // tests/test_dom_contract.mjs: src/ui/ holds other browse-*.ts files that
@@ -63,27 +81,12 @@ for (const selector of ['.gv-section .pane', '.gv-section .pane-body']) {
   );
 }
 
-// ------------------------------------------------------------------- (b)
-const fn = charts.match(/function paneSize\([\s\S]*?\n  \}/);
-assert.ok(fn, 'src/ui/charts.ts still declares paneSize');
-assert.match(
-  fn[0],
-  /getBoundingClientRect/,
-  'paneSize measures the pane it is handed; a constant here would be a size ' +
-    'no pane ever voted for',
-);
-const floors = [...fn[0].matchAll(/Math\.max\(\s*(\d+)\s*,/g)].map((m) => m[1]);
-assert.deepEqual(
-  floors,
-  ['1', '1'],
-  'the only floor paneSize may keep is the 1px guard against a hidden or unmounted ' +
-    `pane measuring zero -- a larger literal is a minimum chart size, which asks for ` +
-    `room the pane does not have and draws a canvas taller than its box. Found: ${floors.join(', ')}`,
-);
+console.log('ok - the height chain clips at .pane and .pane-body');
 
-console.log(
-  'ok - the height chain clips at .pane and .pane-body, and paneSize reports the real box',
-);
+// ------------------------------------------------------------------- (b)
+//
+// `paneSize()` (src/ui/panes/pane.ts) loads in Node, so its 1px floor is
+// asserted as behaviour in tests/test_panes.mjs (h).
 
 // ------------------------------------------------------------------- (c)
 
@@ -173,25 +176,72 @@ assert.match(
 );
 // The handle both reopens and drags. The drag's preventDefault() on
 // pointerdown suppresses the derived `click`, so reopening is served on
-// release; the click listener is the keyboard's path.
-assert.match(
-  drawerSrc,
-  /openOnRelease && !drag\.moved && e\.type === 'pointerup'/,
-  'a press on the handle that never moved reopens the drawer on pointerup. Wiring the ' +
-    'reopen to `click` alone is the bug this pins: the drag preventDefault()s pointerdown, ' +
-    'which suppresses the click event the handler was waiting for.',
-);
-assert.match(
-  drawerSrc,
-  /function openFromHandle\(\)[\s\S]*?applyDetent\(draggedHeight === null \? 'half' : nearestDetent/,
-  'and it reopens to the half detent, or to the detent a standing dragged height matches, ' +
-    'so the expand/collapse pair step from where the drawer actually is',
-);
-assert.match(
-  drawerSrc,
-  /handle\.addEventListener\('click', openFromHandle\)/,
-  'the keyboard reaches that same function through click, which fires without a pointer',
-);
+// release; the click listener is the keyboard's path. Run through the
+// detents' own module, in a chart cell 800px tall (half 400, full 680).
+function detentRig() {
+  const grid = new FakeElement();
+  const drawerRoot = grid.appendChild(new FakeElement());
+  drawerRoot.rect = { bottom: 900, width: 400, height: 0 };
+  const handle = new FakeElement('button');
+  let opened = 0;
+  const detent = createBrowseDetent({
+    root: drawerRoot,
+    handle,
+    resizeStrip: new FakeElement(),
+    expandButton: new FakeElement('button'),
+    collapseButton: new FakeElement('button'),
+    closePopover: () => {},
+    onOpen: () => opened++,
+  });
+  const pointer = (type, clientY) => ({
+    type,
+    button: 0,
+    pointerId: 1,
+    clientY,
+    preventDefault() {},
+  });
+  return { detent, handle, drawerRoot, pointer, opened: () => opened };
+}
+globalThis.getComputedStyle = () => ({ gridTemplateRows: '40px 800px 30px' });
+{
+  const { detent, handle, drawerRoot, pointer } = detentRig();
+  handle.fire('pointerdown', pointer('pointerdown', 500));
+  drawerRoot.fire('pointerup', pointer('pointerup', 500));
+  assert.equal(
+    detent.detent(),
+    'half',
+    'a press on the handle that never moved reopens the drawer on pointerup. Wiring the ' +
+      'reopen to `click` alone is the bug this pins: the drag preventDefault()s pointerdown, ' +
+      'which suppresses the click event the handler was waiting for.',
+  );
+}
+{
+  const { detent, handle, drawerRoot, pointer } = detentRig();
+  handle.fire('pointerdown', pointer('pointerdown', 500));
+  drawerRoot.fire('pointercancel', pointer('pointercancel', 500));
+  assert.equal(detent.detent(), 'closed', 'a cancelled press is not a click');
+}
+{
+  const { detent, handle } = detentRig();
+  handle.fire('click');
+  assert.equal(
+    detent.detent(),
+    'half',
+    'the keyboard reaches the same reopen through click, which fires without a pointer',
+  );
+}
+{
+  const { detent, handle } = detentRig();
+  detent.restoreHeight(640);
+  assert.equal(detent.detent(), 'closed', 'a restored height never opens the drawer');
+  handle.fire('click');
+  assert.equal(
+    detent.detent(),
+    'full',
+    'and the handle reopens to the detent a standing dragged height matches, so the ' +
+      'expand/collapse pair step from where the drawer actually is',
+  );
+}
 
 console.log(
   'ok - the closed drawer is a bottom-right handle that hides the bar, costs no tab build, ' +
@@ -204,27 +254,48 @@ console.log(
 // would reach the axis and the largest would bury the rest. The bands are
 // what make it right, so they are pinned with the fill.
 
-// The three uPlot panes are one function each in `src/ui/line-panes.ts`; what
-// `charts.ts` keeps is the dispatch.
-const panesSrc = readFileSync(join(root, 'src/ui/line-panes.ts'), 'utf8');
-const stackedAt = panesSrc.indexOf('function stacked(slot: number');
-assert.ok(stackedAt > 0, 'line-panes.ts still declares the stacked pane');
-const stackedBranch = panesSrc.slice(stackedAt);
-
-assert.match(
-  stackedBranch,
-  /fill:\s*withAlpha\(/,
-  'a stacked series fills under its curve, at the palette entry reduced -- never at a ' +
-    'second colour literal',
-);
-assert.match(
-  stackedBranch,
-  /options\.bands\s*=/,
-  'and the fills are clipped by bands. Without them the largest cumulative band paints ' +
-    'from its curve to the axis and buries every band below it.',
-);
-
+// The stacked adapter (`src/ui/panes/line.ts`), drawn over the uPlot stand-in.
 const { withAlpha } = await import('../src/ui/palette.ts');
+const stackedLine = (name, color, value) => ({
+  name,
+  color,
+  unit: 'MW',
+  values: new Float32Array(8760).fill(value),
+  warnings: [],
+});
+const STACK = [
+  stackedLine('SAMPLE A', '#1f77b4', 1),
+  stackedLine('SAMPLE B', '#ff7f0e', 2),
+  stackedLine('SAMPLE C', '#2ca02c', 3),
+];
+{
+  const { host } = stubHost();
+  const stacked = createStackedAdapter(host);
+  plots.length = 0;
+  stacked.draw(frameOf(STACK));
+  assert.equal(plots.length, 1, 'the stacked pane builds one plot');
+  const drawn = plots[0].series.slice(1);
+  assert.equal(drawn.length, STACK.length);
+  for (const series of drawn) {
+    assert.ok(
+      typeof series.fill === 'string' &&
+        series.fill.length === 9 &&
+        series.fill.startsWith(series.stroke) &&
+        series.fill !== withAlpha(series.stroke, 1) &&
+        series.fill !== withAlpha(series.stroke, 0),
+      `a stacked series fills under its curve, at its palette entry reduced -- never at a ` +
+        `second colour literal (stroke ${series.stroke}, fill ${series.fill})`,
+    );
+  }
+  assert.deepEqual(
+    plots[0].bands,
+    [{ series: [2, 1] }, { series: [3, 2] }],
+    'and the fills are clipped by bands, each from its curve down to the one below. Without ' +
+      'them the largest cumulative band paints from its curve to the axis and buries every ' +
+      'band below it.',
+  );
+}
+
 assert.equal(withAlpha('#1f77b4', 0.3), '#1f77b44d');
 assert.equal(withAlpha('#1f77b4', 0), '#1f77b400');
 assert.equal(withAlpha('#1f77b4', 1), '#1f77b4ff');
@@ -237,20 +308,32 @@ assert.equal(
 
 // Bands are right-side up only while the running totals rise, so a signed
 // series must be refused wherever the fill is drawn.
-assert.match(
-  stackedBranch,
-  /some\(\(v\) => v < 0\)/,
-  'the stacked pane refuses a series that goes negative. A falling running total inverts ' +
-    'the band between it and its neighbour, and a filled inverted band is a lie about the ' +
-    'area under the curves.',
-);
-const signedRefusal = stackedBranch.indexOf('some((v) => v < 0)');
-const bandsAt = stackedBranch.indexOf('options.bands =');
-assert.ok(
-  signedRefusal >= 0 && signedRefusal < bandsAt,
-  'and it refuses BEFORE the bands are built, not after -- a refusal that ran later would ' +
-    'have already drawn the inverted fill',
-);
+{
+  const { host, record } = stubHost();
+  const stacked = createStackedAdapter(host);
+  plots.length = 0;
+  stacked.draw(frameOf(STACK));
+  const standing = plots[0];
+  const signed = stackedLine('SAMPLE signed', '#d62728', 1);
+  signed.values[100] = -1;
+  stacked.draw(frameOf([...STACK, signed]));
+  assert.deepEqual(
+    record.banners.map((banner) => banner.kind),
+    ['refusal'],
+    'the stacked pane refuses a series that goes negative. A falling running total inverts ' +
+      'the band between it and its neighbour, and a filled inverted band is a lie about the ' +
+      'area under the curves.',
+  );
+  assert.match(record.banners[0].text, /^SAMPLE signed goes negative/, 'naming the series');
+  assert.equal(
+    plots.length,
+    1,
+    'and it refuses BEFORE a plot is built, not after -- a refusal that ran later would ' +
+      'have already drawn the inverted fill',
+  );
+  assert.ok(standing.destroyed, 'the plot it stood on is taken down with it');
+  assert.equal(host.uplotHost.style.display, 'none');
+}
 
 console.log(
   'ok - the stacked pane fills under its curves, banded, at a derived alpha, and refuses ' +
@@ -292,17 +375,20 @@ assert.match(
   '.app-grid.rail-collapsed collapses --rail-width to 0px',
 );
 
-const shellSrc = readFileSync(join(root, 'src/ui/shell.ts'), 'utf8');
-assert.match(
-  shellSrc,
-  /within<HTMLButtonElement>\(chrome,\s*'#rail-toggle-btn'\)/,
-  'shell.ts wires the #rail-toggle-btn to toggle the rail',
-);
-assert.match(
-  shellSrc,
-  /event\.key === '\['/,
-  'shell.ts wires [ keyboard shortcut to toggle the rail',
-);
+{
+  const chrome = fakeChrome();
+  createChrome(chrome, {});
+  const toggle = chrome.querySelector('#rail-toggle-btn');
+  toggle.fire('click');
+  assert.ok(
+    chrome.classList.contains('rail-collapsed'),
+    'the #rail-toggle-btn collapses the rail, by the class the CSS above keys on',
+  );
+  document.fire('keydown', keydown('['));
+  assert.ok(!chrome.classList.contains('rail-collapsed'), 'and [ toggles it back');
+  document.fire('keydown', keydown('[', new FakeElement('input')));
+  assert.ok(!chrome.classList.contains('rail-collapsed'), 'but not while typing in a field');
+}
 
 // ------------------------------------------------------------------- (h)
 //
@@ -339,12 +425,8 @@ assert.match(
   'and it lets pointer events through: an overlay across the pane would otherwise eat the ' +
     'hover the chart under it was going to answer',
 );
-assert.match(
-  charts,
-  /function bannerStack\(/,
-  'charts.ts puts banners in that overlay container rather than appending them to the pane ' +
-    'body -- one function, because every pane module takes `banner` from here',
-);
+// That panes/pane.ts puts every banner in that overlay container, never
+// straight into the pane body, is behaviour in tests/test_panes.mjs (f).
 
 console.log(
   'ok - the resize loop is shut at both ends: no pane row is sized by its content, and a ' +
@@ -459,40 +541,65 @@ assert.match(
 // Collapsed, the card keeps the bubble and count, and NEW text arrives
 // collapsed with its own count, so a refusal is never hidden behind an old pill
 // and an ordinary load never covers the rail.
-const shellNotes = readFileSync(join(root, 'src/ui/shell.ts'), 'utf8');
-assert.match(
-  shellNotes,
-  /notesCount\.textContent = collapsed \? String\(count\)/,
-  'the collapse control carries the note COUNT, so a collapsed card still says how much ' +
-    'there is to read',
-);
-assert.match(
-  shellNotes,
-  /if \(notesLine\.textContent !== shownNotes\)[\s\S]{0,120}collapsed = true/,
-  'a change of note text collapses the card to its new count; nothing else may reset it, or ' +
-    'it cannot be opened at all, since render() syncs on every interaction',
-);
-assert.match(shellNotes, /let collapsed = true;/, 'the notes card starts collapsed');
-assert.ok(
-  !/notesCard\.hidden = (?!notes\.length === 0)/.test(shellNotes),
-  'the card is hidden only when there are no notes -- never by the collapse control, which ' +
-    'collapses to the bubble instead',
-);
-// A speech bubble, not a hazard sign, which users learn to ignore.
-for (const glyph of ['⚠', '❗', '🚨']) {
+{
+  const statusBar = new FakeElement();
+  const sections = createSectionHost(new FakeElement(), {}, statusBar);
+  const card = statusBar.querySelector('.sections-notes');
+  const toggle = card.querySelector('.sections-notes-toggle');
+  const count = card.querySelector('.sections-notes-count');
+  const collapsed = () => card.dataset.collapsed === 'true';
+
+  sections.sync(true, ['SAMPLE one', 'SAMPLE two']);
+  assert.ok(collapsed(), 'the notes card starts collapsed');
+  assert.equal(
+    count.textContent,
+    '2',
+    'the collapse control carries the note COUNT, so a collapsed card still says how much ' +
+      'there is to read',
+  );
+  toggle.fire('click');
+  assert.ok(!collapsed(), 'the control opens the card');
+  sections.sync(true, ['SAMPLE one', 'SAMPLE two']);
   assert.ok(
-    !shellNotes.includes(glyph),
-    'the notes carry no hazard glyph: they are information, and a sign that cries wolf on ' +
-      'every ordinary load is read past on the load that matters',
+    !collapsed(),
+    'a sync of the same text leaves it open: render() syncs on every interaction, so a ' +
+      'reset there would mean the card cannot be opened at all',
+  );
+  sections.sync(true, ['SAMPLE one', 'SAMPLE two', 'SAMPLE three']);
+  assert.ok(collapsed(), 'a change of note text collapses the card to its new count');
+  assert.equal(count.textContent, '3');
+  toggle.fire('click');
+  toggle.fire('click');
+  assert.equal(
+    card.hidden,
+    false,
+    'the card is hidden only when there are no notes -- never by the collapse control, which ' +
+      'collapses to the bubble instead',
+  );
+  sections.sync(true, []);
+  assert.equal(card.hidden, true, 'and with no notes it is hidden');
+
+  // A speech bubble, not a hazard sign, which users learn to ignore.
+  sections.sync(true, ['SAMPLE one']);
+  const drawn = [card, ...card.descendants()];
+  for (const glyph of ['⚠', '❗', '🚨']) {
+    assert.ok(
+      !drawn.some(
+        (node) =>
+          node !== card.querySelector('.sections-notes-body') && node.textContent.includes(glyph),
+      ),
+      'the notes carry no hazard glyph: they are information, and a sign that cries wolf on ' +
+        'every ordinary load is read past on the load that matters',
+    );
+  }
+  const bubble = drawn.find((node) => node.tagName === 'PATH');
+  assert.ok(
+    bubble && toggle.contains(bubble) && bubble.getAttribute('fill') === 'currentColor',
+    'the bubble is a drawn path, not a character: the glyphs for this shape come out as a ' +
+      'colour emoji on one system and a missing-character box on another, while a path takes ' +
+      'currentColor and matches the theme',
   );
 }
-assert.match(
-  shellNotes,
-  /createElementNS\(svg, 'path'\)/,
-  'the bubble is a drawn path, not a character: the glyphs for this shape come out as a ' +
-    'colour emoji on one system and a missing-character box on another, while a path takes ' +
-    'currentColor and matches the theme',
-);
 
 console.log(
   'ok - the batch notes float in the rail’s corner, clear of every plot, collapse to a ' +

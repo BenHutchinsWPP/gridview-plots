@@ -1,15 +1,17 @@
-// src/ui/box-plot.ts
+// src/ui/panes/box.ts
 //
-// The hand-drawn canvas box plot pane, split out of charts.ts because it is
-// the one pane uPlot does not draw. It has no state of its own: every array
-// it reads or writes is owned by createCharts and handed in through `deps`,
-// shared by reference so a hover computed in charts.ts's canvas listeners and
-// a draw computed here stay the same array.
+// The box plot chart type, hand-drawn on the pane's canvas because it is the
+// one summary uPlot does not draw. A pane's boxes are cut on that pane's own
+// dimension (`ChartsInput.boxes`); its hover dims every box but the one under
+// the pointer and tags each y axis with the value at the pointer's height.
 
-import type { BoxGroup, ChartsInput, Quantiles } from './charts';
-import { emptyPaneText } from './chart-format';
+import { scaleOf, scalesOf } from '../../series/scales';
+import type { BoxGroup, ChartsInput, Quantiles } from '../charts';
+import { clip, emptyPaneText, formatNumber } from '../chart-format';
+import { placeAxisTag } from '../chart-axis';
+import { figureShot, pinnedOf, type PaneAdapter, type PaneFrame, type PaneHost } from './adapter';
 
-export interface BoxHit {
+interface BoxHit {
   centre: number;
   label: string;
   name: string;
@@ -18,7 +20,7 @@ export interface BoxHit {
   quantiles: Quantiles;
 }
 
-export interface BoxGeometry {
+interface BoxGeometry {
   units: string[];
   range: Map<string, { low: number; high: number }>;
   marginLeft: number;
@@ -27,45 +29,19 @@ export interface BoxGeometry {
   plotHeight: number;
 }
 
-export interface BoxPlotDeps {
-  paneBodies: HTMLElement[];
-  slotCanvases: HTMLCanvasElement[];
-  slotBoxTips: HTMLElement[];
-  slotBoxGeometry: (BoxGeometry | null)[];
-  slotBoxHits: BoxHit[][];
-  slotHoveredBox: number[];
-  boxValuesChecks: readonly HTMLInputElement[];
-  paneSize(body: HTMLElement): { width: number; height: number };
-  scaleOf(unit: string): string;
-  scalesOf(series: { unit: string }[]): { scale: string; label: string }[];
-  formatNumber(value: number): string;
-  banner(body: HTMLElement, kind: 'refusal' | 'note', text: string): void;
-  clip(context: CanvasRenderingContext2D, text: string, maxWidth: number): string;
-}
+export function createBoxAdapter(host: PaneHost): PaneAdapter {
+  const { canvas, tip, tags } = host;
+  const { boxDim, boxValues } = host.controls;
+  let frame: PaneFrame | null = null;
+  let geometry: BoxGeometry | null = null;
+  let hits: BoxHit[] = [];
+  let hovered = -1;
 
-export interface BoxPlot {
-  draw(slotIndex: number, input: ChartsInput, keepHover?: boolean): void;
-  showTip(slotIndex: number, hit: BoxHit, pointerX: number): void;
-}
+  boxValues.addEventListener('change', () => {
+    if (frame) draw(frame.input);
+  });
 
-export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
-  const {
-    paneBodies,
-    slotCanvases,
-    slotBoxTips,
-    slotBoxGeometry,
-    slotBoxHits,
-    slotHoveredBox,
-    boxValuesChecks,
-    paneSize,
-    scaleOf,
-    scalesOf,
-    formatNumber,
-    banner,
-    clip,
-  } = deps;
-
-  function showTip(slotIndex: number, hit: BoxHit, pointerX: number): void {
+  function showTip(hit: BoxHit, pointerX: number): void {
     const head = document.createElement('div');
     head.className = 'chart-tip-x';
     head.textContent = hit.label;
@@ -116,24 +92,21 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
       body.push(unit);
     }
 
-    const tip = slotBoxTips[slotIndex];
     tip.replaceChildren(...(hit.name === hit.label ? [head] : [head, title]), ...body);
     tip.style.display = '';
-    const right = pointerX < paneBodies[slotIndex].clientWidth / 2;
+    const right = pointerX < host.body.clientWidth / 2;
     tip.style.left = right ? 'auto' : '6px';
     tip.style.right = right ? '6px' : 'auto';
   }
 
-  function draw(slotIndex: number, input: ChartsInput, keepHover = false): void {
+  function draw(input: ChartsInput, keepHover = false): void {
     if (!keepHover) {
-      slotHoveredBox[slotIndex] = -1;
-      slotBoxTips[slotIndex].style.display = 'none';
+      hovered = -1;
+      tip.style.display = 'none';
     }
-    const body = paneBodies[slotIndex];
-    body.querySelectorAll('.pane-banner').forEach((node) => node.remove());
-    const { width, height } = paneSize(body);
+    host.body.querySelectorAll('.pane-banner').forEach((node) => node.remove());
+    const { width, height } = host.size();
     const ratio = window.devicePixelRatio || 1;
-    const canvas = slotCanvases[slotIndex];
     canvas.width = Math.floor(width * ratio);
     canvas.height = Math.floor(height * ratio);
     canvas.style.width = `${width}px`;
@@ -145,16 +118,15 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
     context.clearRect(0, 0, width, height);
 
     const groups: BoxGroup[] = input
-      .boxes(slotIndex)
+      .boxes(host.index)
       .filter((group) => group.boxes.some((box) => box.quantiles.n > 0));
     if (groups.length === 0) {
-      slotBoxGeometry[slotIndex] = null;
-      slotBoxHits[slotIndex] = [];
+      geometry = null;
+      hits = [];
       canvas.style.display = 'none';
-      // No series at all is the empty pane every slot shares, and a resize
-      // lands here with none; series the filters emptied are this pane's own.
-      banner(
-        body,
+      // No series at all is the empty pane every type shares; series the
+      // filters emptied are this pane's own.
+      host.banner(
         'refusal',
         input.series.length === 0
           ? emptyPaneText(input)
@@ -230,7 +202,7 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
       }
     });
 
-    slotBoxGeometry[slotIndex] = {
+    geometry = {
       units: units.map((u) => u.scale),
       range,
       marginLeft,
@@ -239,8 +211,7 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
       plotHeight,
     };
 
-    const hits: BoxHit[] = [];
-    const hovered = slotHoveredBox[slotIndex];
+    const drawnHits: BoxHit[] = [];
     const anyHover = hovered >= 0;
 
     const slot = plotWidth / groups.length;
@@ -254,8 +225,8 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
           (boxIndex - (drawn.length - 1) / 2) * (boxWidth + 1);
         const q = box.quantiles;
 
-        const hitIndex = hits.length;
-        hits.push({
+        const hitIndex = drawnHits.length;
+        drawnHits.push({
           centre,
           label: group.label,
           name: box.name,
@@ -311,7 +282,7 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
           context.globalAlpha = 1;
         }
 
-        if (boxValuesChecks[slotIndex].checked) {
+        if (boxValues.checked) {
           context.fillStyle = '#333';
           context.textAlign = 'left';
           const at = centre + boxWidth / 2 + 3;
@@ -341,11 +312,10 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
       context.textAlign = 'left';
     });
 
-    slotBoxHits[slotIndex] = hits;
+    hits = drawnHits;
 
     if (groups.every((group) => group.boxes.every((box) => box.quantiles.degenerate))) {
-      banner(
-        body,
+      host.banner(
         'note',
         'Every box is degenerate: p25 = median = p75. That is what a constant or ' +
           'mostly-zero column looks like, and it is the data.',
@@ -353,5 +323,114 @@ export function createBoxPlot(deps: BoxPlotDeps): BoxPlot {
     }
   }
 
-  return { draw, showTip };
+  function hover(x: number, y: number): void {
+    if (!geometry) return;
+    const { units, range, marginLeft, marginTop, plotWidth, plotHeight } = geometry;
+    const inside =
+      y >= marginTop &&
+      y <= marginTop + plotHeight &&
+      x >= marginLeft &&
+      x <= marginLeft + plotWidth;
+    const fraction = 1 - (y - marginTop) / plotHeight;
+
+    tags.forEach((tag, tagIndex) => {
+      const unit = units[tagIndex];
+      const scale = unit === undefined ? undefined : range.get(unit);
+      placeAxisTag(
+        tag,
+        tagIndex,
+        !inside || !scale ? null : scale.low + (scale.high - scale.low) * fraction,
+        y,
+        marginLeft,
+        marginLeft + plotWidth,
+      );
+    });
+
+    let nearest = -1;
+    if (inside) {
+      let best = Infinity;
+      hits.forEach((hit, hitIndex) => {
+        const distance = Math.abs(x - hit.centre);
+        if (distance < best) {
+          best = distance;
+          nearest = hitIndex;
+        }
+      });
+    }
+    if (nearest !== hovered) {
+      hovered = nearest;
+      if (frame) draw(frame.input, true);
+    }
+    if (nearest < 0) tip.style.display = 'none';
+    else showTip(hits[nearest], x);
+  }
+
+  /** The dimension's label, from the select's own option text (one option is
+   * the mounting kind's axis word). */
+  function dimensionLabel(): string {
+    return boxDim.selectedOptions[0]?.textContent?.trim() || boxDim.value;
+  }
+
+  return {
+    surface: 'canvas',
+    controls: () => ['box'],
+    draw(next) {
+      frame = next;
+      draw(next.input);
+    },
+    leave() {
+      frame = null;
+      geometry = null;
+      hits = [];
+      hovered = -1;
+      tip.style.display = 'none';
+      for (const tag of tags) tag.style.display = 'none';
+    },
+    resize() {
+      if (frame) draw(frame.input);
+    },
+    hover,
+    unhover() {
+      for (const tag of tags) tag.style.display = 'none';
+      tip.style.display = 'none';
+      if (hovered >= 0) {
+        hovered = -1;
+        if (frame) draw(frame.input, true);
+      }
+    },
+    figure: {
+      offered: () => true,
+      capture() {
+        if (!frame) return null;
+        const { input } = frame;
+        const ordered = pinnedOf(input.series);
+        return figureShot(host, input, {
+          pane: 'box',
+          ordered,
+          // No zoom: a box pane's window is its categories.
+          xWindow: [0, 1],
+          // Each box by the capture line it summarises, the preview's left
+          // out: a box names its line only by name and colour, which the
+          // pane's lines keep unique.
+          boxes: {
+            // A category per line (the `case` cut) is each line under its
+            // own name: no dimension to title the axis or the caption with.
+            dimension: input
+              .boxes(host.index)
+              .every((group) => group.boxes.length === 1 && group.boxes[0].name === group.label)
+              ? ''
+              : dimensionLabel(),
+            values: boxValues.checked,
+            groups: input.boxes(host.index).map((group) => ({
+              label: group.label,
+              boxes: group.boxes.flatMap((box) => {
+                const line = ordered.findIndex((s) => s.name === box.name && s.color === box.color);
+                return line < 0 ? [] : [{ line, quantiles: { ...box.quantiles } }];
+              }),
+            })),
+          },
+        });
+      },
+    },
+  };
 }

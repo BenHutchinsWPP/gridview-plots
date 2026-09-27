@@ -90,7 +90,7 @@ export function createSlicerPane(mount: HTMLElement): SlicerPane {
   /** The writes of the latest paint: a slicer outlives the paint that built it. */
   let writes: SlicerWrites = { filter() {}, unslice() {} };
 
-  function build(tab: BrowseTab, key: string, label: string, values: string[]): Mounted {
+  function build(key: string, label: string, values: string[], signature: string): Mounted {
     const element = document.createElement('div');
     element.className = 'slicer';
     const head = document.createElement('div');
@@ -121,12 +121,7 @@ export function createSlicerPane(mount: HTMLElement): SlicerPane {
       onTicks: (ticked) =>
         writes.filter(key, ticked.length > 0 ? { kind: 'values', values: [...ticked] } : null),
     });
-    return {
-      element,
-      signature: `${tab.id}\u0000${values.join('\u0000')}`,
-      checklist,
-      note,
-    };
+    return { element, signature, checklist, note };
   }
 
   return {
@@ -145,9 +140,10 @@ export function createSlicerPane(mount: HTMLElement): SlicerPane {
         const id = `${tab!.id}\u0000${column.key}`;
         keep.add(id);
         const values = distinctValues(column, tab!.rows.length);
+        const signature = `${tab!.id}\u0000${values.join('\u0000')}`;
         let held = mounted.get(id);
-        if (!held || held.signature !== `${tab!.id}\u0000${values.join('\u0000')}`) {
-          held = build(tab!, column.key, column.label, values);
+        if (!held || held.signature !== signature) {
+          held = build(column.key, column.label, values, signature);
           mounted.set(id, held);
         }
         const filter = view.filters.get(column.key);

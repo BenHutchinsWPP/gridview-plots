@@ -1,8 +1,9 @@
 // tests/test_interval.mjs
 //
 // The interval pane: one series cut into days, weeks or months and overlaid
-// (src/series/interval.ts), and the pane's couplings in src/ui/charts.ts and
-// index.html, which cannot load under Node and are checked as source text.
+// (src/series/interval.ts); its adapter (src/ui/panes/interval.ts), run
+// against a fake DOM; and its couplings in src/ui/charts.ts and index.html,
+// which cannot load under Node and are checked as source text.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -10,10 +11,20 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import './test_loader.mjs';
+import { installFakeDom, stubHost, frameOf } from './test_fixtures_dom.mjs';
+
+installFakeDom();
 
 const { axisHours, axisLabel, cutPeriods, periodSummary } =
   await import('../src/series/interval.ts');
-const { coloursFor, namesPeriods, NAMED_PERIODS_MAX } = await import('../src/ui/interval-plot.ts');
+const {
+  coloursFor,
+  namesPeriods,
+  NAMED_PERIODS_MAX,
+  createIntervalAdapter,
+  intervalSettings,
+  restoreIntervalSettings,
+} = await import('../src/ui/panes/interval.ts');
 const { weekdayOf } = await import('../src/model/date-range.ts');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -135,7 +146,90 @@ check('the pane is a SlotType offered in every pane, with its controls in every 
       assert.ok(html.includes(`data-el="${hook}-${n}"`), `pane ${n} has ${hook}`);
     }
   }
-  assert.match(charts, /interval: 'interval',/, 'an interval pane offers a Figure');
+  assert.match(charts, /interval: createIntervalAdapter,/, 'the host draws it with this adapter');
+});
+
+/** A colour select with the three options index.html gives it. */
+function withColours(host) {
+  host.controls.intervalColour.options = ['time', 'weekday', 'month'].map((value) => ({
+    value,
+    disabled: false,
+  }));
+  return host;
+}
+
+check('the adapter draws one series, and its Figure names the rest as left out', () => {
+  const { host, record } = stubHost();
+  const pane = createIntervalAdapter(withColours(host));
+  assert.equal(pane.surface, 'canvas');
+  assert.deepEqual(pane.controls(frameOf([])), ['interval']);
+  const series = (name) => ({
+    name,
+    unit: 'MW',
+    color: '#1f77b4',
+    values: indexes(),
+    warnings: [],
+  });
+  pane.draw(frameOf([series('SAMPLE A'), series('SAMPLE B')], { yearOf: () => 2023 }));
+  assert.deepEqual(record.notes, ['SAMPLE A (1 of 2)'], 'the header names the series it cut');
+  const shot = pane.figure.capture();
+  assert.equal(shot.capture.pane, 'interval', 'an interval pane offers a Figure');
+  assert.deepEqual(
+    shot.capture.lines.map((line) => line.refusal),
+    [undefined, 'An interval chart draws one series.'],
+  );
+  const { length, colour, mean, band, picked, weekdays } = shot.capture.interval;
+  assert.deepEqual(
+    { length, colour, mean, band, picked },
+    {
+      length: 'day',
+      colour: 'time',
+      mean: true,
+      band: false,
+      picked: null,
+    },
+  );
+  assert.equal(weekdays.length, 365);
+  assert.equal(weekdays[0], weekdayOf(2023, 0), "the weekdays are the series' own year's");
+  pane.leave();
+  assert.equal(pane.figure.capture(), null, 'a pane that left the type has nothing to capture');
+});
+
+check('a length offers only its colours, and a bundle restores only known settings', () => {
+  const { host, record } = stubHost();
+  // Its listeners on the header controls are what is under test.
+  createIntervalAdapter(withColours(host));
+  const { intervalBy, intervalColour } = host.controls;
+  intervalColour.value = 'weekday';
+  intervalBy.value = 'week';
+  intervalBy.fire('change');
+  assert.deepEqual(
+    intervalColour.options.map((option) => option.disabled),
+    [false, true, false],
+    'a week holds every weekday, so it cannot be coloured by one',
+  );
+  assert.equal(intervalColour.value, 'time', 'a colour the length cannot take falls back');
+  assert.equal(record.rerenders, 1, 'and the pane re-renders once, after the correction');
+
+  restoreIntervalSettings(host.controls, {
+    length: 'fortnight',
+    colour: 'weekday',
+    mean: 'yes',
+    band: true,
+  });
+  assert.deepEqual(intervalSettings(host.controls), {
+    length: 'day',
+    colour: 'weekday',
+    mean: true,
+    band: true,
+  });
+  restoreIntervalSettings(host.controls, undefined);
+  assert.deepEqual(intervalSettings(host.controls), {
+    length: 'day',
+    colour: 'time',
+    mean: true,
+    band: false,
+  });
 });
 
 console.log(`\n${passed} checks passed`);

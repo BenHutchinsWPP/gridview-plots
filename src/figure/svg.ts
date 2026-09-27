@@ -17,7 +17,7 @@ export const FONT_FAMILY = 'Aptos, Calibri, Arial, sans-serif';
 /** Points per inch: the `viewBox` unit. */
 export const PT_PER_IN = 72;
 
-export function escapeXml(text: string): string {
+function escapeXml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -27,7 +27,7 @@ export function escapeXml(text: string): string {
 
 /** A coordinate at a hundredth of a point: finer is invisible at 300 dpi and
  * only lengthens the file. */
-export function pt(value: number): string {
+function pt(value: number): string {
   return String(Math.round(value * 100) / 100);
 }
 

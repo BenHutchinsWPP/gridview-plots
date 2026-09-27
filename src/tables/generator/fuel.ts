@@ -14,7 +14,7 @@
 
 import groupingsData from '../../../data/generator/fuel-groupings.json' with { type: 'json' };
 
-export const FUEL_CATEGORIES = [
+const FUEL_CATEGORIES = [
   'Solar',
   'Wind',
   'Battery Storage',

@@ -71,20 +71,20 @@ ok('the default branch still pins the union to `never`, so the next kind is a co
 
 // --------------------------------------------------- the auxiliary apply loop
 //
-// Every auxiliary action needs a branch in main.ts's apply loop.
+// Every auxiliary action needs a branch in the drop's apply loop.
 
-const main = read('src/main.ts');
-const applyStart = main.indexOf('for (const step of route.auxiliary)');
-assert.ok(applyStart > 0, 'src/main.ts must apply the auxiliary steps routeDrop returned');
+const dropLoad = read('src/app/drop-load.ts');
+const applyStart = dropLoad.indexOf('for (const step of route.auxiliary)');
+assert.ok(applyStart > 0, 'src/app/drop-load.ts must apply the auxiliary steps routeDrop returned');
 // Guard the bound: an unmatched sentinel (-1) would widen the slice to the
-// rest of main.ts and pass vacuously.
-const applyEnd = main.indexOf('\n    }', applyStart);
+// rest of the file and pass vacuously.
+const applyEnd = dropLoad.indexOf('\n    }', applyStart);
 assert.ok(applyEnd > applyStart, 'the auxiliary apply loop must be closed at its own indentation');
-const applyBlock = main.slice(applyStart, applyEnd);
+const applyBlock = dropLoad.slice(applyStart, applyEnd);
 for (const action of ['message', 'bundle', 'groupings', 'lookup']) {
   assert.ok(
     applyBlock.includes(`case '${action}':`),
-    `routeDrop can emit an auxiliary '${action}' step, but src/main.ts's apply loop has no ` +
+    `routeDrop can emit an auxiliary '${action}' step, but the drop's apply loop has no ` +
       `branch for it -- the step is produced and then matched by nothing.`,
   );
 }
@@ -141,13 +141,14 @@ assert.match(
   "a limits file must be routed off the drop switch into the Import Dialog's own list",
 );
 assert.match(
-  main,
-  /applyLimitDrops\(/,
+  dropLoad,
+  /await applyLimitDrops\(/,
   'the limits the dialog returned must be installed by `applyLimitDrops`, or a confirmed limits ' +
     'file is read and thrown away.',
 );
+// Behaviour, through a fake host, in test_drop_load.mjs.
 assert.ok(
-  main.indexOf('applyLimitDrops(') > main.indexOf('interfaceDrops.length > 0'),
+  dropLoad.indexOf('await applyLimitDrops(') > dropLoad.indexOf("await run('generator', 'L')"),
   'limits must be installed AFTER the ingests: a limits file pinned to a Case is resolved by ' +
     'name, and that Case may not exist until its own export has landed.',
 );

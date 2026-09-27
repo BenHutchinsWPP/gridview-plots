@@ -3,7 +3,7 @@
 // The value tag pinned to a y axis at the cursor's height: the reading the eye
 // is trying to take off the axis anyway, without tracing a line back to it.
 //
-// Here rather than in `charts.ts` because `placeAxisTag` is shared with the
+// Its own module because `placeAxisTag` is shared by the uPlot types and the
 // hand-drawn box canvas, which has no uPlot in it at all. The two differ only
 // in how a pixel becomes a value -- uPlot's `posToVal` against a linear
 // interpolation over the box plot's own scale -- and everything after that is

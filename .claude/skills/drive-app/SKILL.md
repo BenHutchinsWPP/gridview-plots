@@ -52,10 +52,10 @@ lsof -ti:5199 -sTCP:LISTEN | xargs -r kill
 - **The import dialog is not a `<dialog>`.** Click "Assign each file
   individually". The per-file Case inputs are `input.modal-filter:visible`, in
   the listed file order. Fill each one and press Tab, then click "Load
-  everything". Wait for the header to say `2 cases`.
+  everything" and wait with `idle()`.
 - **The drawer** opens on its own after a load and starts closed after a
-  restore. `tab()` clicks `#browse-handle` only when the tab button is hidden.
-  Checking the handle's visibility races the drawer's animation. Tab buttons
+  restore. `tab()` clicks `#browse-handle` only when the drawer's
+  `data-detent` is `closed`, then waits for the tab to turn `.active`. Tab buttons
   are `.browse-tab` with text such as `Selected (4)`, so match them anchored:
   "Interface" is a prefix of "Interface Groups".
 - **Pin** by checking the row's `input[type=checkbox]` (`pinRow`).
@@ -68,8 +68,11 @@ lsof -ti:5199 -sTCP:LISTEN | xargs -r kill
 - **Restore:** drop the `.gvmb` on `#file-input`, in a FRESH context
   (`open(browser)` again) to prove it does not lean on session state. Drop it
   twice into one context to prove a second restore works too.
-- **Wait with `idle()`** between drops. A drop made while a load runs is
-  refused with "A load is already running", which is easy to miss.
+- **Wait on the app, never a fixed sleep.** A drop sets `body.is-busy`
+  synchronously and holds it until the drop ends, dialogs included, so
+  `idle()` after the last click of a drop waits for exactly that drop. A drop
+  made while a load runs is refused with "A load is already running", which
+  is easy to miss. `pinRow` waits for the Selected count to rise.
 - **A membership file** dropped on the window opens a pane asking which kind
   it groups. A header only one editor writes (`BusID,Grouping`,
   `Name,Grouping,Direction`, `Name,Bus ID,Unit ID,Grouping`) starts on that

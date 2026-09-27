@@ -97,7 +97,7 @@ function distinct(values: readonly string[]): number {
 const MARKS = ['*', '†', '‡', '§', '¶'];
 
 /** The `n`th mark: `*` … `¶`, then doubled, tripled. */
-export function footnoteMark(n: number): string {
+function footnoteMark(n: number): string {
   return MARKS[n % MARKS.length].repeat(Math.floor(n / MARKS.length) + 1);
 }
 
