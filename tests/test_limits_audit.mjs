@@ -8,7 +8,9 @@
 //
 // It also pins what the counts and verdicts say for files built to hit each
 // branch: a name that differs only by case, one that matches nothing, a
-// duplicate row, the sentinel, and limits in the wrong unit.
+// duplicate row, the sentinel, limits in the wrong unit, a floor and a
+// negative ceiling, and flow files a drop would load differently from a naive
+// read (a blank cell, a leap year, a repeated hour).
 //
 // Run: node tests/test_limits_audit.mjs
 
@@ -42,22 +44,28 @@ const FLOWS = {
   SAMPLE_QPATH_DELTA: [-44.5625, 66.6875],
 };
 
-function writeFlow(file) {
+/** `blank(name, h)` leaves that cell empty; `leap` adds Feb 29; `repeatLast`
+ * writes the last hour twice. */
+function writeFlow(
+  file,
+  { year = YEAR, blank = () => false, leap = false, repeatLast = false } = {},
+) {
   const names = Object.keys(FLOWS);
   const out = [
-    `Interface Hourly 'Power Flow (MW)' Data for Year ${YEAR}`,
+    `Interface Hourly 'Power Flow (MW)' Data for Year ${year}`,
     'SYNTHETIC DATA -- invented for tests/test_limits_audit.mjs',
-    `(From the first hour of 1/1/${YEAR} to the last hour of 12/31/${YEAR}. Column identifier -- Interface Name)`,
+    `(From the first hour of 1/1/${year} to the last hour of 12/31/${year}. Column identifier -- Interface Name)`,
     '',
     `Date, Hour, TOU,${names.join(',')}`,
   ];
   for (let m = 1; m <= 12; m++)
-    for (let d = 1; d <= DAYS[m - 1]; d++)
+    for (let d = 1; d <= DAYS[m - 1] + (leap && m === 2 ? 1 : 0); d++)
       for (let h = 1; h <= 24; h++)
         out.push(
-          `${m}/${d}/${YEAR},${h},${h % 2 ? 'OffPeak' : 'OnPeak'},` +
-            names.map((name) => FLOWS[name][h % 2]).join(','),
+          `${m}/${d}/${year},${h},${h % 2 ? 'OffPeak' : 'OnPeak'},` +
+            names.map((name) => (blank(name, h) ? '' : FLOWS[name][h % 2])).join(','),
         );
+  if (repeatLast) out.push(out[out.length - 1]);
   writeFileSync(join(dir, file), out.join('\r\n') + '\r\n');
 }
 
@@ -79,7 +87,9 @@ const alphaMax = [4137.5, ...Array(11).fill(3901.25)];
 const LIMIT_ROWS = [
   ['SAMPLE_QPATH_ALPHA', 'MAX', alphaMax],
   ['SAMPLE_QPATH_ALPHA', 'MIN', twelve(-99999)],
-  ['SAMPLE_QPATH_ALPHA', 'MAX', twelve(2718.5)], // a duplicate: dropped, counted
+  // A duplicate: dropped and counted, and its one cell just inside the
+  // no-limit threshold must not reach the layout counts.
+  ['SAMPLE_QPATH_ALPHA', 'MAX', [85123.5, ...Array(11).fill(2718.5)]],
   ['SAMPLE_QPATH_BRAVO', 'MIN', twelve(-3141.75)],
   ['sample_qpath_charlie', 'MAX', twelve(1618.25)], // differs from the flow only by case
   ['SAMPLE_QPATH_ECHO', 'MAX', twelve(1414.125)], // in no flow file at all
@@ -106,6 +116,25 @@ writeLimits(
   ]),
 );
 writeFileSync(join(dir, 'SAMPLE_limits_headerless.csv'), 'SAMPLE_QPATH_ALPHA,MAX,4137.5\r\n');
+// Limits on the far side of zero. CHARLIE flows 12.4375..905.8125 and BRAVO
+// -2963.125..811.875: a floor CHARLIE clears, a floor it falls below, a zero
+// floor, and a negative MAX BRAVO rises above.
+writeLimits('SAMPLE_limits_floors.csv', [
+  ['SAMPLE_QPATH_CHARLIE', 'MIN', twelve(7.25)],
+  ['SAMPLE_QPATH_CHARLIE', 'MAX', twelve(-0)],
+  ['SAMPLE_QPATH_BRAVO', 'MAX', twelve(-212.75)],
+]);
+writeLimits('SAMPLE_limits_floor_breached.csv', [['SAMPLE_QPATH_CHARLIE', 'MIN', twelve(333.5)]]);
+writeLimits('SAMPLE_limits_zero_floor.csv', [['SAMPLE_QPATH_CHARLIE', 'MIN', twelve(0)]]);
+// DELTA flows -44.5625 on even hours; its odd hours are blank, so every
+// value it carries is below this negative ceiling. Read as 0, a blank would
+// breach it.
+writeLimits('SAMPLE_limits_delta_ceiling.csv', [['SAMPLE_QPATH_DELTA', 'MAX', twelve(-31.125)]]);
+writeFlow('SAMPLE_flow_blanks.csv', {
+  blank: (name, h) => name === 'SAMPLE_QPATH_DELTA' && h % 2 === 1,
+});
+writeFlow('SAMPLE_flow_leap.csv', { year: 2036, leap: true });
+writeFlow('SAMPLE_flow_repeated.csv', { repeatLast: true });
 
 function run(limits, flow = 'SAMPLE_flow.csv') {
   const result = spawnSync(process.execPath, [script, join(dir, limits), join(dir, flow)], {
@@ -132,6 +161,10 @@ const INPUT_TEXT = [
   ...LIMIT_ROWS.flatMap(([, , values]) => values).map(String),
   ...LIMIT_ROWS.flatMap(([, , values]) => values).map((v) => String(v / 10)),
   ...LIMIT_ROWS.flatMap(([, , values]) => values).map((v) => String(v * 3)),
+  '7.25',
+  '212.75',
+  '333.5',
+  '31.125',
 ].filter((text) => text !== '-99999');
 
 function assertNothingLeaked(result, label) {
@@ -157,6 +190,7 @@ try {
   assert.equal(f['limits.sidesVaryingWithinYear'], '1');
   assert.equal(f['limits.noLimitCells'], '12');
   assert.equal(f['limits.noLimitNot99999'], '0');
+  assert.equal(f['limits.justInsideThreshold'], '0', 'a dropped row is not counted');
   assert.equal(f['limits.markerColumnCount'], '1');
   assert.equal(f['limits.markerHeaderBlank'], 'false');
   assert.equal(f['flow.quantityIsMW'], 'true');
@@ -184,6 +218,39 @@ try {
   assert.equal(light.fields['verdicts.1 unit is MW'], 'undetermined');
   ok('limits no flow approaches leave the unit undetermined rather than refuted');
 
+  // A floor or negative ceiling is checked in its own direction, never by
+  // distance from zero.
+  const floors = run('SAMPLE_limits_floors.csv');
+  assert.equal(floors.status, 0, floors.stderr);
+  assert.equal(floors.fields['magnitude.monthSides'], '36');
+  assert.equal(floors.fields['magnitude.exceeded'], '24', "CHARLIE's MAX -0 and BRAVO's MAX");
+  assert.equal(floors.fields['magnitude.floorOrCeiling'], '12', "CHARLIE's floor, cleared");
+  assert.equal(floors.fields['magnitude.below50'], '0');
+  const breached = run('SAMPLE_limits_floor_breached.csv');
+  assert.equal(breached.fields['magnitude.exceeded'], '12');
+  const zero = run('SAMPLE_limits_zero_floor.csv');
+  assert.equal(zero.fields['magnitude.exceeded'], '0');
+  assert.equal(zero.fields['magnitude.floorOrCeiling'], '12');
+  ok('a floor, a zero floor and a negative ceiling are compared in their own direction');
+
+  // A blank cell is absent, as a drop reads it, not a flow of zero.
+  const blanks = run('SAMPLE_limits_delta_ceiling.csv', 'SAMPLE_flow_blanks.csv');
+  assert.equal(blanks.status, 0, blanks.stderr);
+  assert.equal(blanks.fields['magnitude.exceeded'], '0');
+  assert.equal(blanks.fields['magnitude.floorOrCeiling'], '12');
+  ok('a blank flow cell is no data, not a zero that breaches a negative ceiling');
+
+  const leap = run('SAMPLE_limits.csv', 'SAMPLE_flow_leap.csv');
+  assert.equal(leap.status, 0, leap.stderr);
+  assert.equal(leap.fields['flow.hours'], '8760');
+  ok('a leap-year flow file audits the 8,760 hours a drop keeps');
+
+  const repeated = run('SAMPLE_limits.csv', 'SAMPLE_flow_repeated.csv');
+  assert.notEqual(repeated.status, 0, 'a repeated hour is refused, as a drop refuses it');
+  assert.equal(repeated.stdout, '');
+  assert.match(repeated.stderr, /reading the flow file/);
+  ok('a flow file with a repeated hour is refused rather than audited');
+
   const refused = run('SAMPLE_limits_headerless.csv');
   assert.notEqual(refused.status, 0, 'a file with no header is refused');
   assert.equal(refused.stdout, '');
@@ -194,6 +261,15 @@ try {
   assertNothingLeaked(tenths, 'a wrong-unit audit');
   assertNothingLeaked(light, 'a lightly loaded audit');
   assertNothingLeaked(refused, 'a refusal');
+  for (const [result, label] of [
+    [floors, 'a floors audit'],
+    [breached, 'a breached floor'],
+    [zero, 'a zero floor'],
+    [blanks, 'a blank-cell audit'],
+    [leap, 'a leap-year audit'],
+    [repeated, 'a flow refusal'],
+  ])
+    assertNothingLeaked(result, label);
   ok(`no name and no value from the inputs reaches the output (${INPUT_TEXT.length} searched)`);
 } finally {
   rmSync(dir, { recursive: true, force: true });

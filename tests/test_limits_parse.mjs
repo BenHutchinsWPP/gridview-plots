@@ -56,11 +56,18 @@ check('rule 1: the year is discarded — two years of one path are one key, firs
 });
 
 check('rule 2: a duplicate (path, side) is dropped and COUNTED, never merged', () => {
-  const { table, warnings } = parseLimitsCsv(
-    file(`PATH_A,2035,MAX,${ramp(1000)}`, `PATH_A,2035,MAX,${ramp(2000)}`),
+  const { table, warnings, dropped } = parseLimitsCsv(
+    file(
+      `PATH_A,2035,MAX,${ramp(1000)}`,
+      `PATH_A,2035,MAX,${ramp(2000)}`,
+      `PATH_A,2035,${ramp(3000)}`,
+      `,2035,MIN,${ramp(4000)}`,
+    ),
     'limits.csv',
   );
   assert.equal(table.byInterface.get('PATH_A').max[0], 1000);
+  // Numbers, so a reader of the counts never parses warning text.
+  assert.deepEqual(dropped, { duplicates: 1, untyped: 1, unnamed: 1 });
   assert.ok(
     warnings.some((line) => line.includes('duplicate') && line.includes('1')),
     `a dropped duplicate must produce a counted warning, got: ${warnings.join(' | ')}`,

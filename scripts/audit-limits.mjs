@@ -4,21 +4,23 @@
 // its Power Flow export, printing COUNTS AND VERDICTS ONLY, so the output stays
 // short enough to read at a glance. It never prints a name, row, cell, header
 // or value (tests/test_limits_audit.mjs searches for its fixtures' ones).
-// It uses the app's own parsers, so a "match" is what a drop would draw, and
-// adds why a name missed and whether units look like MW.
+// It reads both files through the app's own parsers (the limits rows a drop
+// keeps, the flow cube the wide reader builds), so a "match" is what a drop
+// would draw, and adds why a name missed and whether units look like MW.
 //
 // Usage:
 //   node scripts/audit-limits.mjs <limits.csv> <flow.csv>
 
 import '../tests/test_loader.mjs';
-import { createReadStream, readFileSync } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const { parseLimitsCsv, NO_LIMIT_BEYOND } = await import('../src/limits/parse.ts');
-const { readCasePlan } = await import('../src/tables/interface/pool.ts');
-const { splitCsvLine, normalizeCell, parseNumber } = await import('../src/lookups/parse.ts');
-const { MONTH_NAMES } = await import('../src/model/calendar.ts');
+const { parseLimitsCsv, readLimitRows, NO_LIMIT_BEYOND } = await import('../src/limits/parse.ts');
+const { readCasePlan, ingestWithWorkers } = await import('../src/tables/interface/pool.ts');
+const { instantiateParser, parseBytes } = await import('../src/tables/wide/block.ts');
+const { readWholeRows } = await import('../src/tables/wide/worker.ts');
+const { normalizeCell, parseNumber } = await import('../src/lookups/parse.ts');
+const { HOURS_PER_YEAR, buildCalendar, getMonth } = await import('../src/model/calendar.ts');
 const { fileBlob } = await import('./file-blob.mjs');
 
 /** A limit this far past the flow's own extreme, on its own side, counts as
@@ -41,42 +43,26 @@ const collapse = (name) => name.replace(/\s+/g, ' ');
 /** Where a refusal happened, which is all a refusal may say. */
 let stage = 'starting';
 
-/** The limits file's structure, read the way parse.ts reads it and counted. */
+/** The limits file's structure, counted over the rows parse.ts keeps. */
 function auditLimitsLayout(text) {
-  const lines = text.split(/\r?\n/);
-  const wanted = MONTH_NAMES.map((month) => month.toLowerCase());
-  let headerIndex = -1;
-  let cells = [];
-  for (let i = 0; i < Math.min(lines.length, 20); i++) {
-    cells = splitCsvLine(lines[i]).map((cell) => cell.trim().toLowerCase());
-    if (wanted.every((month) => cells.includes(month))) {
-      headerIndex = i;
-      break;
-    }
-  }
-  const preamble = headerIndex < 0 ? '' : lines.slice(0, headerIndex).join('\n');
-  const monthIndexes = wanted.map((month) => cells.indexOf(month));
+  // parseLimitsCsv has already refused a file with no header.
+  const { layout, rows } = readLimitRows(text);
+  const { header } = layout;
   const markerColumns = new Set();
   const years = new Set();
-  const yearIndex = cells.indexOf('year');
+  const yearIndex = header.indexOf('year');
   let rowsWithSecondMarker = 0;
-  let markerHeaderBlank = null;
   let blankMonthCells = 0;
   let noLimitCells = 0;
   let noLimitNot99999 = 0;
   let justInsideThreshold = 0;
-  for (let i = headerIndex + 1; headerIndex >= 0 && i < lines.length; i++) {
-    if (lines[i].trim() === '') continue;
-    const row = splitCsvLine(lines[i]);
-    const markers = row
-      .map((cell, index) => [cell.trim().toLowerCase(), index])
-      .filter(([cell]) => cell === 'min' || cell === 'max');
-    if (markers.length === 0) continue;
-    if (markers.length > 1) rowsWithSecondMarker++;
-    markerColumns.add(markers[0][1]);
-    if (yearIndex >= 0) years.add((row[yearIndex] ?? '').trim());
-    for (const index of monthIndexes) {
-      const cell = normalizeCell(row[index] ?? '');
+  for (const { cells, sideIndex } of rows) {
+    const markers = cells.filter((cell) => /^(min|max)$/i.test(cell.trim())).length;
+    if (markers > 1) rowsWithSecondMarker++;
+    markerColumns.add(sideIndex);
+    if (yearIndex >= 0) years.add((cells[yearIndex] ?? '').trim());
+    for (const index of layout.monthIndexes) {
+      const cell = normalizeCell(cells[index] ?? '');
       const value = cell === null ? null : parseNumber(cell);
       if (value === null) {
         blankMonthCells++;
@@ -89,16 +75,14 @@ function auditLimitsLayout(text) {
       } else if (magnitude >= NO_LIMIT_BEYOND * 0.9) justInsideThreshold++;
     }
   }
-  if (markerColumns.size === 1) {
-    const [index] = markerColumns;
-    markerHeaderBlank = (cells[index] ?? '') === '';
-  }
+  const preamble = text.split(/\r?\n/).slice(0, layout.headerIndex).join('\n');
   return {
-    headerFound: headerIndex >= 0,
-    finerThanMonthColumns: cells.filter((cell) => FINER_THAN_MONTH.test(cell)).length,
+    headerFound: true,
+    finerThanMonthColumns: header.filter((cell) => FINER_THAN_MONTH.test(cell)).length,
     distinctYears: years.size,
     markerColumnCount: markerColumns.size,
-    markerHeaderBlank,
+    markerHeaderBlank:
+      markerColumns.size === 1 ? (header[[...markerColumns][0]] ?? '') === '' : null,
     rowsWithSecondMarker,
     blankMonthCells,
     noLimitCells,
@@ -110,52 +94,86 @@ function auditLimitsLayout(text) {
   };
 }
 
-/** Per interface and month, the flow's extremes, by streaming the export. */
-async function flowExtremes(flowPath, plan) {
-  const columns = [];
-  plan.header.canonical.forEach((name, index) => {
-    if (index > plan.header.touCol && name !== '') columns.push([index, name]);
-  });
-  const extremes = new Map(
-    columns.map(([, name]) => [
-      name,
-      { max: new Float64Array(12).fill(-Infinity), min: new Float64Array(12).fill(Infinity) },
-    ]),
+/** The wide reader's worker, run in this process: Node has no Worker. */
+function inProcessWorker(parser) {
+  const listeners = new Set();
+  const reply = (data) => setImmediate(() => [...listeners].forEach((fn) => fn({ data })));
+  return {
+    addEventListener: (type, fn) => type === 'message' && listeners.add(fn),
+    removeEventListener: (type, fn) => listeners.delete(fn),
+    async postMessage(message) {
+      if (message.kind === 'init') return reply({ kind: 'ready', budget: parser.budget });
+      try {
+        const { bytes, from, to } = await readWholeRows(message);
+        const payload = parseBytes(
+          parser,
+          message.layout,
+          bytes,
+          from,
+          to,
+          message.activePlanes,
+          message.year,
+        );
+        reply({ kind: 'done', blockId: message.blockId, caseIndex: message.caseIndex, ...payload });
+      } catch (error) {
+        reply({ kind: 'error', blockId: message.blockId, message: String(error?.message) });
+      }
+    },
+  };
+}
+
+/** The flow file as a drop would load it: Feb 29 dropped, a repeated hour
+ * refused, a blank cell absent. Then per interface and month, its extremes. */
+async function flowExtremes(file, plan) {
+  const wasm = readFileSync(new URL('../parser/wide/block.wasm', import.meta.url));
+  const parser = await instantiateParser(new WebAssembly.Module(wasm));
+  const result = await ingestWithWorkers(
+    [inProcessWorker(parser)],
+    parser.budget,
+    [plan],
+    plan.header.entityNames,
   );
-  let hours = 0;
-  const input = createReadStream(flowPath, { start: plan.dataStart });
-  for await (const line of createInterface({ input, crlfDelay: Infinity })) {
-    if (line.trim() === '') continue;
-    const cells = line.split(',');
-    const month = Number((cells[plan.header.dateCol] ?? '').trim().split('/')[0]) - 1;
-    if (!(month >= 0 && month < 12)) continue;
-    hours++;
-    for (const [index, name] of columns) {
-      const value = Number(cells[index]);
-      if (!Number.isFinite(value)) continue;
-      const entry = extremes.get(name);
+  // The failure's text names the file and quotes cells; the refusal names the stage.
+  if (result.failures.length > 0 || result.cases.length === 0) throw new Error('flow refused');
+  const table = result.cases[0];
+  const calendar = buildCalendar(table.year);
+  const extremes = new Map();
+  table.interfaces.forEach((name, i) => {
+    if (!table.presence[i]) return;
+    const entry = {
+      max: new Float64Array(12).fill(-Infinity),
+      min: new Float64Array(12).fill(Infinity),
+    };
+    const plane = table.cube.subarray(i * HOURS_PER_YEAR, (i + 1) * HOURS_PER_YEAR);
+    for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+      const value = plane[hour];
+      if (Number.isNaN(value)) continue;
+      const month = getMonth(calendar[hour]) - 1;
       if (value > entry.max[month]) entry.max[month] = value;
       if (value < entry.min[month]) entry.min[month] = value;
     }
-  }
-  return { extremes, hours };
+    extremes.set(name, entry);
+  });
+  const hours = table.hoursPresent.reduce((sum, seen) => sum + seen, 0);
+  return { extremes, hours, unit: table.unit };
 }
 
 /** The whole audit as numbers and booleans (exported for the test). */
 export async function auditLimits(limitsPath, flowPath) {
   stage = 'reading the limits file';
   const text = readFileSync(limitsPath, 'utf8');
+  const { table, dropped } = parseLimitsCsv(text, 'limits');
   const layout = auditLimitsLayout(text);
-  const { table, warnings } = parseLimitsCsv(text, 'limits');
-  const countIn = (pattern) => {
-    const hit = warnings.find((warning) => pattern.test(warning));
-    // The count is `toLocaleString()` text: any locale's digit grouping.
-    return hit ? Number(hit.match(/: (\d[\d.,'\u00a0\u202f]*) /)[1].replace(/\D/g, '')) : 0;
-  };
 
   stage = 'reading the flow file';
-  const plan = await readCasePlan(fileBlob(flowPath));
-  const { extremes, hours } = await flowExtremes(flowPath, plan);
+  const file = fileBlob(flowPath);
+  let flow;
+  try {
+    flow = await flowExtremes(file, await readCasePlan(file));
+  } finally {
+    file.close();
+  }
+  const { extremes, hours, unit } = flow;
   stage = 'comparing';
 
   const flowNames = new Set(extremes.keys());
@@ -173,6 +191,7 @@ export async function auditLimits(limitsPath, flowPath) {
   const magnitude = {
     monthSides: 0,
     exceeded: 0,
+    floorOrCeiling: 0,
     within50to100: 0,
     below50: 0,
     belowOnePercent: 0,
@@ -202,13 +221,24 @@ export async function auditLimits(limitsPath, flowPath) {
         const reach = side === 'max' ? flow.max[m] : flow.min[m];
         if (!Number.isFinite(bound) || !Number.isFinite(reach)) continue;
         magnitude.monthSides++;
-        if (bound !== 0 && Math.sign(reach) !== 0 && Math.sign(bound) !== Math.sign(reach)) {
+        // How far the flow went past the limit, on the limit's own side.
+        const past = side === 'max' ? reach - bound : bound - reach;
+        if (past > EXCEED_TOLERANCE * Math.abs(bound)) {
+          magnitude.exceeded++;
+          continue;
+        }
+        // A MIN at or above zero is a floor and a MAX at or below zero a
+        // ceiling: the flow's distance from zero says nothing of their scale.
+        if (side === 'max' ? bound <= 0 : bound >= 0) {
+          magnitude.floorOrCeiling++;
+          continue;
+        }
+        if (Math.sign(reach) === -Math.sign(bound)) {
           magnitude.oppositeSign++;
           continue;
         }
         const ratio = Math.abs(reach) / Math.abs(bound);
-        if (ratio > 1 + EXCEED_TOLERANCE) magnitude.exceeded++;
-        else if (ratio >= 0.5) magnitude.within50to100++;
+        if (ratio >= 0.5) magnitude.within50to100++;
         else magnitude.below50++;
         if (ratio < 0.01) magnitude.belowOnePercent++;
       }
@@ -218,17 +248,18 @@ export async function auditLimits(limitsPath, flowPath) {
     (name) => !table.byInterface.has(name),
   ).length;
 
-  const flowIsMW = /\(MW\)/.test(plan.title.quantity);
+  const flowIsMW = unit === 'MW';
   const otherUnitStated =
     layout.preambleUnits.MVA || layout.preambleUnits.percent || layout.preambleUnits.amps;
   const exceedShare = magnitude.monthSides === 0 ? null : magnitude.exceeded / magnitude.monthSides;
+  const scaled = magnitude.within50to100 + magnitude.below50;
   return {
     limits: {
       ...layout,
       interfaces: table.byInterface.size,
-      duplicateRowsDropped: countIn(/duplicate/),
-      rowsWithNoMarker: countIn(/no MIN or MAX/),
-      rowsWithBlankName: countIn(/blank path name/),
+      duplicateRowsDropped: dropped.duplicates,
+      rowsWithNoMarker: dropped.untyped,
+      rowsWithBlankName: dropped.unnamed,
       sidesVaryingWithinYear: varyingWithinYear,
     },
     flow: { quantityIsMW: flowIsMW, hours },
@@ -240,7 +271,7 @@ export async function auditLimits(limitsPath, flowPath) {
       '1 unit is MW':
         !flowIsMW || otherUnitStated || magnitude.monthSides === 0
           ? 'undetermined'
-          : exceedShare > 0.05 || magnitude.belowOnePercent > magnitude.monthSides / 2
+          : exceedShare > 0.05 || magnitude.belowOnePercent > scaled / 2
             ? 'no'
             : magnitude.within50to100 > 0
               ? 'yes'
@@ -250,7 +281,7 @@ export async function auditLimits(limitsPath, flowPath) {
         layout.headerFound &&
         layout.finerThanMonthColumns === 0 &&
         layout.distinctYears <= 1 &&
-        countIn(/duplicate/) === 0
+        dropped.duplicates === 0
           ? 'yes'
           : 'no',
       '4 MIN/MAX found by value, unambiguously':
