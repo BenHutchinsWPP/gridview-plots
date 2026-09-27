@@ -23,7 +23,9 @@ export async function open(browser) {
 }
 /**
  * Drop `files` (names under data/), give file `i` to Case `caseOf(i)` in the
- * import dialog, and wait for the load to finish.
+ * import dialog, and wait for the load to finish. The dialog sorts its rows
+ * by detected kind, so each box is found by its file's label, not its place.
+ * A lookup or limits file in the drop has no Case box and is left as is.
  */
 async function loadIntoCases(page, files, caseOf) {
   await idle(page);
@@ -31,12 +33,14 @@ async function loadIntoCases(page, files, caseOf) {
     '#file-input',
     files.map((f) => `${S}/data/${f}`),
   );
+  // The dialog builds every row before it shows, so once this is clickable
+  // a file with no box has none to wait for.
   await page.getByText('Assign each file individually').click();
-  const inputs = page.locator('input.modal-filter:visible');
-  await inputs.nth(files.length - 1).waitFor();
-  for (let i = 0; i < files.length; i++) {
-    await inputs.nth(i).fill(caseOf(i));
-    await inputs.nth(i).press('Tab');
+  for (const [i, f] of files.entries()) {
+    const input = page.getByLabel(`Case for ${f.split('/').pop()}`, { exact: true });
+    if ((await input.count()) === 0) continue;
+    await input.fill(caseOf(i));
+    await input.press('Tab');
   }
   await page.getByRole('button', { name: 'Load everything' }).click();
   await idle(page);
@@ -60,8 +64,12 @@ export async function loadStudy(page) {
   );
 }
 export { chromium };
+/** A tab button's text: its name, then a count on the Selected tab. */
+const tabLabel = (name) =>
+  new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}( \\(\\d+\\))?$`);
 export async function tab(page, name) {
-  const button = page.locator('.browse-tab', { hasText: new RegExp(`^${name}( \\(\\d+\\))?$`) });
+  const label = tabLabel(name);
+  const button = page.locator('.browse-tab', { hasText: label });
   // The drawer's detent is settled by the time a load ends, so after idle()
   // a closed drawer stays closed until the handle opens it.
   await idle(page);
@@ -69,14 +77,14 @@ export async function tab(page, name) {
     await page.locator('#browse-handle').click();
   }
   await button.click();
-  await page
-    .locator('.browse-tab.active', { hasText: new RegExp(`^${name}( \\(\\d+\\))?$`) })
-    .waitFor();
+  await page.locator('.browse-tab.active', { hasText: label }).waitFor();
 }
+/** The Selected tab's button once it reads `Selected (n)`. */
+const selectedTab = (page, n) =>
+  page.locator('.browse-tab', { hasText: new RegExp(`^Selected \\(${n ?? '\\d+'}\\)$`) });
 /** How many rows are pinned, from the Selected tab's label. */
 async function pinnedCount(page) {
-  const label = await page.locator('.browse-tab', { hasText: /^Selected \(\d+\)$/ }).textContent();
-  return Number(label.match(/\d+/)[0]);
+  return Number((await selectedTab(page).textContent()).match(/\d+/)[0]);
 }
 /** Tick the drawer row whose text contains every one of `needles`. */
 export async function pinRow(page, ...needles) {
@@ -86,20 +94,26 @@ export async function pinRow(page, ...needles) {
   if (await box.isChecked()) return;
   const before = await pinnedCount(page);
   await box.check();
-  await page.waitForFunction(
-    (before) =>
-      [...document.querySelectorAll('.browse-tab')].some((b) => {
-        const m = /^Selected \((\d+)\)$/.exec(b.textContent);
-        return m && Number(m[1]) > before;
-      }),
-    before,
-  );
+  try {
+    await selectedTab(page, before + 1).waitFor();
+  } catch {
+    throw new Error(`ticking the row with ${needles.join(', ')} left Selected at ${before}`);
+  }
 }
 /**
- * The shared membership editor. `beforeApply` runs with the edits made and
- * the modal still open, for a control only one kind's editor has.
+ * Edit one group in the shared membership editor, from its groups tab.
+ * `create` names a new group; otherwise `group` is selected. `add` and
+ * `remove` are text each item carries (a name, or a bus id). The three
+ * `.groups-list` columns are groups, members, then the axis to add from.
+ * `beforeApply` runs with the edits made and the modal still open, for a
+ * control only one kind's editor has.
  */
-async function editMembers(page, tabName, { group, create, add, remove }, beforeApply) {
+export async function editGroup(
+  page,
+  tabName,
+  { group, create = false, add = [], remove = [] },
+  beforeApply,
+) {
   await tab(page, tabName);
   await page.getByRole('button', { name: /Edit Groups/ }).click();
   const modal = page.locator('.modal-backdrop');
@@ -121,28 +135,17 @@ async function editMembers(page, tabName, { group, create, add, remove }, before
 }
 export async function makeGroup(page, name, reversedIndex) {
   const add = ['SAMPLE_P01', 'SAMPLE_P02', 'SAMPLE_P03'];
-  await editMembers(
-    page,
-    'Interface Groups',
-    { group: name, create: true, add, remove: [] },
-    (modal) =>
-      reversedIndex === undefined
-        ? undefined
-        : modal.locator('.groups-mark').nth(reversedIndex).click(),
+  await editGroup(page, 'Interface Groups', { group: name, create: true, add }, (modal) =>
+    reversedIndex === undefined
+      ? undefined
+      : modal.locator('.groups-mark').nth(reversedIndex).click(),
   );
 }
 export async function selectedRows(page) {
   await tab(page, 'Selected');
-  // The table redraws after the tab turns active: wait until it holds one
-  // row per pin under the Selected tab's own columns.
-  const pinned = await pinnedCount(page);
-  await page.waitForFunction((pinned) => {
-    const heads = [...document.querySelectorAll('#browse-drawer .tabulator-col')];
-    const rows = document.querySelectorAll('#browse-drawer .browse-row').length;
-    return (
-      heads.some((th) => /^Kind\b/.test(th.innerText.trim())) && (rows === pinned || rows >= 20)
-    );
-  }, pinned);
+  // The tab turns active with its columns up and its rows still loading;
+  // the grid holds `data-loading` until they land.
+  await page.waitForFunction(() => !document.querySelector('#browse-drawer [data-loading]'));
   return page.evaluate(() => {
     // Tabulator's header cells and row cells both open with the tick column.
     // A header's first line is its name: the Selected tab's Case, Variable and
@@ -208,21 +211,10 @@ export async function loadGroupStudy(page, { sharedArea = false } = {}) {
   // a pane asks, with Areas the default for Name,Grouping columns. The drop
   // stays busy while the pane is open, so wait for the pane or the end.
   await page.setInputFiles('#file-input', [`${S}/data/SAMPLE_Groupings.csv`]);
-  await page.waitForFunction(
-    () => !document.body.classList.contains('is-busy') || document.querySelector('.modal-backdrop'),
-  );
   const ask = page.locator('.modal-backdrop').getByRole('button', { name: 'Load', exact: true });
+  await ask.or(page.locator('body:not(.is-busy)')).first().waitFor({ timeout: 60000 });
   if (await ask.isVisible()) await ask.click();
   await idle(page);
-}
-/**
- * Edit one group in the shared membership editor, from its groups tab.
- * `create` names a new group; otherwise `group` is selected. `add` and
- * `remove` are text each item carries (a name, or a bus id). The three
- * `.groups-list` columns are groups, members, then the axis to add from.
- */
-export async function editGroup(page, tabName, { group, create = false, add = [], remove = [] }) {
-  await editMembers(page, tabName, { group, create, add, remove });
 }
 /** Wait until no load is running. A drop made while one runs is refused
  * with "A load is already running", and `body.is-busy` is what says so.

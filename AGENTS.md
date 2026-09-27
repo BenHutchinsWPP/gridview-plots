@@ -203,6 +203,12 @@ adopted, so the strip never names a file whose content was not taken up.
   The toolbar's Variable and % are hidden on that tab, so one widget never
   both lists and rewrites. Switched pins land through `replacePins`;
   `setSelection` is bundle restore only. Asserted by `tests/test_browse.mjs`.
+- **A grouped column is keyed on the column that made its buckets**, never on
+  a key the ungrouped tab uses for something else. A grouped build consumes
+  each filter over the ungrouped rows, so a bucket column under `entity`
+  would test a tick on a bucket's name against area or bus names. Where the
+  bucket column needs its own key, the ungrouped column's toggle names it
+  (`groupsAs`). Asserted by `tests/test_browse.mjs`.
 - **A Slicer IS its column's filter**, the dropdown's `values` ticks in the
   rail, never a second filter or a scope. Only a `category` column can be one
   (`isBucketable` for a lookup column, and the Case), not `groupable`, which
@@ -219,8 +225,13 @@ adopted, so the strip never names a file whose content was not taken up.
 - Which columns a drop keeps is decided on every drop, visible section or not,
   so it lives in `src/ui/retain-gate.ts`, never on a section.
 - **A column filter's bound is in the units the cell shows**: 80 on a
-  "% of range" column is 80%. Toggling "% of range" drops the bounds on the
-  stat columns it rescales, since a MW bound against a % empties the table.
+  "% of range" column is 80%. A stat bound belongs to what its cells show
+  (`statsShownAs`): a kind tab next read as another variable, unit or "% of range"
+  drops its stat bounds, since a MW bound against a % empties the table and
+  one chosen on Load says nothing about LMP. The Selected tab's column mixes
+  units by design, so its bounds go only with a switch that moves a variable
+  or unit (`replacePins(…, rescaled)`); a Case switch, even one that merges
+  pins, and a new pin keep them.
   A checklist tick is an exact `values` filter and the text box a `contains`
   filter; a tick is never written into the box. Asserted by
   `tests/test_browse.mjs` and `tests/test_dom_contract.mjs`.

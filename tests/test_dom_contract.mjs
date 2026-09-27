@@ -345,11 +345,64 @@ const drawerHeight = read('src/ui/drawer-height.ts');
 const css = read('src/styles.css');
 
 assert.ok(
-  drawer.includes("const key = `${id}|${view.groupBy ?? ''}|${activePu ? 'pu' : 'abs'}`;"),
+  drawer.includes("`${tabId}\\u0000${groupBy ?? ''}\\u0000${pu ? 'pu' : 'abs'}`") &&
+    (drawer.match(/\bkeyOf\(/g) ?? []).length === 3,
   'browse-drawer.ts caches a built tab under id, group-by and per-unit, and nothing else. ' +
     'Height is deliberately not part of that key -- a drag must not rebuild a tab -- so if this ' +
     'line changed to add a term, check the drag is not the reason.',
 );
+
+// A stat bound follows what its cells show. Every kind tab is read through
+// `ungroupedTabFor`, which is where the bounds follow, cached build or not;
+// the Selected tab's follow its pins on a switch. A branch that dropped them
+// on a toggle instead would miss a tab off the bar and a toggle set to what
+// it already is.
+{
+  const body = drawer.match(/function ungroupedTabFor\([\s\S]*?\n  \}/)?.[0] ?? '';
+  const beforeRead = body.slice(0, body.indexOf('readShown(id, tab);'));
+  assert.ok(body.includes('readShown(id, tab);\n    return tab;'), 'the read ends in readShown');
+  assert.deepEqual(
+    beforeRead.match(/\breturn\b[^;]*;/g),
+    ['return undefined;'],
+    'nothing returns a tab before readShown, so a cached build still follows',
+  );
+}
+assert.ok(!/`\$\{(?:id|tabId)\}\|/.test(drawer), 'no hand-written cache key beside keyOf');
+
+// One paint per click: a tab click and the toolbar's % hand the change to
+// the host, whose render is the paint. A draw() before it would paint the new
+// tab under the old kind's variable list.
+{
+  const tabClick =
+    drawer.match(/button\.addEventListener\('click', \(\) => \{[\s\S]*?\n      \}\);/)?.[0] ?? '';
+  assert.ok(tabClick.includes('handlers.onTabChange(entry.id);'), 'the tab click hands off');
+  assert.ok(!/\bdraw\(\)/.test(tabClick), 'and does not paint first');
+  const toggle =
+    drawer.match(/perUnitToggle\.addEventListener\('click', \(\) => \{[\s\S]*?\n  \}\);/)?.[0] ??
+    '';
+  assert.ok(toggle.includes('handlers.onPerUnitChange(perUnit);') && !/\bdraw\(\)/.test(toggle));
+}
+// The Selected tab's slicer reads the Selected tab, whichever tab was drawn.
+assert.match(
+  drawer,
+  /if \(tabId === SELECTED\) return open \? \(selectedTab \?\? selectedNow\(\)\)/,
+);
+// Pins that outlived their tables keep the Selected tab reachable,
+assert.match(drawer, /const selectedOpen = tabs\.length > 0 \|\| pins > 0;/);
+// and land there when the last kind tab goes, not on "Nothing loaded yet".
+assert.match(drawer, /activeId = tabs\[0\]\?\.id \?\? \(selectedOpen \? SELECTED : ''\);/);
+// The Selected tab finds its pins by id, never by scanning every row.
+{
+  const build = drawer.match(/function buildSelectedTab\([\s\S]*?\n  \}\n/)?.[0] ?? '';
+  assert.ok(build.includes('tabIndex(tab)') && !/columns\.find\(|\btab\.rows\b/.test(build));
+}
+
+// The group toggle sets the key the grouped form lists its buckets under.
+{
+  const table = read('src/ui/browse-table.ts');
+  assert.match(table, /const target = column\.groupsAs \?\? key;/);
+  assert.match(table, /setGroupBy\(now, now\.groupBy === target \? null : target\)/);
+}
 
 // The detents' one way to the drawer's tab build is `onOpen`, which the
 // drawer answers with draw(). Opening must repaint (renders are skipped while
@@ -606,7 +659,7 @@ assert.ok(
     'tests/test_browse.mjs rather than as a string here.',
 );
 assert.ok(
-  drawer.includes('setColumnVisible(viewOf(tab.id), column.key, box.checked)'),
+  drawer.includes('setColumnVisible(tab, viewOf(tab.id), column.key, box.checked)'),
   'the chooser writes through setColumnVisible: hiding a column clears its filter, and ' +
     'a drawer that wrote the override directly would be a second copy of that rule to forget.',
 );
@@ -1123,7 +1176,7 @@ console.log('ok - a rebuild of the tabs closes a popover computed from the old o
 // units instead (values in tests/test_browse.mjs).
 assert.match(
   drawerModule,
-  /if \(declinedGroupBy\(tab\)\) \{[\s\S]*?\} else if \(base\) \{\s*tab = carryFilterContext\(tab, base, view\);/,
+  /if \(declinedGroupBy\(tab\)\) \{[\s\S]*?\} else \{\s*tab = carryFilterContext\(tab, base, view\);/,
   'browse-drawer.ts carries filter context only onto a build that actually grouped',
 );
 for (const surface of [

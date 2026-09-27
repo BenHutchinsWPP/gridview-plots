@@ -831,7 +831,9 @@ function ungroupedRows(ctx: GeneratorTabCtx): BrowseTab {
     ...statColumns(ranked, isPerUnit ? 'ratio' : 'quantity'),
   );
 
-  if (maxCapColumn) {
+  // Cap factor is mean MW over max cap. Under "% of range" the mean is already
+  // a fraction, so the column is left out rather than dividing it by MW.
+  if (maxCapColumn && !isPerUnit) {
     columns.push({
       key: 'stat.cf',
       label: 'Cap factor (%)',

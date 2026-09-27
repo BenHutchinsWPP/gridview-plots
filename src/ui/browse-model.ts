@@ -175,6 +175,11 @@ export interface BrowseColumn {
   readonly defaultSlicer?: boolean;
   /** When grouping is not defensible for this column/tab, why it is refused. */
   readonly groupDisabledReason?: string;
+  /** The group-by key this column's toggle sets, when the grouped form lists
+   * its buckets under another key. A grouped column that reused this
+   * column's key would give one filter two meanings: consumed over this
+   * column's values, and ticked from the buckets' names. */
+  readonly groupsAs?: string;
   /** How a number column's cells are rounded; missing means quantity. May vary
    * per row where one column mixes kinds (the Selected tab's per-unit
    * generator ratio beside a bus's MW). */
@@ -251,9 +256,16 @@ export const STAT_COLUMNS = [
   { key: 'stat.n', label: 'Hours' },
 ] as const;
 
+type StatKey = (typeof STAT_COLUMNS)[number]['key'];
+
+/** Whether `key` names one of the fixed stat columns. */
+function isStatKey(key: string): key is StatKey {
+  return Object.hasOwn(STAT_FIELDS, key);
+}
+
 /** Which slot of a ranked-stats row each stat column reads. Kept beside
  * `STAT_COLUMNS` because the two are one fact. */
-const STAT_SLOTS: Readonly<Record<string, number>> = {
+const STAT_SLOTS: Readonly<Record<StatKey, number>> = {
   'stat.min': RANKED.min,
   'stat.max': RANKED.max,
   'stat.mean': RANKED.mean,
@@ -270,7 +282,7 @@ const STAT_SLOTS: Readonly<Record<string, number>> = {
  */
 export type StatFields = Pick<RankedRow, 'n' | 'mean' | 'min' | 'max' | 'sd' | 'p25' | 'p75'>;
 
-const STAT_FIELDS: Readonly<Record<string, keyof StatFields>> = {
+const STAT_FIELDS: Readonly<Record<StatKey, keyof StatFields>> = {
   'stat.min': 'min',
   'stat.max': 'max',
   'stat.mean': 'mean',
@@ -351,9 +363,8 @@ export function pinLines(
 
 /** One stat column's value in a stats object; NaN is blank. */
 export function statValue(stats: StatFields, key: string): number | null {
-  const field = STAT_FIELDS[key];
-  if (field === undefined) return null;
-  const value = stats[field];
+  if (!isStatKey(key)) return null;
+  const value = stats[STAT_FIELDS[key]];
   return Number.isNaN(value) ? null : value;
 }
 
@@ -382,23 +393,18 @@ export function statColumnsFrom(
   statsOf: (row: number) => StatFields | null | undefined,
   cellClass: CellClass = 'quantity',
 ): BrowseColumn[] {
-  return STAT_COLUMNS.map((stat) => {
-    const field = STAT_FIELDS[stat.key];
-    return {
-      key: stat.key,
-      label: statLabel(stat, cellClass),
-      kind: 'number' as const,
-      computed: true,
-      cellClass: statCellClass(stat, cellClass),
-      defaultHidden: statHidden(stat),
-      value: (row: number) => {
-        const stats = statsOf(row);
-        if (!stats) return null;
-        const value = stats[field];
-        return Number.isNaN(value) ? null : value;
-      },
-    };
-  });
+  return STAT_COLUMNS.map((stat) => ({
+    key: stat.key,
+    label: statLabel(stat, cellClass),
+    kind: 'number' as const,
+    computed: true,
+    cellClass: statCellClass(stat, cellClass),
+    defaultHidden: statHidden(stat),
+    value: (row: number) => {
+      const stats = statsOf(row);
+      return stats ? statValue(stats, stat.key) : null;
+    },
+  }));
 }
 
 /**
@@ -471,8 +477,14 @@ export function columnVisible(column: BrowseColumn, view: ViewState): boolean {
 }
 
 /** Show or hide one column. Hiding clears its filter, so no hidden column
- * silently constrains the rows, and takes its Slicer with it. */
-export function setColumnVisible(view: ViewState, key: string, visible: boolean): ViewState {
+ * silently constrains the rows, and takes its Slicer with it: a default one
+ * too, so showing the column again does not bring it back unasked. */
+export function setColumnVisible(
+  tab: BrowseTab,
+  view: ViewState,
+  key: string,
+  visible: boolean,
+): ViewState {
   const overrides = new Map(view.columnOverrides ?? []);
   overrides.set(key, visible);
   let filters = view.filters;
@@ -481,13 +493,9 @@ export function setColumnVisible(view: ViewState, key: string, visible: boolean)
     next.delete(key);
     filters = next;
   }
-  let slicers = view.slicers;
-  if (!visible && slicers?.has(key)) {
-    const next = new Set(slicers);
-    next.delete(key);
-    slicers = next;
-  }
-  return { ...view, columnOverrides: overrides, filters, ...(slicers ? { slicers } : {}) };
+  const sliced = !visible && isSliced(tab, view, key);
+  const unsliced = sliced ? setSliced(tab, view, key, false) : view;
+  return { ...unsliced, columnOverrides: overrides, filters };
 }
 
 // ---------------------------------------------------------------- slicers
@@ -536,18 +544,45 @@ export function clearFilters(view: ViewState): ViewState {
 }
 
 /**
- * Drop the bounds on the stat columns "% of range" rescales. A bound typed as
+ * Drop the bounds on the columns "% of range" rescales, which are the ones
+ * that depend on the variable shown (`dependsOnVariable`). A bound typed as
  * 500 MW means nothing against 85%, and would silently empty the table. The
  * hours count keeps its bound: it is a count either way. Returns `view` when
  * nothing is dropped.
  */
 export function dropRescaledBounds(view: ViewState): ViewState {
   const filters = new Map(
-    [...view.filters].filter(
-      ([key, filter]) => filter.kind !== 'range' || !(key in STAT_FIELDS) || key === 'stat.n',
-    ),
+    [...view.filters].filter(([key, filter]) => filter.kind !== 'range' || !dependsOnVariable(key)),
   );
   return filters.size === view.filters.size ? view : { ...view, filters };
+}
+
+/**
+ * What the stat cells of `rows` are in: each row's variable, unit and "% of
+ * range", sorted so an order change reads the same. A stat bound is typed
+ * against this, so a view shown as something else drops it
+ * (`dropRescaledBounds`): a Variable change or a "% of range" toggle.
+ * Undefined with no rows, which shows nothing to type a bound against.
+ */
+export function statsShownAs(
+  rows: readonly Pick<BrowseRowRef, 'variable' | 'unit' | 'perUnit'>[],
+): string | undefined {
+  if (rows.length === 0) return undefined;
+  return rows
+    .map((row) => `${row.variable}\u0000${row.unit}\u0000${row.perUnit ? '%' : ''}`)
+    .sort()
+    .join('\u0001');
+}
+
+/** `view` with its stat bounds kept when they were typed against what the
+ * rows now show, and dropped when not. `typedOn` undefined keeps them. */
+export function boundsFollow(
+  view: ViewState,
+  typedOn: string | undefined,
+  shownOn: string | undefined,
+): ViewState {
+  if (typedOn === undefined || shownOn === undefined || typedOn === shownOn) return view;
+  return dropRescaledBounds(view);
 }
 
 /** Group by `key`, or by nothing. Sort resets, since a grouped sort key may
@@ -576,8 +611,7 @@ export function viewChips(tab: BrowseTab, view: ViewState): ViewChip[] {
   const byKey = new Map(tab.columns.map((column) => [column.key, column]));
   let filters = 0;
   for (const key of view.filters.keys()) {
-    const column = byKey.get(key);
-    if (tab.consumedFilters?.has(key) || (column && columnVisible(column, view))) filters++;
+    if (shapesRows(tab, view, key, byKey.get(key))) filters++;
   }
   if (filters > 0) {
     const label = `${filters} filter${filters === 1 ? '' : 's'}`;
@@ -594,6 +628,17 @@ export function viewChips(tab: BrowseTab, view: ViewState): ViewChip[] {
     });
   }
   return chips;
+}
+
+/** Whether the filter on `key` shapes the rows: its column is on screen, or
+ * the grouped build consumed it. A hidden column's filter does not. */
+function shapesRows(
+  tab: BrowseTab,
+  view: ViewState,
+  key: string,
+  column: BrowseColumn | undefined,
+): boolean {
+  return !!tab.consumedFilters?.has(key) || (!!column && columnVisible(column, view));
 }
 
 /** Columns in view order: stored order for keys that still exist, then new
@@ -633,6 +678,9 @@ export function headerSignature(tab: BrowseTab, view: ViewState): string {
     parts.push(
       column.key,
       column.label,
+      column.kind,
+      column.computed ? '1' : '0',
+      column.context ? '1' : '0',
       column.groupable ? '1' : '0',
       column.groupDisabledReason ?? '',
     );
@@ -688,17 +736,23 @@ export function displayCell(value: CellValue, cellClass: CellClass = 'quantity')
     const whole = Math.round(value);
     // Non-zero must not display as 0.
     if (value !== 0 && whole === 0) return value > 0 ? '<1' : '>-1';
-    return whole.toLocaleString('en-US');
+    // -0 (a reversed member's zero) reads as 0; en-US would print "-0".
+    return (whole === 0 ? 0 : whole).toLocaleString('en-US');
   }
   return value;
 }
 
-/** The lowercased pieces of a typed text filter; commas and newlines separate. */
-export function textTokens(text: string): string[] {
+/** The pieces of a typed text filter, as typed; commas and newlines separate. */
+function textPieces(text: string): string[] {
   return text
     .split(/[\n,]+/)
-    .map((t) => t.trim().toLowerCase())
+    .map((t) => t.trim())
     .filter((t) => t.length > 0);
+}
+
+/** The lowercased pieces of a typed text filter. */
+export function textTokens(text: string): string[] {
+  return textPieces(text).map((t) => t.toLowerCase());
 }
 
 /** Whether a cell's displayed text contains any typed piece. No pieces keeps it. */
@@ -720,8 +774,10 @@ export function valueLabel(value: string): string {
   return value === '' ? BLANK_LABEL : value;
 }
 
-/** Filters are replaced, never mutated, so a set per filter object holds. */
+/** Filters are replaced, never mutated, so a set or token list per filter
+ * object holds. */
 const valueSets = new WeakMap<ColumnFilter, ReadonlySet<string>>();
+const tokenLists = new WeakMap<ColumnFilter, readonly string[]>();
 
 function passes(
   filter: ColumnFilter,
@@ -729,7 +785,9 @@ function passes(
   cellClass: CellClass = 'quantity',
 ): boolean {
   if (filter.kind === 'text') {
-    return containsAnyToken(textTokens(filter.text), displayCell(value, cellClass));
+    let tokens = tokenLists.get(filter);
+    if (!tokens) tokenLists.set(filter, (tokens = textTokens(filter.text)));
+    return containsAnyToken(tokens, displayCell(value, cellClass));
   }
   if (filter.kind === 'values') {
     let set = valueSets.get(filter);
@@ -739,8 +797,11 @@ function passes(
   if (filter.min === null && filter.max === null) return true;
   // A blank cell fails a bound rather than sorting in at zero.
   if (typeof value !== 'number' || Number.isNaN(value)) return false;
-  // A bound is typed in the units shown: 80 on a ratio column is 80%.
-  const shown = cellClass === 'ratio' ? value * 100 : value;
+  // A bound is typed in the units shown: 80 on a ratio column is 80%. The
+  // scaling must not move a value off the bound it sits on (0.29 * 100 is
+  // 28.999999999999996), so it keeps 12 significant digits. The comparison is
+  // with the value, not the rounded cell: rounding is paint-only.
+  const shown = cellClass === 'ratio' ? Number((value * 100).toPrecision(12)) : value;
   if (filter.min !== null && shown < filter.min) return false;
   if (filter.max !== null && shown > filter.max) return false;
   return true;
@@ -777,9 +838,7 @@ export function filteringColumnLabels(tab: BrowseTab, view: ViewState): string[]
   const labels: string[] = [];
   for (const key of view.filters.keys()) {
     const column = byKey.get(key);
-    if (!column) continue;
-    if (!tab.consumedFilters?.has(key) && !columnVisible(column, view)) continue;
-    labels.push(column.label);
+    if (column && shapesRows(tab, view, key, column)) labels.push(column.label);
   }
   return labels;
 }
@@ -806,9 +865,11 @@ export function visibleRows(tab: BrowseTab, view: ViewState): Int32Array {
     const sign = view.sort.direction === 'asc' ? 1 : -1;
     const blank = (value: CellValue): boolean =>
       value === null || (typeof value === 'number' && Number.isNaN(value));
+    // Each value read once: a grouped column's value is a join or a stats pass.
+    const values = new Map(kept.map((row) => [row, sortColumn.value(row)]));
     kept.sort((a, b) => {
-      const va = sortColumn.value(a);
-      const vb = sortColumn.value(b);
+      const va = values.get(a) as CellValue;
+      const vb = values.get(b) as CellValue;
       const aBlank = blank(va);
       const bBlank = blank(vb);
       if (aBlank || bBlank) return aBlank === bBlank ? a - b : aBlank ? 1 : -1;
@@ -860,7 +921,7 @@ export interface CaseNames {
  * do; a list attribute, a group count and the hour count do not. By key,
  * so pins frozen before `chosenOn` existed are judged the same way. */
 export function dependsOnVariable(key: string): boolean {
-  return key === 'stat.cf' || (key in STAT_FIELDS && key !== 'stat.n');
+  return key === 'stat.cf' || (isStatKey(key) && key !== 'stat.n');
 }
 
 /** A frozen constraint as the pin now reads it: with what it was chosen on
@@ -888,15 +949,21 @@ export function pinnedConstraint(
 export function filterConstraint(filter: ColumnFilter): string {
   if (filter.kind === 'text') {
     const raw = filter.text.trim();
-    const tokens = raw
-      .split(/[\n,]+/)
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
+    const tokens = textPieces(raw);
     if (tokens.length <= 1) return `contains ${raw}`;
     return `contains any of (${tokens.join(', ')})`;
   }
   if (filter.kind === 'values') {
-    const named = filter.values.map(valueLabel);
+    // Ticks are a set (`sameFilter`), so they are stated in one order, or a
+    // held build and a fresh one would say one filter two ways. A blank reads
+    // last, as the checklist lists it.
+    const named = [...new Set(filter.values)]
+      .sort((a, b) =>
+        a === '' || b === ''
+          ? Number(a === '') - Number(b === '')
+          : a.localeCompare(b, undefined, { numeric: true }),
+      )
+      .map(valueLabel);
     if (named.length === 1) return `is ${named[0]}`;
     return `is any of (${named.join(', ')})`;
   }
@@ -920,6 +987,59 @@ export const CASE_COLUMN_KEY = 'case';
  */
 export function browseJoinKey(caseId: string, slotKey: string, entity: string | number): string {
   return `${caseId}\u0000${slotKey}\u0000${entity}`;
+}
+
+/** Whether any filter narrows `tab` under `view`: exactly when `keptRowKeys`
+ * would return a set. */
+export function hasActiveFilter(tab: BrowseTab, view: ViewState): boolean {
+  return activeFilters(tab, view).length > 0;
+}
+
+/** Two filters that keep the same rows. A checklist's ticks are a set, so
+ * the order they were ticked in is not a change. */
+export function sameFilter(a: ColumnFilter, b: ColumnFilter): boolean {
+  if (a.kind === 'text' && b.kind === 'text') return a.text === b.text;
+  if (a.kind === 'values' && b.kind === 'values') {
+    const ticked = new Set(a.values);
+    return ticked.size === new Set(b.values).size && b.values.every((v) => ticked.has(v));
+  }
+  if (a.kind === 'range' && b.kind === 'range') return a.min === b.min && a.max === b.max;
+  return false;
+}
+
+/** Two filter maps that keep the same rows (`sameFilter` per column). */
+export function sameFilters(
+  a: ReadonlyMap<string, ColumnFilter>,
+  b: ReadonlyMap<string, ColumnFilter>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [key, filter] of a) {
+    const other = b.get(key);
+    if (!other || !sameFilter(filter, other)) return false;
+  }
+  return true;
+}
+
+/** A built tab's rows by id and columns by key. */
+export interface TabIndex {
+  readonly rows: ReadonlyMap<string, number>;
+  readonly columns: ReadonlyMap<string, BrowseColumn>;
+}
+
+const tabIndexes = new WeakMap<BrowseTab, TabIndex>();
+
+/** `tab`'s index, made once per build and held as long as the build is, so
+ * a lookup by pin costs the pins, not the rows. A row id listed twice
+ * answers with its last row. */
+export function tabIndex(tab: BrowseTab): TabIndex {
+  let index = tabIndexes.get(tab);
+  if (!index) {
+    const rows = new Map<string, number>();
+    tab.rows.forEach((row, at) => rows.set(row.id, at));
+    index = { rows, columns: new Map(tab.columns.map((column) => [column.key, column])) };
+    tabIndexes.set(tab, index);
+  }
+  return index;
 }
 
 /** The keep-set a grouped build consumes: join keys of the ungrouped rows
@@ -1027,7 +1147,7 @@ export interface SavedPin {
 
 /** Drop the fields a restore rebuilds, so a saved ref cannot carry them. */
 function storedRef(ref: BrowseRowRef): SavedPin['ref'] {
-  // Older bundles' `selections` also carried a `caseName`, never read now.
+  // A saved ref never carries `caseName`: the Case is the pin's index.
   const { id, caseId, caseName, ...rest } = ref as BrowseRowRef & { caseName?: string };
   return rest;
 }
@@ -1045,17 +1165,6 @@ export function savePins(
     if (index >= 0) out.push({ case: index, ref: storedRef(entry.ref), color: entry.color });
   }
   return out;
-}
-
-/**
- * Read older bundles whose `selections` carry the Case id at save time, which
- * is that Case's `id` in the same manifest. Resolved once, on read.
- */
-export function pinsFromLegacySelections(
-  entries: readonly SelectionEntry[],
-  manifestCaseIds: readonly string[],
-): SavedPin[] {
-  return savePins(entries, manifestCaseIds);
 }
 
 /**

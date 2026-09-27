@@ -320,7 +320,7 @@ export function createBrowsePopovers(deps: BrowsePopoverDeps): BrowsePopovers {
       box.checked = columnVisible(column, view);
       box.addEventListener('change', () => {
         // Re-read `viewOf`: the previous checkbox already replaced the view.
-        setView(tab.id, setColumnVisible(viewOf(tab.id), column.key, box.checked));
+        setView(tab.id, setColumnVisible(tab, viewOf(tab.id), column.key, box.checked));
       });
       const label = document.createElement('span');
       label.textContent = column.label;

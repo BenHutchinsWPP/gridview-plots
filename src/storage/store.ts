@@ -29,7 +29,7 @@ import {
 import { reconstructInventory } from './reconstruct';
 import { assertMagicVersion, LEGACY_MAGICS, manifestVersion, migrateManifest } from './legacy';
 import type { StorageRequest, StorageResponse } from './worker';
-import { pinsFromLegacySelections, type SavedPin } from '../ui/browse-model';
+import { savePins, type SavedPin } from '../ui/browse-model';
 import { saveBlob } from '../ui/download';
 
 /** The v3 magic: the FILE path's version discriminator (OPFS has none). */
@@ -339,9 +339,11 @@ export function restoreBundle(
     limits: { shared, ...caseLimits },
     groupings: manifest.groupings ?? null,
     lookups,
+    // An older bundle's `selections` name each Case by its `id` in this same
+    // manifest, so saving them against those ids gives the index form.
     pins:
       manifest.pins ??
-      pinsFromLegacySelections(
+      savePins(
         manifest.selections ?? [],
         manifest.cases.map((entry) => entry.id),
       ),

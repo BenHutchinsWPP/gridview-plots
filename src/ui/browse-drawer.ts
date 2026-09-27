@@ -24,25 +24,23 @@ import { createSlicerPane } from './browse-slicers';
 import { subjectLabel } from '../series/label';
 import { PERCENT } from '../series/range';
 import type { CaseSwitch, PercentSwitch, VariableSwitch } from './browse-retarget';
-
-/** The three switches' answers over some pins. */
-export interface SwitchAnswers {
-  readonly case: CaseSwitch;
-  readonly variable: VariableSwitch;
-  readonly percent: PercentSwitch;
-}
 import {
   STAT_COLUMNS,
   builtView,
   carryFilterContext,
   declinedGroupBy,
+  boundsFollow,
   dropRescaledBounds,
+  statsShownAs,
   cellClassOf,
   isSliced,
   setSliced,
   pinnedConstraint,
   createSelection,
+  hasActiveFilter,
   keptRowKeys,
+  sameFilters,
+  tabIndex,
   rowSubject,
   statValue,
   viewChips,
@@ -60,6 +58,13 @@ import {
   type ViewState,
 } from './browse-model';
 import { saveBlob } from './download';
+
+/** The three switches' answers over some pins. */
+export interface SwitchAnswers {
+  readonly case: CaseSwitch;
+  readonly variable: VariableSwitch;
+  readonly percent: PercentSwitch;
+}
 
 export type { Detent };
 
@@ -116,7 +121,8 @@ export interface BrowseDrawerState {
 export interface BrowseDrawerHandlers {
   /**
    * The pinned series (in pin order) or the preview changed. Never fired by a
-   * re-scope: a pinned series stays drawn whatever the tabs list.
+   * re-scope: a pinned series stays drawn whatever the tabs list. The host
+   * renders, which repaints the drawer, so the drawer does not paint again.
    */
   onSelectionChange(pinned: readonly SelectionEntry[], preview: BrowseRowRef | null): void;
   /** A VIEW control: re-list and re-rank, never clear the selection. */
@@ -129,9 +135,11 @@ export interface BrowseDrawerHandlers {
    * move that pin alone. */
   onSelectedRowChange(rowId: string, field: 'case' | 'variable' | 'unit', value: string): void;
   /** A VIEW change, like the variable. The Selected tab reports its own id,
-   * which is not a kind. */
+   * which is not a kind. The host renders, which is the tab's one paint:
+   * the frame reads the new tab's variables from `activeTabId`. */
   onTabChange(tabId: string): void;
-  onPerUnitChange?(perUnit: boolean): void;
+  /** The toolbar's "% of range" moved. The host renders, as for a tab. */
+  onPerUnitChange(perUnit: boolean): void;
   /** "% of range" clicked on the Selected tab: switch every pin to `on`. The
    * drawer's mode moves only through `setPerUnit`. */
   onSelectedPercent(on: boolean): void;
@@ -168,10 +176,13 @@ export interface BrowseDrawer {
   setSelection(entries: readonly SelectionEntry[]): void;
   /** Replace the pinned rows with rewritten ones (a Selected-tab switch).
    * Colours come from the entries; the preview is dropped, and so are the
-   * Selected tab's stat bounds, which the switch rescaled. */
-  replacePins(entries: readonly SelectionEntry[]): void;
-  /** The tab on screen, or `''` before the first render. It can move without
-   * a click (its last table removed), so read it rather than mirror it. */
+   * Selected tab's stat bounds when the switch `rescaled` them: a variable
+   * or unit switch does, a Case switch does not. Said by the caller, which
+   * knows the switch; pins that merge (`firstPerId`) move no quantity. */
+  replacePins(entries: readonly SelectionEntry[], rescaled: boolean): void;
+  /** The tab on screen, or `''` while no kind has anything to list. It can
+   * move without a click (its last table removed), so read it rather than
+   * mirror it. */
   activeTabId(): string;
   /**
    * The rows a tab's filters keep, ungrouped, in display order, for ANY tab
@@ -180,9 +191,8 @@ export interface BrowseDrawer {
    * narrowing that narrows nothing.
    */
   filteredRows(tabId: string): readonly BrowseRowRef[] | undefined;
-  isPerUnit(): boolean;
-  /** Move the "% of range" mode without firing its handler, dropping the
-   * bounds it rescales as a click does. */
+  /** Move the "% of range" mode without firing its handler. A tab's stat
+   * bounds follow when it is next read, as after a click. */
   setPerUnit(on: boolean): void;
   detent(): Detent;
   setDetent(detent: Detent): void;
@@ -253,49 +263,38 @@ export function createBrowseDrawer(
     caseNames: { nameOf: () => undefined, labelOfName: (name) => name },
     pinLine: () => undefined,
   };
-  /** Built tabs, held until the caller's signature changes. */
-  const built = new Map<string, BrowseTab>();
-  /** Pinned rows whose line is not drawn, set by the Selected tab. */
+  /** Built tabs by `keyOf`, held until the caller's signature changes. */
+  const built = new Map<string, { tabId: string; grouped: boolean; tab: BrowseTab }>();
+  /** What each kind tab's stat cells were in when last read
+   * (`statsShownAs`): the quantity its stat bounds were typed against. */
+  const typedOn = new Map<string, string>();
+  /** Pinned rows whose line is not drawn, read on every draw: every tab
+   * greys them, not only the Selected tab. */
   let notDrawn = new Set<string>();
+  /** The Selected tab as this draw built it, for its slicers to read rather
+   * than build it a second time. */
+  let selectedTab: BrowseTab | undefined;
+
+  /** One cache key per build: tab, group-by and "% of range". */
+  const keyOf = (tabId: string, groupBy: string | null | undefined, pu: boolean): string =>
+    `${tabId}\u0000${groupBy ?? ''}\u0000${pu ? 'pu' : 'abs'}`;
 
   const viewOf = (tabId: string): ViewState =>
     views.get(tabId) ?? { sort: null, filters: new Map<string, ColumnFilter>() };
-
-  /** Content equality: an unchanged commit must not cost a rebuild. */
-  const sameFilter = (a: ColumnFilter, b: ColumnFilter): boolean => {
-    if (a.kind === 'text' && b.kind === 'text') return a.text === b.text;
-    if (a.kind === 'values' && b.kind === 'values') {
-      return a.values.length === b.values.length && a.values.every((v, i) => v === b.values[i]);
-    }
-    if (a.kind === 'range' && b.kind === 'range') return a.min === b.min && a.max === b.max;
-    return false;
-  };
-  const sameFilters = (
-    a: ReadonlyMap<string, ColumnFilter>,
-    b: ReadonlyMap<string, ColumnFilter>,
-  ): boolean => {
-    if (a.size !== b.size) return false;
-    for (const [key, filter] of a) {
-      const other = b.get(key);
-      if (!other || !sameFilter(filter, other)) return false;
-    }
-    return true;
-  };
 
   /** Drop a tab's GROUPED builds when its filters change: they were summed
    * from a keep-set the new filters no longer produce. The ungrouped build
    * does not depend on filters and stays. */
   const evictGrouped = (tabId: string): void => {
-    for (const key of built.keys()) {
-      const bar = key.indexOf('|');
-      // Key is `${id}|${groupBy ?? ''}|...`; an empty groupBy is ungrouped.
-      if (key.slice(0, bar) === tabId && key.charAt(bar + 1) !== '|') built.delete(key);
+    for (const [key, entry] of built) {
+      if (entry.tabId === tabId && entry.grouped) built.delete(key);
     }
   };
 
   const setView = (tabId: string, next: ViewState): void => {
     const prev = views.get(tabId);
-    // Sort and group-by keep the same filters object; filter writes replace it.
+    // Sort and group-by keep the same filters object; filter writes replace
+    // it. Content equality, so an unchanged commit costs no rebuild.
     if (prev && prev.filters !== next.filters && !sameFilters(prev.filters, next.filters)) {
       evictGrouped(tabId);
     }
@@ -308,25 +307,25 @@ export function createBrowseDrawer(
   variableSelect.addEventListener('change', () => {
     handlers.onVariableChange(variableSelect.value);
   });
-  /** The mode, and the bounds it rescales dropped: a MW bound against a %
-   * cell empties the table. */
-  const dropBounds = (tabId: string): void => {
+  /** Rewrite a tab's view without a paint: it runs while a tab is read. */
+  const replaceView = (tabId: string, change: (view: ViewState) => ViewState): void => {
     const view = views.get(tabId);
     if (!view) return;
-    const next = dropRescaledBounds(view);
+    const next = change(view);
     if (next === view) return;
     evictGrouped(tabId);
     views.set(tabId, next);
   };
+  /** The mode only. Each tab's bounds follow when it is next read, so a tab
+   * off the bar drops them when it returns, and a mode set to what it is
+   * drops nothing. */
   const applyPerUnit = (on: boolean): void => {
     perUnit = on;
-    for (const tabId of views.keys()) if (offersRange(tabId)) dropBounds(tabId);
   };
 
   perUnitToggle.addEventListener('click', () => {
     applyPerUnit(!perUnit);
-    draw();
-    handlers.onPerUnitChange?.(perUnit);
+    handlers.onPerUnitChange(perUnit);
   });
 
   // The export IS the screen: active tab, its view and kept rows, derived at
@@ -426,75 +425,108 @@ export function createBrowseDrawer(
     return latest.selectedVariable();
   }
 
+  const sourceOf = (id: string): BrowseTabSource | undefined =>
+    latest.tabs.find((entry) => entry.id === id);
+
+  /** Whether a tab builds as "% of range" now: the mode, where it offers it.
+   * The one rule every cache key is written and read under. */
+  const puOf = (source: BrowseTabSource | undefined): boolean =>
+    perUnit && source?.offersRange === true;
+
   function offersRange(id: string): boolean {
-    return latest.tabs.find((entry) => entry.id === id)?.offersRange === true;
+    return sourceOf(id)?.offersRange === true;
+  }
+
+  /** A kind tab's rows say what its stat cells are in. Every row of one
+   * tab lists one quantity, so the first row answers for all. The UNGROUPED
+   * rows even on a grouped tab: a grouped build consumes the stat bounds
+   * over them (`carryFilterContext`), so they are what a bound is tested on. */
+  function readShown(id: string, tab: BrowseTab): void {
+    const shown = statsShownAs(tab.rows.slice(0, 1));
+    const typed = typedOn.get(id);
+    replaceView(id, (view) => boundsFollow(view, typed, shown));
+    if (shown !== undefined) typedOn.set(id, shown);
   }
 
   /** The tab's UNGROUPED form, cached like any other. A grouped build's
-   * keep-set is evaluated over it, the only place filtered columns exist. */
+   * keep-set is evaluated over it, the only place filtered columns exist.
+   * Read on every access, cached or not, is where its stat bounds follow
+   * what it shows: toggling back to a held build is still a change. */
   function ungroupedTabFor(id: string): BrowseTab | undefined {
-    const activePu = perUnit && offersRange(id);
-    const key = `${id}||${activePu ? 'pu' : 'abs'}`;
-    const held = built.get(key);
-    if (held) return held;
-    const source = latest.tabs.find((entry) => entry.id === id);
+    const source = sourceOf(id);
     if (!source) return undefined;
-    const tab = source.build(null, activePu);
-    built.set(key, tab);
+    const pu = puOf(source);
+    const key = keyOf(id, null, pu);
+    let tab = built.get(key)?.tab;
+    if (!tab) {
+      tab = source.build(null, pu);
+      built.set(key, { tabId: id, grouped: false, tab });
+    }
+    readShown(id, tab);
     return tab;
   }
 
   /** One tab, built at most once per signature, group-by, and per-unit setting. */
   function tabFor(id: string): BrowseTab | undefined {
+    const base = ungroupedTabFor(id);
+    // Read after the base, whose read may have dropped a bound.
     const view = viewOf(id);
-    const activePu = perUnit && offersRange(id);
-    const key = `${id}|${view.groupBy ?? ''}|${activePu ? 'pu' : 'abs'}`;
+    const source = sourceOf(id);
+    if (!base || !source || !view.groupBy) return base;
+    const pu = puOf(source);
+    const key = keyOf(id, view.groupBy, pu);
     const held = built.get(key);
-    if (held) return held;
-    const source = latest.tabs.find((entry) => entry.id === id);
-    if (!source) return undefined;
-    let tab: BrowseTab;
-    if (view.groupBy) {
-      // The tab's own view, not the active tab's: the Selected tab builds
-      // every kind's tab in one pass.
-      const base = ungroupedTabFor(id);
-      const keep = base ? keptRowKeys(base, view) : undefined;
-      tab = source.build(view.groupBy, activePu, keep);
-      if (declinedGroupBy(tab)) {
-        // The build declined the group-by (the quantity cannot be summed, or
-        // the column is gone). Nothing was consumed, and the tab says why in
-        // its Group button's own words.
-        const column = base?.columns.find((entry) => entry.key === view.groupBy);
-        tab = {
-          ...tab,
-          notes: [
-            ...tab.notes,
-            `Not grouped by ${column?.label ?? view.groupBy}: ` +
-              (column?.groupDisabledReason ?? 'this tab cannot group by it now.') +
-              ' Each unit is listed, and the grouping returns when it can.',
-          ],
-        };
-      } else if (base) {
-        tab = carryFilterContext(tab, base, view);
-      }
+    if (held) return held.tab;
+    // The tab's own view, not the active tab's: the Selected tab builds
+    // every kind's tab in one pass.
+    let tab = source.build(view.groupBy, pu, keptRowKeys(base, view));
+    if (declinedGroupBy(tab)) {
+      // The build declined the group-by (the quantity cannot be summed, or
+      // the column is gone). Nothing was consumed, and the tab says why in
+      // its Group button's own words.
+      const column = base.columns.find((entry) => (entry.groupsAs ?? entry.key) === view.groupBy);
+      tab = {
+        ...tab,
+        notes: [
+          ...tab.notes,
+          `Not grouped by ${column?.label ?? view.groupBy}: ` +
+            (column?.groupDisabledReason ?? 'this tab cannot group by it now.') +
+            ' Each unit is listed, and the grouping returns when it can.',
+        ],
+      };
     } else {
-      tab = source.build(null, activePu);
+      tab = carryFilterContext(tab, base, view);
     }
-    built.set(key, tab);
+    built.set(key, { tabId: id, grouped: true, tab });
     return tab;
   }
 
   /** The tab now on screen. */
   function activeTab(): BrowseTab | undefined {
-    if (activeId !== SELECTED) return tabFor(activeId);
-    // The Selected tab reads stat cells from the kind tabs, so it builds them.
-    // It is not cached itself: pins do not move the signature.
+    return activeId === SELECTED ? selectedNow() : tabFor(activeId);
+  }
+
+  /** The Selected tab, whichever tab is on screen. It reads stat cells from
+   * the kind tabs, so it builds them. It is not cached across draws: pins do
+   * not move the signature. */
+  function selectedNow(): BrowseTab {
     const listed: BrowseTab[] = [];
     for (const source of latest.tabs) {
       const tab = tabFor(source.id);
       if (tab) listed.push(tab);
     }
-    return buildSelectedTab(listed);
+    selectedTab = buildSelectedTab(listed);
+    return selectedTab;
+  }
+
+  /** Pinned rows whose line the last render did not draw. */
+  function notDrawnIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const entry of selection.list()) {
+      const line = latest.pinLine(entry.ref.id);
+      if (line !== undefined && !line.drawn) ids.add(entry.ref.id);
+    }
+    return ids;
   }
 
   function renderTabs(tabs: readonly BrowseTabSource[]): void {
@@ -504,20 +536,32 @@ export function createBrowseDrawer(
       ...tabs.map((tab) => ({ id: tab.id, label: tab.label })),
       { id: SELECTED, label: 'Selected' },
     ];
-    if (!entries.some((entry) => entry.id === activeId)) activeId = entries[0].id;
+    // The first kind tab, never Selected: with nothing loaded no tab is
+    // active, so the drawer says so rather than showing an empty register.
+    // Pins that outlived their tables keep Selected open, the one place
+    // they can still be read and unpinned.
+    const pins = selection.list().length;
+    const selectedOpen = tabs.length > 0 || pins > 0;
+    if (
+      !entries.some((entry) => entry.id === activeId) ||
+      (activeId === SELECTED && !selectedOpen)
+    ) {
+      activeId = tabs[0]?.id ?? (selectedOpen ? SELECTED : '');
+    }
     for (const entry of entries) {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'browse-tab';
-      button.textContent =
-        entry.id === SELECTED ? `Selected (${selection.list().length})` : entry.label;
+      button.textContent = entry.id === SELECTED ? `Selected (${pins})` : entry.label;
       button.classList.toggle('active', entry.id === activeId);
+      if (entry.id === SELECTED && !selectedOpen) {
+        button.disabled = true;
+        button.title = 'Nothing is loaded or pinned.';
+      }
       button.addEventListener('click', () => {
         if (activeId === entry.id) return;
         popovers.closePopover();
         activeId = entry.id;
-        draw();
-        // After the paint, so the old kind's rows never flash under the new tab.
         handlers.onTabChange(entry.id);
       });
       tabBar.appendChild(button);
@@ -536,8 +580,10 @@ export function createBrowseDrawer(
     /** Row id -> where that row is currently listed, for its stat cells. */
     const listed = new Map<string, { tab: BrowseTab; row: number }>();
     for (const tab of tabs) {
-      for (let row = 0; row < tab.rows.length; row++) {
-        if (selection.isPinned(tab.rows[row].id)) listed.set(tab.rows[row].id, { tab, row });
+      const { rows } = tabIndex(tab);
+      for (const entry of entries) {
+        const row = rows.get(entry.ref.id);
+        if (row !== undefined) listed.set(entry.ref.id, { tab, row });
       }
     }
 
@@ -622,7 +668,7 @@ export function createBrowseDrawer(
         // share a column.
         cellClass: (row: number): CellClass => {
           const at = listed.get(refs[row].id);
-          const column = at?.tab.columns.find((candidate) => candidate.key === stat.key);
+          const column = at && tabIndex(at.tab).columns.get(stat.key);
           if (column) return cellClassOf(column, at!.row);
           // As a kind tab classes its stats: the hours a count, a % pin a ratio.
           if (stat.key === 'stat.n') return 'count';
@@ -630,7 +676,7 @@ export function createBrowseDrawer(
         },
         value: (row: number) => {
           const at = listed.get(refs[row].id);
-          const column = at?.tab.columns.find((candidate) => candidate.key === stat.key);
+          const column = at && tabIndex(at.tab).columns.get(stat.key);
           if (column) return column.value(at!.row);
           const stats = drawnStats(refs[row]);
           const value = stats ? statValue(stats, stat.key) : null;
@@ -643,8 +689,7 @@ export function createBrowseDrawer(
       })),
     ];
 
-    notDrawn = new Set(refs.filter((ref) => notDrawnWhy(ref) !== undefined).map((ref) => ref.id));
-    const missing = notDrawn.size;
+    const missing = refs.filter((ref) => notDrawnWhy(ref) !== undefined).length;
     const notes = missing
       ? [
           `${missing} of ${refs.length} selected series ${missing === 1 ? 'is' : 'are'} not ` +
@@ -804,20 +849,19 @@ export function createBrowseDrawer(
    * closed only a tab already built is read: closing it must never cost a
    * ranking pass. */
   function slicedTab(tabId: string, open = true): BrowseTab | undefined {
-    if (tabId === SELECTED) return open ? activeTab() : undefined;
+    if (tabId === SELECTED) return open ? (selectedTab ?? selectedNow()) : undefined;
     if (open) return ungroupedTabFor(tabId);
-    return built.get(`${tabId}||${perUnit && offersRange(tabId) ? 'pu' : 'abs'}`);
+    return built.get(keyOf(tabId, null, puOf(sourceOf(tabId))))?.tab;
   }
 
   const slicerPane = createSlicerPane(slicerMount);
 
   function paintSlicers(open: boolean): void {
     const tabId = activeId;
-    const tab = latest.tabs.length === 0 ? undefined : slicedTab(tabId, open);
-    const why =
-      latest.tabs.length === 0
-        ? 'Nothing loaded yet.'
-        : 'Open the Browse drawer to slice its tables.';
+    // Pins can outlive their tables, and Selected still lists them.
+    const nothing = latest.tabs.length === 0 && tabId !== SELECTED;
+    const tab = nothing ? undefined : slicedTab(tabId, open);
+    const why = nothing ? 'Nothing loaded yet.' : 'Open the Browse drawer to slice its tables.';
     slicerPane.paint(
       tab,
       viewOf(tabId),
@@ -883,7 +927,6 @@ export function createBrowseDrawer(
     setView: (next) => setView(activeId, next),
     toggleFilterPopover: popovers.toggleFilterPopover,
     onSelectionChange: (pinned, previewed) => handlers.onSelectionChange(pinned, previewed),
-    redraw: () => draw(),
   });
 
   function draw(): void {
@@ -892,14 +935,22 @@ export function createBrowseDrawer(
     // closing the drawer must never cost a ranking pass.
     const pinned = selection.list().length;
     handleLabel.textContent = pinned > 0 ? `Browse · ${pinned}` : 'Browse';
+    notDrawn = notDrawnIds();
+    selectedTab = undefined;
     const detent = height.detent();
-    paintSlicers(detent !== 'closed');
     if (detent === 'closed') {
+      paintSlicers(false);
       return;
     }
+    // Built once, before the slicers, which read the same build.
     const tab = activeTab();
+    paintSlicers(true);
     if (!tab) {
       grid.clear();
+      // No kind to pick a variable of, and a mode set now would greet the
+      // first load unasked.
+      variableField.hidden = true;
+      perUnitToggle.hidden = true;
       notesLine.textContent = 'Nothing loaded yet. Drop a GridView export to browse it.';
       notesLine.hidden = false;
       actionsContainer.replaceChildren();
@@ -987,10 +1038,10 @@ export function createBrowseDrawer(
 
   height.setDetent('closed');
 
+  /** The host's render repaints the drawer (`onSelectionChange`). */
   function adoptPins(entries: readonly SelectionEntry[]): void {
     selection.restore(entries);
     handlers.onSelectionChange(selection.list(), selection.previewed());
-    draw();
   }
 
   return {
@@ -1005,8 +1056,8 @@ export function createBrowseDrawer(
     },
     selection: () => selection.list(),
     setSelection: adoptPins,
-    replacePins(entries) {
-      dropBounds(SELECTED);
+    replacePins(entries, rescaled) {
+      if (rescaled) replaceView(SELECTED, dropRescaledBounds);
       adoptPins(entries);
     },
     activeTabId: () => activeId,
@@ -1016,11 +1067,9 @@ export function createBrowseDrawer(
       const base = ungroupedTabFor(tabId);
       if (base === undefined) return undefined;
       const view = viewOf(tabId);
-      // `keptRowKeys` is undefined exactly when no filter is active.
-      if (keptRowKeys(base, view) === undefined) return undefined;
+      if (!hasActiveFilter(base, view)) return undefined;
       return Array.from(visibleRows(base, view), (row) => base.rows[row]);
     },
-    isPerUnit: () => perUnit,
     setPerUnit: applyPerUnit,
     detent: height.detent,
     setDetent: height.setDetent,

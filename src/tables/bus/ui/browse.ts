@@ -619,9 +619,10 @@ function groupByRows(
             },
           ]),
       {
-        // Keyed on the Case column when that is the bucket, so this header's
-        // button is UNGROUP.
-        key: byCase ? CASE_COLUMN_KEY : 'entity',
+        // Keyed on the column that made the buckets (the Case, or the list
+        // column), so this header's button is UNGROUP and a filter here means
+        // what it means on the ungrouped tab. Not `entity`: that names buses.
+        key: byCase ? CASE_COLUMN_KEY : `list.${targetColumn}`,
         label: targetColumn,
         kind: 'text',
         computed: false,

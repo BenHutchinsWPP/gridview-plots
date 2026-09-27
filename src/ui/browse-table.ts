@@ -91,8 +91,8 @@ export interface BrowseTableHost {
   /** By KEY: the handler outlives the paint, and the drawer re-resolves the
    * key against the tab on screen. */
   toggleFilterPopover(columnKey: string, button: HTMLElement): void;
+  /** The host renders, which repaints this table. */
   onSelectionChange(pinned: readonly SelectionEntry[], previewed: BrowseRowRef | null): void;
-  redraw(): void;
 }
 
 export interface BrowseTable {
@@ -198,7 +198,6 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
 
   const selectionChanged = (): void => {
     host.onSelectionChange(host.selection.list(), host.selection.previewed());
-    host.redraw();
   };
 
   // A click previews (grey, dashed, replaced by the next click); the checkbox
@@ -353,7 +352,8 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
 
     if (column.groupable || column.groupDisabledReason) {
       const groupBtn = headerButton('browse-groupby');
-      const isGrouped = view.groupBy === key;
+      const target = column.groupsAs ?? key;
+      const isGrouped = view.groupBy === target;
       groupBtn.classList.toggle('active', isGrouped);
       groupBtn.title =
         column.groupDisabledReason ?? `${isGrouped ? 'Ungroup' : 'Group'} by ${column.label}`;
@@ -363,7 +363,7 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
       groupBtn.addEventListener('click', (event) => {
         event.stopPropagation();
         const now = host.view();
-        host.setView(setGroupBy(now, now.groupBy === key ? null : key));
+        host.setView(setGroupBy(now, now.groupBy === target ? null : target));
       });
       wrap.appendChild(groupBtn);
     }
@@ -524,6 +524,9 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
     const anchor = sameTab && !rebuilt ? (loading > 0 ? inFlightAnchor : rangeAnchor()) : null;
     inFlightAnchor = anchor;
     loading++;
+    // Rows land after the columns: `data-loading` says the rows on screen
+    // are not yet this paint's, for anything that reads the grid from outside.
+    mount.toggleAttribute('data-loading', true);
     tabId = tab.id;
     painted.clear();
     void grid.replaceData(rowsOf(tab, view, order)).then(() => {
@@ -538,6 +541,7 @@ export function createBrowseTable(host: BrowseTableHost): BrowseTable {
       if (loading === 0) {
         refocusCellSwitch(pendingCell);
         pendingCell = undefined;
+        mount.toggleAttribute('data-loading', false);
       }
     });
   }

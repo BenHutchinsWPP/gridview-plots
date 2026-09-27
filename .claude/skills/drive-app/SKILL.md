@@ -50,9 +50,10 @@ lsof -ti:5199 -sTCP:LISTEN | xargs -r kill
   drop, such as a BusList, opens no dialog. A CSV drop opens "Assign N dropped
   files to Cases".
 - **The import dialog is not a `<dialog>`.** Click "Assign each file
-  individually". The per-file Case inputs are `input.modal-filter:visible`, in
-  the listed file order. Fill each one and press Tab, then click "Load
-  everything" and wait with `idle()`.
+  individually". Each file's Case input is labelled `Case for <file name>`;
+  find it by that label, since the rows are sorted by detected kind, not drop
+  order. Lookup and limits files get no Case input. Fill each one and press
+  Tab, then click "Load everything" and wait with `idle()`.
 - **The drawer** opens on its own after a load and starts closed after a
   restore. `tab()` clicks `#browse-handle` only when the drawer's
   `data-detent` is `closed`, then waits for the tab to turn `.active`. Tab buttons
@@ -72,7 +73,9 @@ lsof -ti:5199 -sTCP:LISTEN | xargs -r kill
   synchronously and holds it until the drop ends, dialogs included, so
   `idle()` after the last click of a drop waits for exactly that drop. A drop
   made while a load runs is refused with "A load is already running", which
-  is easy to miss. `pinRow` waits for the Selected count to rise.
+  is easy to miss. `pinRow` waits for the Selected count to rise. The drawer
+  grid holds `data-loading` while its rows are still landing after a paint;
+  `selectedRows` waits for it to clear.
 - **A membership file** dropped on the window opens a pane asking which kind
   it groups. A header only one editor writes (`BusID,Grouping`,
   `Name,Grouping,Direction`, `Name,Bus ID,Unit ID,Grouping`) starts on that

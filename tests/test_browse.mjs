@@ -52,6 +52,11 @@ const {
   setColumnVisible,
   clearFilters,
   dropRescaledBounds,
+  statsShownAs,
+  boundsFollow,
+  sameFilters,
+  hasActiveFilter,
+  tabIndex,
   setGroupBy,
   viewChips,
   statColumns,
@@ -195,10 +200,10 @@ const GOLDEN_STATS_CSV = [
   '# Hours: Jan; HE 1-6',
   '# % of range: values are ratios of range (0.42 = 42%); every series of its limit (summed, for a group), else of its own peak',
   '',
-  'Case,Generator,Fuel Type (Cleaned),Area Name,PSSEMaxCap(MW),FuelType,Min (%),Max (%),Average (%),StdDev (%),p25 (%),p75 (%),Cap factor (%)',
-  'Case 1,ALDER,Coal,AREA_AE,200,Coal,0.05000000074505806,0.05000000074505806,0.05000000074505806,0,0.05000000074505806,0.05000000074505806,0.0002500000037252903',
-  'Case 1,BIRCH,Coal,AREA_NV,120,Coal,0.1666666716337204,0.1666666716337204,0.1666666716337204,0,0.1666666716337204,0.1666666716337204,0.0013888889302810033',
-  'Case 1,CEDAR,Natural Gas,AREA_AE,80,Gas,0.375,0.375,0.375,0,0.375,0.375,0.0046875',
+  'Case,Generator,Fuel Type (Cleaned),Area Name,PSSEMaxCap(MW),FuelType,Min (%),Max (%),Average (%),StdDev (%),p25 (%),p75 (%)',
+  'Case 1,ALDER,Coal,AREA_AE,200,Coal,0.05000000074505806,0.05000000074505806,0.05000000074505806,0,0.05000000074505806,0.05000000074505806',
+  'Case 1,BIRCH,Coal,AREA_NV,120,Coal,0.1666666716337204,0.1666666716337204,0.1666666716337204,0,0.1666666716337204,0.1666666716337204',
+  'Case 1,CEDAR,Natural Gas,AREA_AE,80,Gas,0.375,0.375,0.375,0,0.375,0.375',
   '',
   '=====',
   '# Cases: Case 1',
@@ -291,6 +296,80 @@ const GOLDEN_STATS_CSV = [
   ok(
     'the toggle drops bounds on rescaled stat columns and keeps the hours count, text and other columns',
   );
+}
+
+{
+  // A stat bound is typed against what the cells show. Whatever moves that
+  // (the variable, its unit, "% of range") drops it; what does not keeps it.
+  const load = { variable: 'Load', unit: 'MW' };
+  const lmp = { variable: 'LMP', unit: '$/MWh' };
+  const pct = { ...load, unit: '%', perUnit: true };
+  const view = {
+    ...NO_VIEW,
+    filters: new Map([
+      ['stat.max', { kind: 'range', min: 500, max: null }],
+      ['name', { kind: 'text', text: 'a' }],
+    ]),
+  };
+  const kept = (typed, shown) => [...boundsFollow(view, typed, shown).filters.keys()];
+  assert.deepEqual(kept(statsShownAs([load]), statsShownAs([lmp])), ['name'], 'a Variable change');
+  assert.deepEqual(kept(statsShownAs([load]), statsShownAs([pct])), ['name'], 'a % toggle');
+  assert.equal(
+    boundsFollow(view, statsShownAs([load]), statsShownAs([load])),
+    view,
+    'the same quantity again (a % toggle set to what it is) keeps it',
+  );
+  assert.equal(boundsFollow(view, undefined, statsShownAs([lmp])), view, 'nothing typed on yet');
+  assert.equal(
+    boundsFollow(view, statsShownAs([load]), statsShownAs([])),
+    view,
+    'no rows to judge',
+  );
+  assert.equal(statsShownAs([load, lmp]), statsShownAs([lmp, load]), 'order is not a change');
+  ok('a stat bound is dropped when what its cells show moves, and kept when it does not');
+}
+
+{
+  // Ticks are a set: re-ticking in another order keeps the same rows, and
+  // must not throw away the grouped builds.
+  const ticks = (...values) => new Map([['zone', { kind: 'values', values }]]);
+  assert.ok(sameFilters(ticks('A', 'B'), ticks('B', 'A')), 'the order ticked is not a change');
+  assert.ok(!sameFilters(ticks('A', 'B'), ticks('A')));
+  assert.ok(!sameFilters(ticks('A', 'A'), ticks('A', 'B')), 'a repeat is not a second value');
+  const range = (min) => new Map([['stat.max', { kind: 'range', min, max: null }]]);
+  assert.ok(sameFilters(range(5), range(5)));
+  assert.ok(!sameFilters(range(5), range(6)));
+  assert.equal(
+    filterConstraint({ kind: 'values', values: ['B', 'A10', 'A9', 'B'] }),
+    filterConstraint({ kind: 'values', values: ['A9', 'A10', 'B'] }),
+    'and are stated in one order, so a held build and a fresh one agree',
+  );
+  assert.equal(filterConstraint({ kind: 'values', values: ['B', 'A'] }), 'is any of (A, B)');
+  ok('two filter maps are the same when they keep the same rows, whatever the tick order');
+}
+
+{
+  const tab = fakeTab(
+    [
+      { key: 'name', label: 'Name', kind: 'text', computed: false },
+      { key: 'mw', label: 'MW', kind: 'number', computed: true },
+    ],
+    [
+      ['a', 1],
+      ['b', 2],
+    ],
+  );
+  assert.equal(hasActiveFilter(tab, NO_VIEW), false);
+  const text = { ...NO_VIEW, filters: new Map([['name', { kind: 'text', text: 'a' }]]) };
+  assert.equal(hasActiveFilter(tab, text), true);
+  const stale = { ...NO_VIEW, filters: new Map([['gone', { kind: 'text', text: 'a' }]]) };
+  assert.equal(hasActiveFilter(tab, stale), false, 'a key with no column narrows nothing');
+  assert.equal(hasActiveFilter(tab, text), keptRowKeys(tab, text) !== undefined);
+  const index = tabIndex(tab);
+  assert.equal(index.rows.get(tab.rows[1].id), 1);
+  assert.equal(index.columns.get('mw').label, 'MW');
+  assert.equal(tabIndex(tab), index, 'made once per build');
+  ok('an active filter is asked without a keep-set, and a build indexes its rows and columns once');
 }
 
 {
@@ -822,6 +901,47 @@ const busTableIn = (data) => ({
   });
   assert.equal(grouped.columns.find((column) => column.key === 'stat.n').defaultHidden, true);
   ok('the Bus tab opens without Type, VM, VA, Latitude, Longitude and Hours');
+}
+
+{
+  // A Bus bucket is keyed on the list column that made it, never on
+  // `entity` (bus names): the header's button is UNGROUP, and a tick on a
+  // bucket's name keeps the buses in it.
+  const list = busListOf([
+    '10001,WILLOWBEND,345,AREA_AV',
+    '10002,ALDER,115,AREA_NV',
+    '10003,POPLAR,230,AREA_AV',
+  ]);
+  const data = busTable([10001, 10002, 10003], ['WILLOWBEND', 'ALDER', 'POPLAR'], (i) => i + 1);
+  // Load sums across buses; LMP would refuse the group-by.
+  data.quantity = 'Unserved Load (MWh)';
+  const build = (groupBy, keep) =>
+    buildBusTab({
+      tables: [{ ...busTableIn(data), slotKey: 'bus Unserved Load (MWh)' }],
+      list,
+      areas: null,
+      ...(groupBy ? { groupBy } : {}),
+      ...(keep ? { keep } : {}),
+    });
+  const base = build(null);
+  const areaKey = 'list.LoadArea';
+  assert.equal(base.columns.find((c) => c.key === areaKey).groupable, true);
+  const grouped = build(areaKey);
+  const bucket = grouped.columns.find((c) => c.key === areaKey);
+  assert.ok(bucket && bucket.groupable, 'the bucket column is the group-by column');
+  assert.ok(!grouped.columns.some((c) => c.key === 'entity'), 'no second meaning of `entity`');
+  const view = {
+    ...NO_VIEW,
+    groupBy: areaKey,
+    filters: new Map([[areaKey, { kind: 'values', values: ['AREA_AV'] }]]),
+  };
+  const kept = build(areaKey, keptRowKeys(base, view));
+  assert.deepEqual(
+    kept.rows.map((row) => row.entity),
+    ['AREA_AV'],
+    'a tick on a bucket keeps its buses',
+  );
+  ok('a Bus bucket is keyed on its list column, so its tick and its ungroup button both work');
 }
 
 {
@@ -2167,7 +2287,7 @@ const interfaceTableIn = (data) => ({
   assert.equal(dedicatedGroupTab.id, 'area-groups');
   assert.equal(dedicatedGroupTab.label, 'Area Groups');
   assert.deepEqual(dedicatedGroupTab.actions, [{ id: 'edit-groups', label: 'Edit Groups…' }]);
-  assert.equal(dedicatedGroupTab.columns.find((c) => c.key === 'entity').groupable, false);
+  assert.equal(dedicatedGroupTab.columns.find((c) => c.key === 'group').groupable, false);
   assert.ok(dedicatedGroupTab.rows.some((r) => r.groupValue === 'Northwest'));
   ok('dedicated AreaGroups tab builds with action button and non-groupable group column');
 
@@ -3185,6 +3305,39 @@ const interfaceTableIn = (data) => ({
 }
 
 {
+  // A group's name is not an area's: the grouped Group column has a key of
+  // its own, so a tick there filters groups and is never tested against area
+  // names, while an Area filter still chooses which areas enter a group.
+  setGroupings('Name,Grouping\nAREA_AV,Northwest\nAREA_NV,Desert');
+  const areaData = areaTable(['AREA_AV', 'AREA_NV'], ['Load (MWh)'], (a) => (a + 1) * 10);
+  const build = (groupBy, keep) =>
+    buildAreaTab({
+      tables: [areaTableIn(areaData, 'Load (MWh)')],
+      variable: 'Load (MWh)',
+      areas: null,
+      ...(groupBy ? { groupBy } : {}),
+      ...(keep ? { keep } : {}),
+    });
+  const base = build(null);
+  const areaColumn = base.columns.find((c) => c.key === 'entity');
+  assert.equal(areaColumn.groupsAs, 'group', 'the Area column groups as the Group column');
+  const grouped = build(areaColumn.groupsAs);
+  const groupColumn = grouped.columns.find((c) => c.key === 'group');
+  assert.ok(groupColumn && groupColumn.groupable, 'which is the ungroup toggle');
+  assert.ok(!grouped.columns.some((c) => c.key === 'entity'), 'no second meaning of `entity`');
+
+  const view = {
+    ...NO_VIEW,
+    groupBy: 'group',
+    filters: new Map([['group', { kind: 'values', values: ['Northwest'] }]]),
+  };
+  assert.equal(keptRowKeys(base, view), undefined, 'a group tick is not asked of the areas');
+  const shown = [...visibleRows(grouped, view)].map((row) => grouped.rows[row].groupValue);
+  assert.deepEqual(shown, ['Northwest'], 'it keeps the ticked group');
+  ok('a tick on the grouped Area tab names a group, and keeps it');
+}
+
+{
   // THE PIN DRAWS WHAT THE TABLE SAID: a Coal row filtered to one AREA_AE
   // unit must draw that unit, not all coal, including after the live filter
   // clears.
@@ -3682,7 +3835,7 @@ const interfaceTableIn = (data) => ({
   const filters = new Map([['area', { kind: 'text', text: 'AREA_AV' }]]);
   const view = { sort: null, filters };
   assert.equal(visibleRows(chooserTab, view).length, 1);
-  const hidden = setColumnVisible(view, 'area', false);
+  const hidden = setColumnVisible(chooserTab, view, 'area', false);
   assert.equal(hidden.filters.has('area'), false);
   assert.deepEqual([...hidden.columnOverrides], [['area', false]]);
   assert.equal(visibleRows(chooserTab, hidden).length, 2);
@@ -3936,8 +4089,18 @@ const interfaceTableIn = (data) => ({
   // THE COMPOSITION THE FOOTGUN NAMES: hiding and reordering are two writes
   // to one state, so either order of the two produces the same table — the
   // visible set is a filter over the ordered list, never a second ordering.
-  const hideFirst = moveColumnTo(orderTab, setColumnVisible(NO_VIEW, 'area', false), 'bus', 0);
-  const reorderFirst = setColumnVisible(moveColumnTo(orderTab, NO_VIEW, 'bus', 0), 'area', false);
+  const hideFirst = moveColumnTo(
+    orderTab,
+    setColumnVisible(orderTab, NO_VIEW, 'area', false),
+    'bus',
+    0,
+  );
+  const reorderFirst = setColumnVisible(
+    orderTab,
+    moveColumnTo(orderTab, NO_VIEW, 'bus', 0),
+    'area',
+    false,
+  );
   assert.deepEqual(
     visibleColumns(orderTab, hideFirst).map((column) => column.key),
     ['bus', 'name'],
@@ -5528,11 +5691,25 @@ console.log(`\n${checks} checks passed.`);
   assert.deepEqual(percentSwitch([pool, pct], genKinds), { on: false, next: false });
   assert.ok(percentSwitch([pool], genKinds).refusal, 'alone, it refuses');
 
-  // A switch rescales the Selected tab's stat columns, so its bounds go.
+  // A switch that rescales the Selected tab's stat columns drops its
+  // bounds; a Case switch rescales nothing, even when pins merge.
   const { readFileSync } = await import('node:fs');
-  const drawer = readFileSync(new URL('../src/ui/browse-drawer.ts', import.meta.url), 'utf8');
-  const replace = drawer.slice(drawer.indexOf('replacePins(entries) {'));
-  assert.ok(replace.indexOf('dropBounds(SELECTED)') < replace.indexOf('adoptPins('));
+  const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
+  const drawer = read('../src/ui/browse-drawer.ts');
+  assert.match(
+    drawer,
+    /replacePins\(entries, rescaled\) \{\s*if \(rescaled\) replaceView\(SELECTED, dropRescaledBounds\);\s*adoptPins\(entries\);/,
+  );
+  const wiring = read('../src/app/browse-wiring.ts');
+  const handler = (name) =>
+    wiring.slice(
+      wiring.indexOf(`${name}(`),
+      wiring.indexOf('\n    },', wiring.indexOf(`${name}(`)),
+    );
+  assert.match(handler('onSelectedVariableChange'), /replacePins\(next, true\)/);
+  assert.match(handler('onSelectedPercent'), /pinRetargets\(\)\),\s*true,?\s*\)/);
+  assert.match(handler('onSelectedCaseChange'), /pinRetargets\(\)\),\s*false,?\s*\)/);
+  assert.match(handler('onSelectedRowChange'), /field !== 'case',?\s*\)/);
   ok('groups tabs list % rows; an unruled metric, a stuck % set and stale bounds are handled');
 }
 
@@ -5605,15 +5782,20 @@ console.log(`\n${checks} checks passed.`);
     ...view,
     filters: new Map([['list.FuelType', { kind: 'values', values: ['Gas'] }]]),
   };
-  const hidden = setColumnVisible(view, 'list.FuelType', false);
+  const hidden = setColumnVisible(gen, view, 'list.FuelType', false);
   assert.equal(hidden.filters.has('list.FuelType'), false);
   assert.equal(isSliced(gen, hidden, 'list.FuelType'), false, 'the slicer goes too');
-  const shown = setColumnVisible(hidden, 'list.FuelType', true);
+  const shown = setColumnVisible(gen, hidden, 'list.FuelType', true);
   assert.equal(isSliced(gen, shown, 'list.FuelType'), false, 'and does not come back unasked');
 
   // A default hidden before any choice shows no slicer and no filter.
-  const bare = setColumnVisible(NO_VIEW, 'case', false);
+  const bare = setColumnVisible(gen, NO_VIEW, 'case', false);
   assert.deepEqual(keysOf(slicerColumns(gen, bare)), ['list.FuelType']);
+  assert.equal(
+    isSliced(gen, setColumnVisible(gen, bare, 'case', true), 'case'),
+    false,
+    'a default slicer hidden with its column does not come back when the column does',
+  );
 
   // A slicer's ticks are the column's `values` filter, as the dropdown's are:
   // the rows it keeps are what the table shows.
@@ -5707,4 +5889,55 @@ console.log(`\n${checks} checks passed.`);
     'is any of (Zone 2, (blank))',
   );
   ok('a checklist lists (blank) last and ticking it keeps the blank rows');
+}
+
+// ------------------------------------------ filters, cells and the header
+
+{
+  const { statValue } = await import('../src/ui/browse-model.ts');
+
+  // A bound sits in the units shown, and scaling to percent does not move a
+  // value off the bound it is on: 0.29 shows as 29% and passes "Min 29".
+  const ratioTab = fakeTab(
+    [{ key: 'cf', label: 'Cap factor (%)', kind: 'number', cellClass: 'ratio' }],
+    [[0.29], [0.07], [0.5]],
+  );
+  const bounded = (min, max) => ({
+    ...NO_VIEW,
+    filters: new Map([['cf', { kind: 'range', min, max }]]),
+  });
+  assert.deepEqual([...visibleRows(ratioTab, bounded(29, null))], [0, 2]);
+  assert.deepEqual([...visibleRows(ratioTab, bounded(null, 7))], [1]);
+  ok('a percent bound keeps the row sitting on it');
+
+  // "% of range" rescales cap factor as well as the stats.
+  const rescaled = dropRescaledBounds({
+    ...NO_VIEW,
+    filters: new Map([
+      ['stat.cf', { kind: 'range', min: 40, max: null }],
+      ['stat.n', { kind: 'range', min: 100, max: null }],
+    ]),
+  });
+  assert.deepEqual([...rescaled.filters.keys()], ['stat.n']);
+  ok('toggling "% of range" drops a cap factor bound');
+
+  // A reversed member's zero is -0, and reads as 0.
+  assert.equal(displayCell(-0), '0');
+  assert.equal(displayCell(-0, 'ratio'), '0%');
+  ok('negative zero displays as 0');
+
+  // Everything the header renders moves its signature.
+  const base = { key: 'x', label: 'X', kind: 'number' };
+  const signatureOf = (column) => headerSignature(fakeTab([column], [[1]]), NO_VIEW);
+  assert.notEqual(signatureOf(base), signatureOf({ ...base, kind: 'text' }));
+  assert.notEqual(signatureOf(base), signatureOf({ ...base, computed: true }));
+  assert.notEqual(signatureOf(base), signatureOf({ ...base, context: true }));
+  ok('the header signature carries kind, computed and context');
+
+  // A key that is not a stat column reads blank, prototype names included.
+  assert.equal(
+    statValue({ n: 1, mean: 2, min: 2, max: 2, sd: 0, p25: 2, p75: 2 }, 'toString'),
+    null,
+  );
+  ok('statValue answers only for the stat columns');
 }

@@ -302,7 +302,7 @@ export function createBrowseWiring(host: BrowseWiringHost) {
           if (tab !== undefined && browse.offered(tab, variable)) browse.set(tab, variable);
         }
       }
-      browseDrawer.replacePins(next);
+      browseDrawer.replacePins(next, true);
     },
     onSelectedRowChange(rowId, field, value) {
       // One pin, through the same rules as the Switch all row given only
@@ -316,12 +316,16 @@ export function createBrowseWiring(host: BrowseWiringHost) {
           : field === 'variable'
             ? (one: readonly SelectionEntry[]) => retargetVariable(one, value, kinds)
             : (one: readonly SelectionEntry[]) => retargetPercent(one, value === 'pct', kinds);
-      browseDrawer.replacePins(retargetPin(browseDrawer.selection(), rowId, move));
+      browseDrawer.replacePins(
+        retargetPin(browseDrawer.selection(), rowId, move),
+        field !== 'case',
+      );
     },
     onSelectedCaseChange(caseId) {
       const browseDrawer = host.drawer();
       browseDrawer.replacePins(
         retargetCase(browseDrawer.selection(), caseId, views.caseChoices(), pinRetargets()),
+        false,
       );
     },
     onSelectedPercent(on) {
@@ -329,7 +333,7 @@ export function createBrowseWiring(host: BrowseWiringHost) {
       // matches them in one render.
       const browseDrawer = host.drawer();
       browseDrawer.setPerUnit(on);
-      browseDrawer.replacePins(retargetPercent(browseDrawer.selection(), on, pinRetargets()));
+      browseDrawer.replacePins(retargetPercent(browseDrawer.selection(), on, pinRetargets()), true);
     },
     onTabChange() {
       // The variable dropdown belongs to the kind on screen, so a tab switch

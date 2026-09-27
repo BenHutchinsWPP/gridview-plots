@@ -33,6 +33,9 @@ import { ruleFor, RATIO_METRICS, withheldFromGroups } from '../rules';
 import type { AreaTable } from '../types';
 import { MEMBER_NOUN as AREA_NOUN } from '../series';
 
+/** The grouped form's Group column, and the group-by key that builds it. */
+export const AREA_GROUP_KEY = 'group';
+
 /** One area table in scope, as the drawer's caller already has it. */
 export interface AreaBrowseTable {
   caseId: string;
@@ -105,7 +108,7 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
   // -------------------------------------------------------- group-by mode
   if (
     input.isGroupTab ||
-    (canGroup && (groupBy === 'entity' || groupBy === 'group' || groupBy === 'Group'))
+    (canGroup && (groupBy === 'entity' || groupBy === AREA_GROUP_KEY || groupBy === 'Group'))
   ) {
     const groupedRefs: BrowseRowRef[] = [];
     const groupCounts: number[] = [];
@@ -129,7 +132,9 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
         value: (row) => (groupedRefs[row] ? caseLabelOf(groupedRefs[row].caseId) : ''),
       },
       {
-        key: 'entity',
+        // Not `entity`: that key's filter names areas, and a grouped build
+        // consumes it over them. This column names groups.
+        key: AREA_GROUP_KEY,
         label: 'Group',
         kind: 'text',
         computed: false,
@@ -308,6 +313,7 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
       kind: 'text',
       computed: false,
       groupable: canGroup,
+      groupsAs: AREA_GROUP_KEY,
       groupDisabledReason: groupRefusal,
       value: (row) => refs[row].entity,
     },
