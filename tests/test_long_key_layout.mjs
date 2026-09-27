@@ -72,6 +72,7 @@ const parser = await instantiateParser(wasmModule, entityHashes(busIds), BUS_LAY
     busIds.length,
     2,
     rows.length,
+    2036,
   );
   assert.equal(payload.rows, 3, 'every row placed');
 
@@ -90,27 +91,26 @@ const parser = await instantiateParser(wasmModule, entityHashes(busIds), BUS_LAY
   ok('metrics start at column 6: the LMP and Load values land on planes 0 and 1');
 
   // The failure this test exists for: at the area layout, source metric 0 is
-  // column 4 -- BusName -- and parse_float over "OAKRIDGE" is a number
-  // nobody asked for on plane 0.
+  // column 4 -- BusName -- so "OAKRIDGE" lands where a number belongs, and
+  // the row carries more fields than an area header. Both are refused.
   const areaLayout = await instantiateParser(wasmModule, entityHashes(busIds), AREA_KEY_LAYOUT);
-  const wrong = parseBytes(
-    areaLayout,
-    bytes,
-    bodyStart,
-    bytes.length,
-    Int32Array.from([0, 1]),
-    busIds.length,
-    2,
-    rows.length,
+  assert.throws(
+    () =>
+      parseBytes(
+        areaLayout,
+        bytes,
+        bodyStart,
+        bytes.length,
+        Int32Array.from([0, 1]),
+        busIds.length,
+        2,
+        rows.length,
+        2036,
+      ),
+    /more fields than the header|neither blank nor a number/,
+    'the area layout must refuse a bus file rather than read BusName and Area as metrics',
   );
-  assert.equal(wrong.rows, 3, 'the rows still place: BusID sits at column 3 either way');
-  const wrongFirst = [wrong.values[0], wrong.values[1]];
-  assert.ok(
-    !(wrongFirst[0] === 31.5 && wrongFirst[1] === 120.25),
-    'the area layout must NOT reproduce the right numbers -- it reads BusName and Area as ' +
-      `metrics, and got ${wrongFirst.join(', ')}`,
-  );
-  ok('the same bytes at the area layout produce other numbers -- the layout is doing the work');
+  ok('the same bytes at the area layout are refused -- the layout is doing the work');
 }
 
 // ---------------------------------------------------------------- a refusal
@@ -219,6 +219,7 @@ ok('a layout that collides with Date/Hour/TOU is refused at instantiate, by name
     busIds.length,
     plan.sourceMetricCount,
     rows.length,
+    2036,
   );
   blitBlock(accumulator, payload);
 
@@ -301,6 +302,7 @@ ok('a layout that collides with Date/Hour/TOU is refused at instantiate, by name
       units.length,
       plan.sourceMetricCount,
       genRows.length,
+      2036,
     ),
   );
   const { data: tables } = finalizeGeneratorLong(

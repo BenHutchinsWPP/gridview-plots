@@ -22,12 +22,14 @@ const {
   parseBytes,
   afterNextNewline,
   scanAxis: scanAxisRaw,
-  PARSER_ABI,
 } = await import('../src/tables/long/block.ts');
 
-/** One byte range through both passes, as the pool runs them. */
+/** One byte range through both passes, as the pool runs them. The Case year
+ * is read off the range's first row, as readCasePlan reads it off the file's. */
 function parseRange(instance, bytes, from, to, plan, entityCount) {
   const scan = scanAxisRaw(instance, bytes, from, to);
+  const firstRow = new TextDecoder().decode(bytes.subarray(from, Math.min(to, from + 64)));
+  const year = Number(firstRow.split(',', 1)[0].split('/')[2]);
   return parseBytes(
     instance,
     bytes,
@@ -37,6 +39,7 @@ function parseRange(instance, bytes, from, to, plan, entityCount) {
     entityCount,
     plan.sourceMetricCount,
     scan.rows,
+    year,
   );
 }
 
@@ -645,10 +648,6 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
   assert.equal(leap.rows, 2, 'the Feb 29 row is dropped, the others kept');
   ok('an unreadable date or hour, or a short row, refuses the load; Feb 29 is dropped');
 }
-
-// The committed binary's ABI, stated (instantiateParser also gates on it).
-assert.equal(PARSER_ABI, 7);
-ok(`block.wasm ABI ${PARSER_ABI} matches this build`);
 
 // Presence, and the leap-year statement ingest must make.
 {

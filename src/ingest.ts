@@ -27,14 +27,16 @@ export function afterNextNewline(bytes: Uint8Array, from: number): number {
   return at < 0 ? -1 : at + 1;
 }
 
-/** Cumulative days before each month, non-leap (the table both `block.c`
- * files use). */
+/** Cumulative days before each month and each month's length, non-leap (the
+ * tables `parser/common/fields.h` uses). */
 const CUM = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+const DIM = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 /** Day-of-year (0-based) for a 1-based month/day, or -1 for Feb 29 / invalid. */
 export function dayOfYear(month: number, day: number): number {
-  if (month < 1 || month > 12 || day < 1 || day > 31) return -1;
+  if (month < 1 || month > 12 || day < 1) return -1;
   if (month === 2 && day === 29) return -1; // Feb 29 is dropped at ingest
+  if (day > DIM[month - 1]) return -1;
   return CUM[month - 1] + day - 1;
 }
 

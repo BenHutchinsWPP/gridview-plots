@@ -226,6 +226,7 @@ for (const [from, to] of areaRanges) {
       areaAxis.length,
       areaColumnPlan.sourceMetricCount,
       scan.rows,
+      areaPlan.year,
     ),
   );
 }

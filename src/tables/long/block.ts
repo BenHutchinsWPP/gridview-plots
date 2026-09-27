@@ -6,10 +6,9 @@
 // tests/test_ingest_area.mjs drives it directly in Node.
 
 /** block.c's ABI_VERSION; a stale committed binary fails at instantiate. */
-export const PARSER_ABI = 7;
+export const PARSER_ABI = 8;
 
 import { afterNextNewline, NEWLINE } from '../../ingest';
-import { HOURS_PER_YEAR } from '../../model/calendar';
 
 // Re-exported for the ingest tests, which reach it through this module.
 export { afterNextNewline };
@@ -25,17 +24,22 @@ export interface ParserExports {
   values_ptr(): number;
   row_area_ptr(): number;
   row_hour_ptr(): number;
-  tou_ptr(): number;
+  row_tou_ptr(): number;
   area_seen_ptr(): number;
   last_rows(): number;
   last_emitted(): number;
   last_unknown_area(): number;
   last_bad_row(): number;
   last_overflow(): number;
+  last_year_mismatch(): number;
+  last_bad_id(): number;
+  last_bad_tou(): number;
+  last_bad_cell(): number;
+  last_ragged(): number;
   set_key_layout(keyCols: number, entityCol: number): number;
   area_table_reset(): void;
   area_table_put(hash: number, idx: number): number;
-  parse_block(len: number): number;
+  parse_block(len: number, year: number): number;
   scan_axis(len: number): number;
   axis_names(): number;
   axis_off_ptr(): number;
@@ -73,8 +77,9 @@ export interface BlockPayload {
   values: Float32Array;
   rowEntity: Uint16Array;
   rowHour: Uint16Array;
-  /** Per-hour TOU code from the file; 0xFF = uncovered. */
-  tou: Uint8Array;
+  /** Each row's TOU code from the file, 0 = OffPeak, 1 = OnPeak. Per row, so
+   * `blitBlock` is the one place two rows' TOU for an hour are compared. */
+  rowTou: Uint8Array;
   /** 1 = this area had at least one row in the block. */
   entitySeen: Uint8Array;
 }
@@ -89,7 +94,7 @@ function emptyPayload(entityCount: number, planes: number): BlockPayload {
     values: new Float32Array(0),
     rowEntity: new Uint16Array(0),
     rowHour: new Uint16Array(0),
-    tou: new Uint8Array(0),
+    rowTou: new Uint8Array(0),
     entitySeen: new Uint8Array(entityCount),
   };
 }
@@ -201,7 +206,8 @@ export function scanAxis(
 /**
  * Parse `bytes[from, to)` (a row boundary to just after a `\n`) into a row
  * list of the retained planes. `maxRows` is the scan's exact count; an
- * overflow is refused, never truncated. Any row order parses the same.
+ * overflow is refused, never truncated. Any row order parses the same. `year`
+ * is the Case's, read off its first data row; a row in any other is refused.
  */
 export function parseBytes(
   parser: ParserExports,
@@ -212,16 +218,20 @@ export function parseBytes(
   entityCount: number,
   sourceMetricCount: number,
   maxRows: number,
+  year: number,
 ): BlockPayload {
   const planes = activePlanes.length;
   if (to - from <= 0 || maxRows === 0) return emptyPayload(entityCount, planes);
 
   // The arena is laid out for THIS block: read WASM memory only after this.
   if (!parser.configure(entityCount, planes, maxRows, sourceMetricCount)) {
+    // A block of rows carrying every field always fits (BLOCK_TARGET_BYTES is
+    // held to that), so only rows short of their fields reach here.
     throw new Error(
       `A block of ${maxRows.toLocaleString()} rows x ${planes} retained column(s) does not fit ` +
-        `the ${parser.arena_bytes()} B parser arena. Retain fewer columns, or lower ` +
-        `BLOCK_TARGET_BYTES so blocks hold fewer rows.`,
+        `the ${parser.arena_bytes()} B parser arena. Rows carrying every header field always ` +
+        `fit, so this block's rows are shorter than the header; retaining fewer columns ` +
+        `lets it load.`,
     );
   }
 
@@ -231,31 +241,8 @@ export function parseBytes(
   planeOf.fill(-1);
   for (let p = 0; p < planes; p++) planeOf[activePlanes[p]] = p;
 
-  const scanned = parser.parse_block(loadInbuf(parser, bytes, from, to));
-
-  const overflow = parser.last_overflow();
-  if (overflow > 0) {
-    throw new Error(
-      `${overflow} row(s) past the ${maxRows.toLocaleString()} the axis scan counted for this ` +
-        `block. Both passes must see the same bytes.`,
-    );
-  }
-  const bad = parser.last_bad_row();
-  if (bad > 0) {
-    throw new Error(
-      `${bad} row(s) carry a Date or Hour this parser could not read (expected M/D/YYYY and ` +
-        `an hour-ending 1-24), or end before the name column. Those rows would be dropped ` +
-        `silently, so the load is refused.`,
-    );
-  }
-  const unknown = parser.last_unknown_area();
-  if (unknown > 0) {
-    throw new Error(
-      `${unknown} row(s) carry an area name that is not on the area axis. The axis is read from ` +
-        `the Name column of every row, so this should be unreachable; the load is refused ` +
-        `rather than dropping them.`,
-    );
-  }
+  const scanned = parser.parse_block(loadInbuf(parser, bytes, from, to), year);
+  refuseCounted(parser, maxRows, year);
 
   const rows = parser.last_emitted();
   if (rows === 0) return emptyPayload(entityCount, planes);
@@ -267,7 +254,77 @@ export function parseBytes(
     values: new Float32Array(parser.memory.buffer, parser.values_ptr(), rows * planes).slice(),
     rowEntity: new Uint16Array(parser.memory.buffer, parser.row_area_ptr(), rows).slice(),
     rowHour: new Uint16Array(parser.memory.buffer, parser.row_hour_ptr(), rows).slice(),
-    tou: new Uint8Array(parser.memory.buffer, parser.tou_ptr(), HOURS_PER_YEAR).slice(),
+    rowTou: new Uint8Array(parser.memory.buffer, parser.row_tou_ptr(), rows).slice(),
     entitySeen: new Uint8Array(parser.memory.buffer, parser.area_seen_ptr(), entityCount).slice(),
   };
+}
+
+/**
+ * Refuse the block if parse_block counted anything it could not read. Each
+ * row is counted against one refusal, in the order C checks them, so the
+ * first message here names the first thing wrong with the file.
+ */
+function refuseCounted(parser: ParserExports, maxRows: number, year: number): void {
+  const overflow = parser.last_overflow();
+  if (overflow > 0) {
+    throw new Error(
+      `${overflow} row(s) past the ${maxRows.toLocaleString()} the axis scan counted for this ` +
+        `block. Both passes must see the same bytes.`,
+    );
+  }
+  const bad = parser.last_bad_row();
+  if (bad > 0) {
+    throw new Error(
+      `${bad} row(s) carry a Date or Hour this parser could not read (expected M/D/YYYY, a ` +
+        `day that exists in its month, and an hour-ending 1-24), or end before the entity ` +
+        `column. Those rows would be dropped silently, so the load is refused.`,
+    );
+  }
+  const mismatched = parser.last_year_mismatch();
+  if (mismatched > 0) {
+    throw new Error(
+      `${mismatched} row(s) carry a year other than ${year}, which is the year on this file's ` +
+        `first data row. A case is one calendar year of 8,760 hours, so a second year would be ` +
+        `folded onto the same hours. Split the export by year and load the files separately.`,
+    );
+  }
+  const badId = parser.last_bad_id();
+  if (badId > 0) {
+    throw new Error(
+      `${badId} row(s) carry an empty or quoted entity field. Every row needs the name the ` +
+        `entity axis is read from, and this reader splits on every comma, so a quoted field ` +
+        `is not read as one. Re-export without quotes.`,
+    );
+  }
+  const unknown = parser.last_unknown_area();
+  if (unknown > 0) {
+    throw new Error(
+      `${unknown} row(s) carry an entity name that is not on the entity axis. The axis is read ` +
+        `from every row, so this should be unreachable; the load is refused rather than ` +
+        `dropping them.`,
+    );
+  }
+  const badTou = parser.last_bad_tou();
+  if (badTou > 0) {
+    throw new Error(
+      `${badTou} row(s) carry a TOU other than OnPeak or OffPeak (blank, quoted, or a third ` +
+        `label). TOU is read from the file, never assumed, so the load is refused.`,
+    );
+  }
+  const ragged = parser.last_ragged();
+  if (ragged > 0) {
+    throw new Error(
+      `${ragged} row(s) carry more fields than the header. A quoted field holding a comma ` +
+        `looks like this: it moves every later value into the next column. Re-export without ` +
+        `commas inside fields.`,
+    );
+  }
+  const badCell = parser.last_bad_cell();
+  if (badCell > 0) {
+    throw new Error(
+      `${badCell} value cell(s) are neither blank nor a number (for example N/A or #VALUE!). ` +
+        `Reading them as blank would hide them, so the load is refused. Blank the cells or ` +
+        `re-export them as numbers.`,
+    );
+  }
 }

@@ -8,7 +8,7 @@
 // The unit of work is a BYTE RANGE, so one file uses every core. The cube is
 // pre-filled with NaN so "never written" reads as no data, never as zeros.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { HOURS_PER_YEAR, TOU_LABELS } from '../../model/calendar';
 import {
   dispatch,
   hasSimd,
@@ -45,8 +45,13 @@ import type {
   ScanResult,
 } from './worker';
 
-/** >= 8 MiB: 1 MiB blocks measure *worse* than plain streaming. */
-export const BLOCK_TARGET_BYTES = 8 * 1024 * 1024;
+/**
+ * 1 MiB blocks measure *worse* than plain streaming. The ceiling is the
+ * parser's arena: a block of whole rows can need 4x its bytes when most cells
+ * are empty, so at 20 MiB of arena a block stays at 4 MiB, or a sparse file
+ * is refused (asserted by tests/test_long_refusals.mjs).
+ */
+export const BLOCK_TARGET_BYTES = 4 * 1024 * 1024;
 
 /**
  * Initial header probe, doubled up to `MAX_HEAD_PROBE_BYTES` until the header
@@ -256,18 +261,14 @@ export function blitBlock(
   // The block's OWN file's plan. It differs from the accumulator's only in a
   // merge group, where files with different column orders fill one cube.
   const plan = columnPlan;
-  const { rows, planes, values, rowEntity, rowHour } = block;
+  const { rows, planes, values, rowEntity, rowHour, rowTou } = block;
+  const { tou, hourSeen } = accumulator;
 
-  for (let hour = 0; hour < block.tou.length; hour++) {
-    const code = block.tou[hour];
-    if (code === 0xff) continue;
-    accumulator.tou[hour] = code;
-    accumulator.hourSeen[hour] = 1;
-  }
   for (let area = 0; area < entityCount; area++) {
     if (block.entitySeen[area]) accumulator.entitySeen[area] = 1;
   }
-  if (rows === 0 || planes === 0) return;
+  // A block with no retained planes still claims its hours and TOU.
+  if (rows === 0) return;
 
   // Output plane -> cube offset, so the inner loop is an add and a load.
   const numMetrics = plan.metrics.length;
@@ -311,6 +312,21 @@ export function blitBlock(
       );
     }
     covered[byte] |= mask;
+
+    // After the duplicate check, so a concatenated file is named as one. The
+    // cube keeps one TOU per hour, and a second label would be overwritten.
+    // Across a merge group, workers finish in any order, so the refusal can
+    // land on either file.
+    if (hourSeen[hour] && tou[hour] !== rowTou[r]) {
+      throw new Error(
+        `Hour ${hour} of the year is ${TOU_LABELS[rowTou[r]]} on one row and ` +
+          `${TOU_LABELS[tou[hour]]} on another (in this file or another file of the same ` +
+          `study). A case holds one TOU per hour, so the load is refused rather than keeping ` +
+          `either.`,
+      );
+    }
+    tou[hour] = rowTou[r];
+    hourSeen[hour] = 1;
 
     const src = r * planes;
     let out = area * numMetrics * HOURS_PER_YEAR + hour;
@@ -364,6 +380,7 @@ function blocksFor(
     entityCount,
     sourceMetricCount: plan.header.metricNames.length,
     maxRows: plan.rowsPerBlock[i],
+    year: plan.year,
   }));
 }
 

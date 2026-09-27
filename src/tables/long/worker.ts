@@ -70,6 +70,8 @@ export interface BlockMessage extends RangeMessage {
   sourceMetricCount: number;
   /** Rows this byte range holds, from the axis scan over the same bytes. */
   maxRows: number;
+  /** The Case's year, from its file's first data row. */
+  year: number;
 }
 
 export type WorkerRequest = InitMessage | AxisMessage | LayoutMessage | ScanMessage | BlockMessage;
@@ -183,6 +185,7 @@ if (typeof self !== 'undefined')
         message.entityCount,
         message.sourceMetricCount,
         message.maxRows,
+        message.year,
       );
       const result: BlockResult = {
         kind: 'done',
@@ -194,7 +197,7 @@ if (typeof self !== 'undefined')
         result.values.buffer,
         result.rowEntity.buffer,
         result.rowHour.buffer,
-        result.tou.buffer,
+        result.rowTou.buffer,
         result.entitySeen.buffer,
       ]);
     } catch (error) {

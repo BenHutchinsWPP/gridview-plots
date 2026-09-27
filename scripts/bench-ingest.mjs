@@ -519,6 +519,7 @@ async function measureLong(entry, dir, result) {
             areas.length,
             plan.header.metricNames.length,
             rowsPerBlock[i],
+            plan.year,
           );
         });
         split.blit(() => areaPool.blitBlock(accumulator, payload));

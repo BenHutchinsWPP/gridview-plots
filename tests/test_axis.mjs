@@ -96,6 +96,7 @@ async function ingestFile(file, areas, label, metrics = METRICS) {
       areas.length,
       plan.sourceMetricCount,
       scan.rows,
+      YEAR,
     ),
   );
   return finalizeCase(accumulator, label, header.metricNames, YEAR, areas).data;

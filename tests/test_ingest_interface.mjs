@@ -662,6 +662,28 @@ function worstText(result) {
   );
   ok('a second calendar year in one file is refused, not folded onto the same hours');
 
+  // A cell reads the same in either shape (parser/common/fields.h): the wide
+  // reader refuses what the long one refuses, and reads padding through.
+  const refusedAs = (row, pattern, what) => {
+    const bytes = new TextEncoder().encode(row + '\r\n');
+    assert.throws(
+      () => parseBytes(parser, oneLayout, bytes, 0, bytes.length, onePlan.activePlanes, 2035),
+      pattern,
+      `${what} must be refused`,
+    );
+  };
+  refusedAs('1/1/2035,1,OffPeak,N/A', /neither blank nor a number/, 'an N/A cell');
+  refusedAs('1/1/2035,1,OffPeak,-', /neither blank nor a number/, 'a lone minus');
+  refusedAs('1/1/2035,1,Shoulder,1.5', /TOU other than OnPeak/, 'a third TOU label');
+  refusedAs('1/1/2035,1,,1.5', /TOU other than OnPeak/, 'a blank TOU');
+  refusedAs('4/31/2035,1,OffPeak,1.5', /could not read/, 'April 31');
+  refusedAs('1/1/2035,13.5,OffPeak,1.5', /could not read/, 'a fractional hour');
+  const padded = new TextEncoder().encode('1/1/2035, 1.0 , On-Peak , 12.5 \r\n');
+  const read = parseBytes(parser, oneLayout, padded, 0, padded.length, onePlan.activePlanes, 2035);
+  assert.equal(read.data[0], 12.5);
+  assert.equal(read.rowTou[0], 1);
+  ok('an unreadable value or TOU is refused, and padding reads through, as in the long reader');
+
   // More rows than the configured slab (shorter rows than the sample) must be
   // refused with the marker the retry keys on. The layout is passed
   // explicitly so the fixture can stay small.

@@ -65,7 +65,7 @@ _Static_assert(ARENA_BYTES >= 1024u * 1024u,
 
 // Bumped on any change to the exported surface or the slab's meaning, so a
 // stale committed binary fails at instantiate rather than misparsing.
-#define ABI_VERSION     3u
+#define ABI_VERSION     4u
 
 static unsigned char inbuf[BLOCK_BYTES];
 static unsigned char arena[ARENA_BYTES] __attribute__((aligned(16)));
@@ -86,6 +86,7 @@ static unsigned char*  rowTou;
 static unsigned g_metrics, g_maxRows;
 
 static unsigned g_rows, g_overflow, g_wideField, g_badRow, g_feb29, g_yearMismatch;
+static unsigned g_badTou, g_badCell;
 
 __attribute__((export_name("inbuf_ptr")))     unsigned char* inbuf_ptr(void)    { return inbuf; }
 __attribute__((export_name("inbuf_size")))    unsigned       inbuf_size(void)   { return BLOCK_BYTES; }
@@ -111,6 +112,11 @@ __attribute__((export_name("last_feb29")))      unsigned     last_feb29(void)   
 // the year, so without this a two-year file would fold onto the same 8,760
 // hours. Counted here, refused by JS.
 __attribute__((export_name("last_year_mismatch"))) unsigned  last_year_mismatch(void){ return g_yearMismatch; }
+// Rows whose TOU is neither OnPeak nor OffPeak, and value cells that are
+// neither blank nor a number. Counted as in the long reader, so a cell reads
+// the same in either shape.
+__attribute__((export_name("last_bad_tou")))    unsigned     last_bad_tou(void)  { return g_badTou; }
+__attribute__((export_name("last_bad_cell")))   unsigned     last_bad_cell(void) { return g_badCell; }
 
 /**
  * Lay the arena out for one block: `numMetrics` planes of `maxRows` rows, both
@@ -179,7 +185,9 @@ unsigned parse_block(unsigned len, unsigned year) {
   // Slot this row will occupy, or NO_DAY while the row is being rejected.
   unsigned slot = NO_DAY;
   g_rows = 0; g_overflow = 0; g_wideField = 0; g_badRow = 0; g_feb29 = 0;
-  g_yearMismatch = 0;
+  g_yearMismatch = 0; g_badTou = 0;
+  // A local, so read_value's counter stays in a register.
+  unsigned badCell = 0;
 
   #define FIELD(END)                                                            \
     {                                                                           \
@@ -188,7 +196,7 @@ unsigned parse_block(unsigned len, unsigned year) {
       if (col == 0) {                                                           \
         rowDay = date_to_day(b + fs, b + e, &rowYear);                          \
       } else if (col == 1) {                                                    \
-        unsigned hourOfDay = parse_uint(b + fs, b + e);                         \
+        unsigned hourOfDay = read_hour(b + fs, b + e);                          \
         slot = NO_DAY;                                                          \
         if (rowDay == FEB29) {                                                  \
           g_feb29++;                     /* dropped on purpose */          \
@@ -204,15 +212,16 @@ unsigned parse_block(unsigned len, unsigned year) {
           rowTou[slot] = 0;                                                     \
         }                                                                       \
       } else if (col == 2) {                                                    \
-        /* "OnPeak" / "OffPeak" differ at byte 1: 'n' vs 'f'. */                \
         if (slot != NO_DAY) {                                                   \
-          rowTou[slot] = (unsigned char)((e > fs + 1 && b[fs + 1] == 'n') ? 1 : 0); \
+          unsigned tou = read_tou(b + fs, b + e);                               \
+          if (tou == NO_TOU) g_badTou++;                                        \
+          rowTou[slot] = (unsigned char)tou;                                    \
         }                                                                       \
       } else {                                                                  \
         unsigned m = col - (unsigned)KEY_COLS;                                  \
         if (m >= numMetrics) g_wideField++;                                     \
         else if (slot != NO_DAY) {                                              \
-          slab[m * maxRows + slot] = parse_float(b + fs, b + e);                \
+          slab[m * maxRows + slot] = read_value(b + fs, b + e, &badCell);       \
         }                                                                       \
       }                                                                         \
     }
@@ -230,5 +239,6 @@ unsigned parse_block(unsigned len, unsigned year) {
   FOR_EACH_DELIMITER(b, len, EMIT)
   #undef EMIT
   #undef FIELD
+  g_badCell = badCell;
   return g_rows;
 }

@@ -56,6 +56,9 @@ const SURFACE = {
   last_bad_row: [],
   last_feb29: [],
   last_year_mismatch: [],
+  last_bad_tou: [],
+  // A cell count, not a row count.
+  last_bad_cell: [],
   // Lay the arena out as `numMetrics` planes x `maxRows` rows.
   configure: [
     "numMetrics: slab planes, the file's own entity column count",

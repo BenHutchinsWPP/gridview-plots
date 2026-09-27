@@ -37,7 +37,17 @@ the exports or arena layout change.
   `src/ingest.ts` mirrors `date_to_day` for the tests' reference
   parser only. Keep it field-for-field identical.
 - Keep exponent notation such as `7E-05`. Read `TOU` from the file; never
-  derive it.
+  derive it. A TOU that is neither label is refused rather than read as
+  OffPeak.
+- **Cell rules are shared with the wide reader** (`../common/fields.h`), so a
+  value, hour, date or TOU reads the same in either shape. Padding, case and
+  a spreadsheet's `1.0` hour read through. Anything else is counted, and JS
+  refuses the load.
+- **Only extra fields are refused.** A short row leaves its missing cells
+  absent, as in the wide reader. An extra field is how a quoted comma shows
+  up, since this reader splits on every comma.
+- **TOU is compared per row in `blitBlock`,** after the duplicate check, so
+  a concatenated file is reported as duplicates rather than as a TOU clash.
 
 ## Footguns in the cube fill
 
@@ -52,6 +62,9 @@ the exports or arena layout change.
 ## Memory
 
 Buffers are sized to a block, never a case, because each worker holds its own
-instance. Values are `maxRows × planes × 4 B`, which stays under twice the
-block's byte length whatever the shape. A shape that does not fit makes
-`configure()` return 0, and JS refuses the load.
+instance. Values are `maxRows × planes × 4 B`. Each cell costs at least its
+one-byte delimiter, so a block of whole rows needs up to 4x its bytes when
+most cells are empty. That is why `BLOCK_TARGET_BYTES` is 4 MiB against a
+20 MiB arena, not 8. Raising either means raising the other. Short rows
+reserve cells with no bytes behind them. A block of them that does not fit
+makes `configure()` return 0, and JS refuses the load.

@@ -8,7 +8,7 @@
 import { KEY_COLS } from './header';
 
 /** block.c's ABI_VERSION. */
-export const PARSER_ABI = 3;
+export const PARSER_ABI = 4;
 
 /**
  * What a parser build is fixed at: two byte budgets, read from the module.
@@ -87,6 +87,8 @@ export interface ParserExports {
   last_bad_row(): number;
   last_feb29(): number;
   last_year_mismatch(): number;
+  last_bad_tou(): number;
+  last_bad_cell(): number;
   /** Lay the arena out as `numMetrics x maxRows`. Returns 0 if it will not
    * fit, and leaves the regions null so a parse writes nothing. */
   configure(numMetrics: number, maxRows: number): number;
@@ -225,6 +227,21 @@ export function parseBytes(
       `${mismatched} row(s) carry a year other than ${year}, which is the year on this file's ` +
         `first data row. A case is one calendar year of 8,760 hours, so a second year would be ` +
         `folded onto the same hours. Split the export by year and load the files separately.`,
+    );
+  }
+  const badTou = exports.last_bad_tou();
+  if (badTou > 0) {
+    throw new Error(
+      `${badTou} row(s) carry a TOU other than OnPeak or OffPeak (blank, quoted, or a third ` +
+        `label). TOU is read from the file, never assumed, so the load is refused.`,
+    );
+  }
+  const badCell = exports.last_bad_cell();
+  if (badCell > 0) {
+    throw new Error(
+      `${badCell} value cell(s) are neither blank nor a number (for example N/A or #VALUE!). ` +
+        `Reading them as blank would hide them, so the load is refused. Blank the cells or ` +
+        `re-export them as numbers.`,
     );
   }
   const overflow = exports.last_overflow();
