@@ -5768,6 +5768,21 @@ console.log(`\n${checks} checks passed.`);
   });
   assert.ok(defaultSlicers(busTab).has('list.PSSEArea'), 'PSSEArea opens as a slicer on Bus');
 
+  // Area: the area itself is a category, unlike a bus or a unit, but opens
+  // no slicer unasked.
+  const areaTab = buildAreaTab({
+    tables: [
+      areaTableIn(
+        areaTable(['AREA_AV', 'AREA_NV'], ['Load (MWh)'], () => 1),
+        'Load (MWh)',
+      ),
+    ],
+    variable: 'Load (MWh)',
+    areas: null,
+  });
+  assert.equal(areaTab.columns.find((column) => column.key === 'entity').category, true);
+  assert.deepEqual([...defaultSlicers(areaTab)], ['case']);
+
   // Shown only on screen; the first choice makes the defaults explicit, so a
   // dropped default stays dropped.
   assert.deepEqual(keysOf(slicerColumns(gen, NO_VIEW)), ['case', 'list.FuelType']);

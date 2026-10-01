@@ -309,6 +309,8 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
     },
     {
       key: 'entity',
+      // Areas are few enough to tick; a bus or a unit is not.
+      category: true,
       label: 'Area',
       kind: 'text',
       computed: false,
