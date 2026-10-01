@@ -2287,7 +2287,7 @@ const interfaceTableIn = (data) => ({
   assert.equal(dedicatedGroupTab.id, 'area-groups');
   assert.equal(dedicatedGroupTab.label, 'Area Groups');
   assert.deepEqual(dedicatedGroupTab.actions, [{ id: 'edit-groups', label: 'Edit Groups…' }]);
-  assert.equal(dedicatedGroupTab.columns.find((c) => c.key === 'group').groupable, false);
+  assert.ok(!dedicatedGroupTab.columns.find((c) => c.key === 'group').groupable);
   assert.ok(dedicatedGroupTab.rows.some((r) => r.groupValue === 'Northwest'));
   ok('dedicated AreaGroups tab builds with action button and non-groupable group column');
 
@@ -3305,9 +3305,9 @@ const interfaceTableIn = (data) => ({
 }
 
 {
-  // A group's name is not an area's: the grouped Group column has a key of
-  // its own, so a tick there filters groups and is never tested against area
-  // names, while an Area filter still chooses which areas enter a group.
+  // The Area tab groups by Case, never by Area: the authored Groupings have
+  // their own tab. A Case row combines every area its table carries, and an
+  // Area filter chooses which, freezing the set onto the pin.
   setGroupings('Name,Grouping\nAREA_AV,Northwest\nAREA_NV,Desert');
   const areaData = areaTable(['AREA_AV', 'AREA_NV'], ['Load (MWh)'], (a) => (a + 1) * 10);
   const build = (groupBy, keep) =>
@@ -3319,22 +3319,45 @@ const interfaceTableIn = (data) => ({
       ...(keep ? { keep } : {}),
     });
   const base = build(null);
-  const areaColumn = base.columns.find((c) => c.key === 'entity');
-  assert.equal(areaColumn.groupsAs, 'group', 'the Area column groups as the Group column');
-  const grouped = build(areaColumn.groupsAs);
-  const groupColumn = grouped.columns.find((c) => c.key === 'group');
-  assert.ok(groupColumn && groupColumn.groupable, 'which is the ungroup toggle');
-  assert.ok(!grouped.columns.some((c) => c.key === 'entity'), 'no second meaning of `entity`');
+  const baseColumn = (key) => base.columns.find((c) => c.key === key);
+  assert.ok(!baseColumn('entity').groupable, 'the Area column has no group control');
+  assert.equal(baseColumn('entity').groupsAs, undefined);
+  assert.equal(baseColumn('case').groupable, true, 'the Case column groups');
 
-  const view = {
-    ...NO_VIEW,
-    groupBy: 'group',
-    filters: new Map([['group', { kind: 'values', values: ['Northwest'] }]]),
+  const grouped = build('case');
+  const caseColumn = grouped.columns.find((c) => c.key === 'case');
+  assert.ok(caseColumn && caseColumn.groupable, 'which is the ungroup toggle');
+  assert.ok(!grouped.columns.some((c) => c.key === 'entity' || c.key === 'group'));
+  assert.equal(grouped.rows.length, 1);
+  const whole = grouped.rows[0];
+  assert.equal(whole.groupBy, 'Case');
+  assert.equal(whole.groupValue, 'Case 1');
+  assert.equal(whole.members, undefined, 'an unfiltered Case row freezes nothing');
+  assert.equal(grouped.columns.find((c) => c.key === 'group.areas').value(0), 2);
+  assert.equal(grouped.columns.find((c) => c.key === 'stat.mean').value(0), 30);
+
+  const filters = new Map([['entity', { kind: 'values', values: ['AREA_AV'] }]]);
+  const narrowed = build('case', keptRowKeys(base, { sort: null, filters })).rows[0];
+  assert.deepEqual(narrowed.members, ['AREA_AV']);
+  assert.notEqual(narrowed.id, whole.id, 'two member sets under one Case are two pins');
+
+  const NO_HOUR_FILTERS = {
+    dates: null,
+    hoursOfDay: null,
+    daysOfWeek: null,
+    seasons: null,
+    tou: null,
   };
-  assert.equal(keptRowKeys(base, view), undefined, 'a group tick is not asked of the areas');
-  const shown = [...visibleRows(grouped, view)].map((row) => grouped.rows[row].groupValue);
-  assert.deepEqual(shown, ['Northwest'], 'it keeps the ticked group');
-  ok('a tick on the grouped Area tab names a group, and keeps it');
+  const drawArea = (row) =>
+    resolveAreaSeries(specFromRow(row), areaData, NO_HOUR_FILTERS, createSeriesBuffers(), {
+      name: 'case',
+      detail: 'case',
+      tableLabel: 'Case 1 · Load (MWh)',
+      color: '#000000',
+    });
+  assert.equal(drawArea(whole).stats.mean, 30);
+  assert.equal(drawArea(narrowed).stats.mean, 10, 'the pin draws the areas it was ticked under');
+  ok('the Area tab groups by Case, not by Area, and an Area filter narrows the Case row');
 }
 
 {

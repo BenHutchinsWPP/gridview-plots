@@ -3,13 +3,15 @@
 // The Area tab of the browse drawer (see src/tables/generator/ui/browse.ts
 // for the pattern). Area differs: its rows are the area AXIS, not a lookup
 // list; the variable selects which metric plane to rank; and group-by
-// collapses into the defined Groupings. Grouped stats are stats of the
+// collapses into the defined Groupings on the groups tab, or into one row per
+// Case on the Area tab. Grouped stats are stats of the
 // aggregate (`buildSeries`), filters arrive as a keep-set, and a narrowed
 // group freezes its membership onto its row. "% of range" divides each row by
 // its own unfiltered peak/trough (an area has no limit), a group after it is
 // combined.
 
 import { HOURS_PER_YEAR } from '../../../model/calendar';
+import { CASE_GROUP_BY } from '../../../series/model';
 import { createScratch, type RankMemo } from '../../../kernels';
 import { rankScopedRows } from '../../../ui/browse-planes';
 import { normalizedCopy } from '../../../series/range';
@@ -106,10 +108,8 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
   const actions = input.isGroupTab ? [{ id: 'edit-groups', label: 'Edit Groups…' }] : undefined;
 
   // -------------------------------------------------------- group-by mode
-  if (
-    input.isGroupTab ||
-    (canGroup && (groupBy === 'entity' || groupBy === AREA_GROUP_KEY || groupBy === 'Group'))
-  ) {
+  const byCase = !input.isGroupTab && canGroup && groupBy === CASE_COLUMN_KEY;
+  if (input.isGroupTab || byCase || (canGroup && groupBy === 'Group')) {
     const groupedRefs: BrowseRowRef[] = [];
     const groupCounts: number[] = [];
     const groupStatsList: {
@@ -122,25 +122,32 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
       p75: number;
     }[] = [];
 
+    const caseColumn: BrowseColumn = {
+      key: CASE_COLUMN_KEY,
+      category: true,
+      label: 'Case',
+      kind: 'text',
+      computed: false,
+      // Grouped by Case, this header's button is UNGROUP.
+      ...(byCase ? { groupable: true } : {}),
+      value: (row) => (groupedRefs[row] ? caseLabelOf(groupedRefs[row].caseId) : ''),
+    };
     const columns: BrowseColumn[] = [
-      {
-        key: CASE_COLUMN_KEY,
-        category: true,
-        label: 'Case',
-        kind: 'text',
-        computed: false,
-        value: (row) => (groupedRefs[row] ? caseLabelOf(groupedRefs[row].caseId) : ''),
-      },
-      {
-        // Not `entity`: that key's filter names areas, and a grouped build
-        // consumes it over them. This column names groups.
-        key: AREA_GROUP_KEY,
-        label: 'Group',
-        kind: 'text',
-        computed: false,
-        groupable: !input.isGroupTab,
-        value: (row) => groupedRefs[row]?.entity ?? '',
-      },
+      caseColumn,
+      // No Group column when the bucket IS the case.
+      ...(byCase
+        ? []
+        : [
+            {
+              // Not `entity`: that key's filter names areas, and a grouped build
+              // consumes it over them. This column names groups.
+              key: AREA_GROUP_KEY,
+              label: 'Group',
+              kind: 'text' as const,
+              computed: false,
+              value: (row: number) => groupedRefs[row]?.entity ?? '',
+            },
+          ]),
       {
         key: 'group.areas',
         label: 'Areas',
@@ -167,14 +174,17 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
     const gatheredScratch = createScratch();
     const rangeScratch = createScratch();
 
-    const groups = groupingNames();
+    // The Case bucket is every area its table carries.
+    const bucketsOf = (table: AreaBrowseTable) =>
+      byCase
+        ? [{ name: table.caseName, members: table.data.areas }]
+        : groupingNames().map((name) => ({ name, members: areasIn(name) }));
     // Only a narrowed group freezes its membership; an unnarrowed one
     // re-derives exactly, and freezing it would change its row id.
     const narrowed = keep !== undefined || areas !== null;
 
     for (const table of tables) {
-      for (const groupName of groups) {
-        const members = areasIn(groupName);
+      for (const { name: groupName, members } of bucketsOf(table)) {
         // A group with no surviving areas is no row at all.
         const scopedMembers = members.filter(
           (m) =>
@@ -213,7 +223,7 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
             variable,
             unit,
             axisIndex: -1,
-            groupBy: 'Group',
+            groupBy: byCase ? CASE_GROUP_BY : 'Group',
             groupValue: groupName,
             ...(narrowed ? { members: scopedMembers } : {}),
             ...rangeTag,
@@ -240,7 +250,10 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
       notes: [
         input.isGroupTab
           ? 'Ticking a group row draws the aggregate series across its member areas.'
-          : 'Grouped by Grouping. Ticking a row draws the aggregate series.',
+          : byCase
+            ? "Rows are cases: each combines every area the case carries, after this tab's " +
+              'column filters. A case row and any area row inside it cannot be stacked.'
+            : 'Grouped by Grouping. Ticking a row draws the aggregate series.',
         ...notes,
       ],
       actions,
@@ -305,18 +318,18 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
       label: 'Case',
       kind: 'text',
       computed: false,
+      groupable: canGroup,
+      groupDisabledReason: groupRefusal,
       value: (row) => caseLabelOf(refs[row].caseId),
     },
     {
       key: 'entity',
-      // Areas are few enough to tick; a bus or a unit is not.
+      // Areas are few enough to tick; a bus or a unit is not. No group-by:
+      // the authored Groupings have their own tab.
       category: true,
       label: 'Area',
       kind: 'text',
       computed: false,
-      groupable: canGroup,
-      groupsAs: AREA_GROUP_KEY,
-      groupDisabledReason: groupRefusal,
       value: (row) => refs[row].entity,
     },
   ];

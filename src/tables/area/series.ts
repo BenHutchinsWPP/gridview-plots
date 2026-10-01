@@ -6,8 +6,9 @@
 //
 // What is this kind's own, and not Generator's or Bus's:
 //
-//   * **The subject may be an area entity or a grouping.** `areasIn(name)`
-//     resolves a grouping to its member areas, and `buildSeries` in
+//   * **The subject may be an area entity, a grouping or a Case.**
+//     `areasIn(name)` resolves a grouping to its member areas, a Case is
+//     every area its table carries, and `buildSeries` in
 //     `kernels.ts` performs the weighted or unweighted area reduction
 //     according to the aggregation rules.
 //   * **"% of range" divides by the line's own peak/trough**, in any unit: an
@@ -18,6 +19,7 @@
 
 import { HOURS_PER_YEAR, buildCalendar, buildMask } from '../../model/calendar';
 import {
+  CASE_GROUP_BY,
   refusedSeries,
   type ResolveOptions,
   type SeriesBuffers,
@@ -49,6 +51,9 @@ export function resolveAreaSeries(
   let areas: string[];
   if ('entity' in spec.subject) {
     areas = [String(spec.subject.entity)];
+  } else if (spec.subject.groupBy === CASE_GROUP_BY) {
+    // Every area the table carries, narrowed by a frozen member set.
+    areas = spec.subject.members ? spec.subject.members.map(String) : [...data.areas];
   } else if (spec.subject.groupBy === 'grouping' || spec.subject.groupBy === 'Group') {
     // A frozen member set is drawn as itself: the grouping file's CURRENT
     // membership is only the fallback for subjects that never froze one. A

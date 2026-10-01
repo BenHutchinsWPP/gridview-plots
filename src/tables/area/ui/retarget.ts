@@ -7,6 +7,7 @@
 // metric with no aggregation rule is refused by `buildSeries`, so it is
 // never offered.
 
+import { CASE_GROUP_BY } from '../../../series/model';
 import type { BrowseRowRef } from '../../../ui/browse-model';
 import type { KindAnswers } from '../../../ui/browse-retarget';
 import { areasIn } from '../groupings';
@@ -27,8 +28,10 @@ export const areaAnswers: KindAnswers<AreaTable> = {
       return drawn(area) ? { axisIndex: data.areas.indexOf(area) } : null;
     }
     // A frozen group draws its members; a live one the Grouping's current
-    // membership, as `resolveAreaSeries` does. One member with data draws.
-    const members = ref.members?.map(String) ?? areasIn(String(ref.groupValue));
+    // membership, or a Case every area, as `resolveAreaSeries` does. One member with data draws.
+    const members =
+      ref.members?.map(String) ??
+      (ref.groupBy === CASE_GROUP_BY ? data.areas : areasIn(String(ref.groupValue)));
     return members.some(drawn) ? { axisIndex: -1 } : null;
   },
   unitOf: (variable) => ruleFor(variable)?.unit ?? '',
