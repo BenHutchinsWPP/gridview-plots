@@ -38,9 +38,9 @@ const {
   layoutFor,
 } = await import('../src/tables/interface/pool.ts');
 const { readWholeRows } = await import('../src/tables/wide/worker.ts');
-const { HOURS_PER_YEAR, TOU_LABELS } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS, TOU_LABELS } = await import('../src/model/calendar.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 const NEWLINE = 10;
 const decoder = new TextDecoder();
 
@@ -147,7 +147,7 @@ function parseToCube(bytes, retained, blockBytes) {
   const year = yearOf(bytes, dataStart);
   const ranges = wholeRowRanges(bytes, dataStart, blockBytes);
   for (const [from, to] of ranges) {
-    blitBlock(accumulator, parseBytes(parser, layout, bytes, from, to, plan.activePlanes, year));
+    blitBlock(accumulator, parseBytes(parser, layout, bytes, from, to, plan.activePlanes, year, 1));
   }
   return { accumulator, plan, header, title, ranges };
 }
@@ -171,9 +171,9 @@ function referenceCube(text, retained) {
     const line = lines[i].replace(/\r$/, '');
     if (line.length === 0) continue;
     const fields = line.split(',');
-    const [month, day] = fields[0].split('/').map(Number);
-    const doy = dayOfYear(month, day);
-    if (doy < 0) continue; // Feb 29, dropped at ingest
+    const [month, day, year] = fields[0].split('/').map((part) => parseInt(part, 10));
+    const doy = dayOfYear(year, month, day);
+    if (doy < 0) continue; // a day its year lacks; the parser refuses the file
     const hour = doy * 24 + (Number(fields[1]) - 1);
     tou[hour] = fields[2].trim() === 'OnPeak' ? 1 : 0;
     rows++;
@@ -310,7 +310,7 @@ function worstText(result) {
   const year = yearOf(csv, dataStart);
   const ranges = wholeRowRanges(csv, dataStart, 5 * 1024).reverse();
   for (const [from, to] of ranges) {
-    blitBlock(accumulator, parseBytes(parser, layout, csv, from, to, plan.activePlanes, year));
+    blitBlock(accumulator, parseBytes(parser, layout, csv, from, to, plan.activePlanes, year, 1));
   }
   assert.deepEqual(Array.from(accumulator.cube), Array.from(baseline), 'reverse order must match');
   ok(`blocks are position-independent: reversed arrival order is byte-identical`);
@@ -587,26 +587,54 @@ function worstText(result) {
 // ---------------------------------------------------------------- 5. Feb 29
 
 {
-  const leap = exportCsv({ year: 2036, days: 60, hours: 2, names: interfaceNames(4), feb29: true });
+  // Every year is a fixed 8,784-hour leap slot: Feb 29 is day 59 whether or
+  // not the year has one, so the same date is the same index in every year.
+  const leap = exportCsv({ year: 2036, days: 61, hours: 2, names: interfaceNames(4) });
   const { accumulator } = parseToCube(leap, interfaceNames(4), 32 * 1024);
-  assert.equal(accumulator.feb29, 2, 'both Feb 29 rows are counted');
-
-  // Mar 1 must hold Mar 1's data: if Feb 29 had been kept, every hour after
-  // it would be shifted by a day and every number would still look fine.
-  const reference = referenceCube(decoder.decode(leap), interfaceNames(4));
-  const mar1 = dayOfYear(3, 1) * 24;
-  assert.equal(accumulator.cube[mar1], reference.cube[mar1], 'Mar 1 hour 1 must not shift');
-  assert.ok(!Number.isNaN(accumulator.cube[mar1]), 'Mar 1 must carry data');
-
+  const firstValue = (date, hour) => {
+    const line = decoder
+      .decode(leap)
+      .split('\r\n')
+      .find((l) => l.startsWith(`${date},${hour},`));
+    return Math.fround(Number(line.split(',')[3]));
+  };
+  assert.equal(accumulator.cube[1416], firstValue('2/29/2036', 1), 'Feb 29 hour 1 is 1416');
+  assert.equal(accumulator.cube[1417], firstValue('2/29/2036', 2), 'Feb 29 hour 2 is 1417');
+  assert.equal(accumulator.cube[1440], firstValue('3/1/2036', 1), 'Mar 1 hour 1 is 1440');
   const finalized = finalizeCase(accumulator, 'leap', interfaceNames(4), 2036, {
     quantity: 'Power Flow (MW)',
     year: 2036,
   });
-  assert.ok(
-    finalized.warnings.some((w) => w.includes('Feb 29')),
-    'the dropped leap day is stated',
+  assert.ok(!finalized.warnings.some((w) => w.includes('Feb 29')), 'a kept day needs no warning');
+  ok('a leap Feb 29 is kept at slot hours 1416.., and Mar 1 follows at 1440');
+}
+{
+  // A Case of several years: each row carries its own year offset, and the
+  // hour stays within that year's slot.
+  const onePlan = buildColumnPlan(parseHeaderLine('Date, Hour, TOU,P01'), ['P01']);
+  const span = new TextEncoder().encode(
+    '12/31/2032,24,OffPeak,1\r\n1/1/2030,1,OffPeak,2\r\n2/29/2032,1,OnPeak,3\r\n',
   );
-  ok('Feb 29 is dropped, counted and stated, and the rest of the year does not shift');
+  const read = parseBytes(
+    parser,
+    layoutOf(onePlan),
+    span,
+    0,
+    span.length,
+    onePlan.activePlanes,
+    2030,
+    3,
+  );
+  assert.deepEqual(Array.from(read.rowYear), [2, 0, 2]);
+  assert.deepEqual(Array.from(read.rowHour), [8783, 0, 1416]);
+  const late = new TextEncoder().encode('1/1/2033,1,OffPeak,1\r\n1/1/2029,1,OffPeak,1\r\n');
+  assert.throws(
+    () =>
+      parseBytes(parser, layoutOf(onePlan), late, 0, late.length, onePlan.activePlanes, 2030, 3),
+    /2 row\(s\) are dated outside 2030-2032/,
+    'rows before and after the span must both be refused',
+  );
+  ok('a span of years places each row by offset, and a row outside it is refused');
 }
 
 // ---------------------------------------------------------------- 6. refusals
@@ -637,7 +665,7 @@ function worstText(result) {
   const onePlan = buildColumnPlan(parseHeaderLine('Date, Hour, TOU,P01'), ['P01']);
   const oneLayout = layoutOf(onePlan);
   assert.throws(
-    () => parseBytes(parser, oneLayout, ragged, 0, ragged.length, onePlan.activePlanes, 2035),
+    () => parseBytes(parser, oneLayout, ragged, 0, ragged.length, onePlan.activePlanes, 2035, 1),
     /sit past column/,
     'a row with more fields than its header must be refused',
   );
@@ -646,18 +674,18 @@ function worstText(result) {
   // A row whose Hour is out of range would otherwise be dropped in silence.
   const mangled = new TextEncoder().encode('1/1/2035,99,OffPeak,1.5\r\n');
   assert.throws(
-    () => parseBytes(parser, oneLayout, mangled, 0, mangled.length, onePlan.activePlanes, 2035),
+    () => parseBytes(parser, oneLayout, mangled, 0, mangled.length, onePlan.activePlanes, 2035, 1),
     /could not read/,
     'an unreadable Date or Hour must be refused',
   );
   ok('rows with an unreadable Date or Hour are refused rather than dropped silently');
 
-  // A second year would fold onto the same hours (date_to_day ignores the
-  // year), so it is refused.
+  // A row outside the Case's years has no slot in its cube, so it is refused.
   const twoYears = new TextEncoder().encode('1/1/2035,1,OffPeak,1.5\r\n1/1/2036,1,OffPeak,2.5\r\n');
   assert.throws(
-    () => parseBytes(parser, oneLayout, twoYears, 0, twoYears.length, onePlan.activePlanes, 2035),
-    /carry a year other than 2035/,
+    () =>
+      parseBytes(parser, oneLayout, twoYears, 0, twoYears.length, onePlan.activePlanes, 2035, 1),
+    /dated outside 2035, which this Case covers/,
     'a file holding two calendar years must be refused',
   );
   ok('a second calendar year in one file is refused, not folded onto the same hours');
@@ -667,7 +695,7 @@ function worstText(result) {
   const refusedAs = (row, pattern, what) => {
     const bytes = new TextEncoder().encode(row + '\r\n');
     assert.throws(
-      () => parseBytes(parser, oneLayout, bytes, 0, bytes.length, onePlan.activePlanes, 2035),
+      () => parseBytes(parser, oneLayout, bytes, 0, bytes.length, onePlan.activePlanes, 2035, 1),
       pattern,
       `${what} must be refused`,
     );
@@ -677,9 +705,19 @@ function worstText(result) {
   refusedAs('1/1/2035,1,Shoulder,1.5', /TOU other than OnPeak/, 'a third TOU label');
   refusedAs('1/1/2035,1,,1.5', /TOU other than OnPeak/, 'a blank TOU');
   refusedAs('4/31/2035,1,OffPeak,1.5', /could not read/, 'April 31');
+  refusedAs('2/29/2035,1,OffPeak,1.5', /could not read/, 'Feb 29 of a non-leap year');
   refusedAs('1/1/2035,13.5,OffPeak,1.5', /could not read/, 'a fractional hour');
   const padded = new TextEncoder().encode('1/1/2035, 1.0 , On-Peak , 12.5 \r\n');
-  const read = parseBytes(parser, oneLayout, padded, 0, padded.length, onePlan.activePlanes, 2035);
+  const read = parseBytes(
+    parser,
+    oneLayout,
+    padded,
+    0,
+    padded.length,
+    onePlan.activePlanes,
+    2035,
+    1,
+  );
   assert.equal(read.data[0], 12.5);
   assert.equal(read.rowTou[0], 1);
   ok('an unreadable value or TOU is refused, and padding reads through, as in the long reader');
@@ -705,7 +743,8 @@ function worstText(result) {
   const overflowing = new TextEncoder().encode(tiny.join('\r\n') + '\r\n');
   assert.ok(tiny.length > SHORT_ROWS, 'the fixture must actually overrun the slab');
   assert.throws(
-    () => parseBytes(parser, short, overflowing, 0, overflowing.length, onePlan.activePlanes, 2035),
+    () =>
+      parseBytes(parser, short, overflowing, 0, overflowing.length, onePlan.activePlanes, 2035, 1),
     /block-slab-overflow/,
     'a block holding more rows than the slab must be refused, with the retry marker',
   );
@@ -721,6 +760,7 @@ function worstText(result) {
     overflowing.length,
     onePlan.activePlanes,
     2035,
+    1,
   );
   assert.equal(roomy.rows, tiny.length, 'every row must land once the layout is tall enough');
   ok('the same block parses clean at a taller layout -- the arena is a budget, not a ceiling');

@@ -373,7 +373,7 @@ function statCellClass(stat: { key: string }, cellClass: CellClass): CellClass {
   return stat.key === 'stat.n' ? 'count' : cellClass;
 }
 
-/** The hours count starts hidden: it is 8,760 on nearly every row and
+/** The hours count starts hidden: it is a whole year on nearly every row and
  * pushes the stats that differ off screen. */
 function statHidden(stat: { key: string }): true | undefined {
   return stat.key === 'stat.n' || undefined;

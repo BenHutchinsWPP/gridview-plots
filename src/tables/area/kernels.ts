@@ -8,13 +8,13 @@
 //      Welford, makes every min/max comparison false, and sorts to one end
 //      of a duration curve as a cliff of apparent extremes.
 //   2. **The series is built before it is filtered.** A grouping is
-//      collapsed to one 8,760-point series first, so every sort is over
-//      <= 8,760 points rather than 376,680.
+//      collapsed to one 8,784-point series first, so every sort is over
+//      <= 8,784 points rather than 377,712.
 //
 // Sorting, not filtering, is the interaction cost, so gathers and sorts go
 // through a caller-owned scratch buffer that is allocated once and reused.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../model/calendar';
 import {
   applyMask,
   createScratch,
@@ -67,11 +67,11 @@ function resolveAreas(data: AreaTable, areas: string[], metricIndex: number): nu
 }
 
 function planeStart(data: AreaTable, areaIndex: number, metricIndex: number): number {
-  return (areaIndex * data.metrics.length + metricIndex) * HOURS_PER_YEAR;
+  return (areaIndex * data.metrics.length + metricIndex) * YEAR_SLOT_HOURS;
 }
 
 /**
- * Build one 8,760-point series for `areas` x `metric`, dispatching on the
+ * Build one 8,784-point series for `areas` x `metric`, dispatching on the
  * rule table's `series` enum. `data/area/aggregation-rules.json` is imported, not
  * re-derived -- summing a $/MWh column across areas is physically
  * meaningless and the chart would still render.
@@ -120,7 +120,7 @@ export function buildSeries(
   // weight happens to be zero.
   if (areaIndices.length === 1) {
     const start = planeStart(data, areaIndices[0], metricIndex);
-    out.set(data.cube.subarray(start, start + HOURS_PER_YEAR));
+    out.set(data.cube.subarray(start, start + YEAR_SLOT_HOURS));
     return { values: out, rule, warnings };
   }
 
@@ -158,9 +158,17 @@ export function buildSeries(
     const weightAreas = resolveAreas(data, areas, weightIndex);
     if (weightAreas.length === 0) continue;
 
-    const weights = weightsOut ?? new Float32Array(HOURS_PER_YEAR);
-    const zeroHours = weightedMeanAreas(data, areaIndices, metricIndex, weightIndex, out, weights);
-    if (zeroHours === HOURS_PER_YEAR) continue; // weight is identically zero; try the fallback
+    const weights = weightsOut ?? new Float32Array(YEAR_SLOT_HOURS);
+    const { zeroHours, dataHours } = weightedMeanAreas(
+      data,
+      areaIndices,
+      metricIndex,
+      weightIndex,
+      out,
+      weights,
+    );
+    // Weight identically zero over the hours that hold data: try the fallback.
+    if (zeroHours === dataHours) continue;
     if (zeroHours > 0) {
       warnings.push(
         `${zeroHours.toLocaleString()} hour(s) have a total "${weightName}" of zero, so those ` +
@@ -205,7 +213,7 @@ function combineAreas(
   divide: boolean,
 ): void {
   const { cube } = data;
-  for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
     let total = 0;
     let seen = 0;
     for (let a = 0; a < areaIndices.length; a++) {
@@ -221,7 +229,10 @@ function combineAreas(
 /** Returns the number of hours whose weight sum was zero -- those hours fall
  * back to a plain mean of the selected areas (weight 1), the same rule the
  * missing-column path above uses, so a degenerate weight and an absent one
- * behave alike. */
+ * behave alike -- and the number of hours any selected area had a value in.
+ * An hour with no value anywhere (a phantom Feb 29, or wholly missing) is
+ * NaN and neither: counting it as zero weight would warn on every non-leap
+ * Case. */
 function weightedMeanAreas(
   data: AreaTable,
   areaIndices: number[],
@@ -229,10 +240,11 @@ function weightedMeanAreas(
   weightIndex: number,
   out: Float32Array,
   weightsOut: Float32Array,
-): number {
+): { zeroHours: number; dataHours: number } {
   const { cube } = data;
   let zeroHours = 0;
-  for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+  let dataHours = 0;
+  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
     let weighted = 0;
     let weight = 0;
     for (let a = 0; a < areaIndices.length; a++) {
@@ -258,13 +270,19 @@ function weightedMeanAreas(
         total += value;
         seen++;
       }
-      out[hour] = seen === 0 ? NaN : total / seen;
+      if (seen === 0) {
+        out[hour] = NaN;
+        continue;
+      }
+      out[hour] = total / seen;
       zeroHours++;
+      dataHours++;
     } else {
       out[hour] = weighted / weight;
+      dataHours++;
     }
   }
-  return zeroHours;
+  return { zeroHours, dataHours };
 }
 
 /**
@@ -283,7 +301,7 @@ export function pooledWeightedMean(
 ): number {
   let weighted = 0;
   let total = 0;
-  for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
     if (mask[hour] === 0) continue;
     const value = series[hour];
     const weight = weights[hour];

@@ -20,7 +20,7 @@ const { layoutOf, readCasePlan, createAccumulator, blitBlock, unionMetricsOf } =
   await import('../src/tables/long/pool.ts');
 const { finalizeBusLong } = await import('../src/tables/bus/long.ts');
 const { finalizeGeneratorLong } = await import('../src/tables/generator/long.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
 let checks = 0;
 function ok(label) {
@@ -73,6 +73,7 @@ const parser = await instantiateParser(wasmModule, entityHashes(busIds), BUS_LAY
     2,
     rows.length,
     2036,
+    1,
   );
   assert.equal(payload.rows, 3, 'every row placed');
 
@@ -106,6 +107,7 @@ const parser = await instantiateParser(wasmModule, entityHashes(busIds), BUS_LAY
         2,
         rows.length,
         2036,
+        1,
       ),
     /more fields than the header|neither blank nor a number/,
     'the area layout must refuse a bus file rather than read BusName and Area as metrics',
@@ -220,6 +222,7 @@ ok('a layout that collides with Date/Hour/TOU is refused at instantiate, by name
     plan.sourceMetricCount,
     rows.length,
     2036,
+    1,
   );
   blitBlock(accumulator, payload);
 
@@ -239,23 +242,23 @@ ok('a layout that collides with Date/Hour/TOU is refused at instantiate, by name
   );
   for (const table of tables) {
     assert.deepEqual([...table.buses], [40001, 40002], 'the axis is the Int32 BusID');
-    assert.equal(table.cube.length, busIds.length * HOURS_PER_YEAR);
+    assert.equal(table.cube.length, busIds.length * YEAR_SLOT_HOURS);
     assert.deepEqual([...table.presence], [1, 1]);
   }
   // Hour-ending 1 in the file is hour 0 in the cube, and the two metrics went
   // to two tables rather than to two planes of one.
   assert.equal(tables[0].cube[0], 31.5);
-  assert.equal(tables[0].cube[HOURS_PER_YEAR], 32.5);
+  assert.equal(tables[0].cube[YEAR_SLOT_HOURS], 32.5);
   assert.equal(tables[1].cube[0], 120.25);
-  assert.equal(tables[1].cube[HOURS_PER_YEAR], 220.25);
+  assert.equal(tables[1].cube[YEAR_SLOT_HOURS], 220.25);
   assert.ok(Number.isNaN(tables[0].cube[2]), 'an hour no row covered stays NaN, never zero');
   ok('a long bus export becomes one BusTable per metric, keyed on the BusID axis');
 
-  // Said once for the file, not once per table: one file that covers 3 of
-  // 8,760 hours is one note, not eight.
-  assert.equal(warnings.length, 2, warnings.join(' | '));
-  assert.match(warnings[0], /buses\.csv: covers 2 of 8,760 hours/);
-  assert.match(warnings[1], /2036 is a leap year/);
+  // Said once for the file, not once per table: one file that covers 2 of
+  // 2036's 8,784 hours is one note, not eight. Feb 29 is kept, so a leap
+  // year earns none of its own.
+  assert.equal(warnings.length, 1, warnings.join(' | '));
+  assert.match(warnings[0], /buses\.csv: covers 2 of 8,784 hours/);
   ok("the file's notes are written once for the file, not once per table it produced");
 
   // The names are deliberately empty: a long export carries BusName in every
@@ -303,6 +306,7 @@ ok('a layout that collides with Date/Hour/TOU is refused at instantiate, by name
       plan.sourceMetricCount,
       genRows.length,
       2036,
+      1,
     ),
   );
   const { data: tables } = finalizeGeneratorLong(
@@ -316,7 +320,7 @@ ok('a layout that collides with Date/Hour/TOU is refused at instantiate, by name
   );
   assert.deepEqual(tables[0].generators, units, "the axis is the UnitName, this kind's identity");
   assert.equal(tables[0].cube[0], 540.5);
-  assert.equal(tables[1].cube[HOURS_PER_YEAR], 900.75);
+  assert.equal(tables[1].cube[YEAR_SLOT_HOURS], 900.75);
   ok('a long generator export becomes one GeneratorTable per metric on the unit-name axis');
 }
 

@@ -7,7 +7,6 @@
 
 import type { DetectResult, DetectShape } from '../detect';
 import { caseForName, slotKey, type TableKind } from '../model/case-model';
-import { HOURS_PER_YEAR } from '../model/calendar';
 import { TABLE_KINDS } from '../tables/registry';
 
 /** The table kinds the dialog routes to. Re-exported, never re-declared, so a
@@ -49,7 +48,13 @@ export interface ExistingCase {
    * say so (a replace does not combine hours). Missing or `null` means
    * unknown, never a year of absence.
    */
-  slotHours?: Record<string, number | null>;
+  slotHours?: Record<string, SlotCoverage | null>;
+}
+
+/** A table's real hours with a row, `covers`, of the `of` its year(s) have. */
+export interface SlotCoverage {
+  covers: number;
+  of: number;
 }
 
 export interface ImportModeParams {
@@ -231,11 +236,11 @@ export function planImports(
     let replaceReason: string | undefined;
     if (existingCase?.occupiedSlots.includes(slotKeyStr)) {
       replacesExisting = true;
-      const covers = existingCase.slotHours?.[slotKeyStr];
+      const coverage = existingCase.slotHours?.[slotKeyStr];
       // Only a PARTIAL year gets the extra warning; unknown coverage gets none.
       const partial =
-        typeof covers === 'number' && covers < HOURS_PER_YEAR
-          ? ` It covers ${covers.toLocaleString()} of ${HOURS_PER_YEAR.toLocaleString()} hours, ` +
+        coverage && coverage.covers < coverage.of
+          ? ` It covers ${coverage.covers.toLocaleString()} of ${coverage.of.toLocaleString()} hours, ` +
             `which a replace does not combine — drop date-split halves TOGETHER instead.`
           : '';
       replaceReason = `Replaces the "${slotLabel(r.kind, r.variant)}" table already in this Case.${partial}`;

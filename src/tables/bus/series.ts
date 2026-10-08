@@ -12,7 +12,7 @@
 //   * **"% of range" divides by the line's own peak/trough**, in any unit: a
 //     bus has no limit. An LMP in $/MWh is normalized, not refused.
 
-import { HOURS_PER_YEAR, buildCalendar, buildMask } from '../../model/calendar';
+import { YEAR_SLOT_HOURS, buildCalendar, buildMask } from '../../model/calendar';
 import {
   CASE_GROUP_BY,
   refusedSeries,
@@ -182,7 +182,7 @@ export function resolveBusSeries(
     ? rangeLabel(normalizeToRange(buffers.series, {}, PERCENT, buffers.mask))
     : undefined;
 
-  for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
     buffers.display[hour] = buffers.mask[hour] === 1 ? buffers.series[hour] : NaN;
   }
 

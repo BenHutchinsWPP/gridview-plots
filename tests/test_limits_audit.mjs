@@ -242,8 +242,8 @@ try {
 
   const leap = run('SAMPLE_limits.csv', 'SAMPLE_flow_leap.csv');
   assert.equal(leap.status, 0, leap.stderr);
-  assert.equal(leap.fields['flow.hours'], '8760');
-  ok('a leap-year flow file audits the 8,760 hours a drop keeps');
+  assert.equal(leap.fields['flow.hours'], '8784');
+  ok('a leap-year flow file audits the 8,784 hours a drop keeps, Feb 29 included');
 
   const repeated = run('SAMPLE_limits.csv', 'SAMPLE_flow_repeated.csv');
   assert.notEqual(repeated.status, 0, 'a repeated hour is refused, as a drop refuses it');

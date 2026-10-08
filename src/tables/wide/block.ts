@@ -8,7 +8,7 @@
 import { KEY_COLS } from './header';
 
 /** block.c's ABI_VERSION. */
-export const PARSER_ABI = 4;
+export const PARSER_ABI = 5;
 
 /**
  * What a parser build is fixed at: two byte budgets, read from the module.
@@ -33,10 +33,10 @@ export interface SlabLayout {
   rows: number;
 }
 
-/** Arena bytes per row at `metrics` planes (floats + u16 hour + u8 TOU);
- * mirrors configure() in block.c. */
+/** Arena bytes per row at `metrics` planes (floats + u16 hour + u8 year +
+ * u8 TOU); mirrors configure() in block.c. */
 function rowCost(metrics: number): number {
-  return metrics * 4 + 3;
+  return metrics * 4 + 4;
 }
 
 /** Rows the arena holds at `metrics` planes, or 0. Blocks are sized from this,
@@ -75,6 +75,7 @@ export interface ParserExports {
   inbuf_size(): number;
   slab_ptr(): number;
   row_hour_ptr(): number;
+  row_year_ptr(): number;
   row_tou_ptr(): number;
   arena_bytes(): number;
   /** The layout currently configured; 0 before the first `configure`. */
@@ -85,41 +86,40 @@ export interface ParserExports {
   last_overflow(): number;
   last_wide_field(): number;
   last_bad_row(): number;
-  last_feb29(): number;
-  last_year_mismatch(): number;
+  last_out_of_range(): number;
   last_bad_tou(): number;
   last_bad_cell(): number;
   /** Lay the arena out as `numMetrics x maxRows`. Returns 0 if it will not
    * fit, and leaves the regions null so a parse writes nothing. */
   configure(numMetrics: number, maxRows: number): number;
   slab_fill_nan(rows: number): void;
-  parse_block(len: number, year: number): number;
+  parse_block(len: number, firstYear: number, numYears: number): number;
 }
 
-/** One parsed block as a ROW LIST: row `r` holds the values at `rowHour[r]`,
- * in byte order, which means nothing. */
+/** One parsed block as a ROW LIST: row `r` holds the values at
+ * (`rowYear[r]`, `rowHour[r]`), in byte order, which means nothing. */
 export interface BlockPayload {
-  /** Valid rows emitted; Feb 29 and refused rows are counted apart. */
+  /** Valid rows emitted; refused rows are counted and refused apart. */
   rows: number;
   /** data[p * rows + r], plane-major so one entity is a contiguous copy. */
   data: Float32Array;
-  /** Hour of the year each row lands on, 0..8759. Length `rows`. */
+  /** Each row's year, as an offset from the Case's `firstYear`. Length `rows`. */
+  rowYear: Uint8Array;
+  /** Hour within its year's 8,784-hour slot each row lands on. Length `rows`. */
   rowHour: Uint16Array;
   /** Per-row TOU code from the file. Length `rows`. */
   rowTou: Uint8Array;
-  /** Feb 29 rows dropped (intended, and stated). */
-  feb29: number;
 }
 
 /** A block that contributed nothing, freshly allocated every time (see
  * src/tables/long/block.ts). */
-function emptyPayload(feb29 = 0): BlockPayload {
+function emptyPayload(): BlockPayload {
   return {
     rows: 0,
     data: new Float32Array(0),
+    rowYear: new Uint8Array(0),
     rowHour: new Uint16Array(0),
     rowTou: new Uint8Array(0),
-    feb29,
   };
 }
 
@@ -160,7 +160,8 @@ export async function instantiateParser(module: WebAssembly.Module): Promise<Par
 /**
  * Parse `bytes[from, to)` (a row boundary to just after a `\n`) and lift
  * `activePlanes`. Every row carries its own hour, so blocks and rows may come
- * in any order. Rows whose year differs from `year` are refused.
+ * in any order. The Case spans `numYears` years from `firstYear`; a row
+ * dated outside them is refused.
  */
 export function parseBytes(
   parser: Parser,
@@ -169,7 +170,8 @@ export function parseBytes(
   from: number,
   to: number,
   activePlanes: Int32Array,
-  year: number,
+  firstYear: number,
+  numYears: number,
 ): BlockPayload {
   const length = to - from;
   if (length <= 0) return emptyPayload();
@@ -182,7 +184,7 @@ export function parseBytes(
   if (!exports.configure(slabMetrics, slabRows)) {
     throw new Error(
       `The parser's ${parser.budget.arenaBytes} B arena cannot hold a ` +
-        `${slabMetrics} x ${slabRows} slab (${slabMetrics * slabRows * 4 + slabRows * 3} B ` +
+        `${slabMetrics} x ${slabRows} slab (${slabRows * rowCost(slabMetrics)} B ` +
         `needed). Cut smaller blocks or build the parser with a larger ARENA_MIB.`,
     );
   }
@@ -202,7 +204,7 @@ export function parseBytes(
   // Clear the whole configured slab: a stale float from the previous block
   // would be a plausible wrong number.
   exports.slab_fill_nan(slabRows);
-  const rows = exports.parse_block(padded, year);
+  const rows = exports.parse_block(padded, firstYear, numYears);
 
   // Counters are read before the empty-block shortcut: a block whose every
   // row was refused has the most to report.
@@ -221,12 +223,13 @@ export function parseBytes(
         `an hour-ending 1-24). Those rows would be dropped silently, so the load is refused.`,
     );
   }
-  const mismatched = exports.last_year_mismatch();
-  if (mismatched > 0) {
+  const outOfRange = exports.last_out_of_range();
+  if (outOfRange > 0) {
+    const years = numYears > 1 ? `${firstYear}-${firstYear + numYears - 1}` : `${firstYear}`;
     throw new Error(
-      `${mismatched} row(s) carry a year other than ${year}, which is the year on this file's ` +
-        `first data row. A case is one calendar year of 8,760 hours, so a second year would be ` +
-        `folded onto the same hours. Split the export by year and load the files separately.`,
+      `${outOfRange} row(s) are dated outside ${years}, which this Case covers. A row from ` +
+        `another year has no place in the Case, so the load is refused rather than folding ` +
+        `it onto another year's hours.`,
     );
   }
   const badTou = exports.last_bad_tou();
@@ -252,8 +255,7 @@ export function parseBytes(
     );
   }
 
-  const feb29 = exports.last_feb29();
-  if (rows === 0) return emptyPayload(feb29);
+  if (rows === 0) return emptyPayload();
 
   // Plane-major on both sides, so each entity is one contiguous copy.
   const slab = new Float32Array(exports.memory.buffer, exports.slab_ptr(), slabMetrics * slabRows);
@@ -263,6 +265,7 @@ export function parseBytes(
     data.set(slab.subarray(src, src + rows), p * rows);
   }
 
+  const rowYear = new Uint8Array(exports.memory.buffer, exports.row_year_ptr(), slabRows);
   const rowHour = new Uint16Array(exports.memory.buffer, exports.row_hour_ptr(), slabRows);
   const rowTou = new Uint8Array(exports.memory.buffer, exports.row_tou_ptr(), slabRows);
 
@@ -271,8 +274,8 @@ export function parseBytes(
     data,
     // Copied, not viewed: transferred to the main thread, and the next block
     // reuses this memory.
+    rowYear: rowYear.slice(0, rows),
     rowHour: rowHour.slice(0, rows),
     rowTou: rowTou.slice(0, rows),
-    feb29,
   };
 }

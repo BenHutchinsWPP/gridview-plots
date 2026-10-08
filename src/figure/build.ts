@@ -17,7 +17,6 @@
 // shared, so a new pane type is one renderer, not a second layout.
 
 import type { Quantiles } from '../kernels';
-import { HOURS_PER_YEAR } from '../model/calendar';
 import { subjectLabel, type SeriesFacets } from '../series/label';
 import { scaleOf, scalesOf } from '../series/scales';
 import { placeFacts } from './facts';
@@ -54,7 +53,7 @@ export interface FigureLine {
   readonly facets?: SeriesFacets;
   readonly color: string;
   readonly unit: string;
-  /** 8,760 values, NaN where the pane shows a gap; null when refused. */
+  /** 8,784 values (the year slot), NaN where the pane shows a gap; null when refused. */
   readonly values: ArrayLike<number> | null;
   /** The drawer's grey click-preview: never part of a figure. */
   readonly dashed?: boolean;
@@ -70,7 +69,7 @@ export interface FigureLine {
 export interface FigureLimit {
   readonly color: string;
   readonly unit: string;
-  /** 8,760 values, NaN where unbounded or filtered. */
+  /** 8,784 values (the year slot), NaN where unbounded or filtered. */
   readonly values: ArrayLike<number>;
   /** A boundary's members' limits summed: named as a best case. */
   readonly summed?: boolean;
@@ -115,6 +114,9 @@ export interface FigureCapture {
   /** The interval pane's settings; required for an interval figure, whose
    * first line is the series it cut. */
   readonly interval?: FigureInterval;
+  /** The real hours of the Cases the drawn lines came from, never the slot's
+   * length: what the hours footnote counts out of. */
+  readonly realHours: number;
 }
 
 export interface FigureInput extends FigureCapture {
@@ -344,7 +346,7 @@ export function buildFigure(input: FigureInput): Figure {
     ...facts.notes,
     ...(pane.notes?.() ?? []),
     ...missingNotes(input.lines, lines, values, pane, window, facts.naming.caseLabel),
-    ...hoursNote(hours, input.hourFilter),
+    ...hoursNote(hours, input.realHours, input.hourFilter),
   ].map((note, i) => say(`footnote[${i}]`, note));
   const noteLines = notes.map((note) => wrapText(note, contentWidth, NOTE_PT, measure));
   const limitRows = limitLegendRows(limits);
@@ -630,10 +632,10 @@ function missingNotes(
   ];
 }
 
-/** The hours footnote, left out when every hour of the year is shown. */
-function hoursNote(shown: number, filter: string): string[] {
-  if (shown >= HOURS_PER_YEAR) return [];
-  const count = `${shown.toLocaleString('en-US')} of ${HOURS_PER_YEAR.toLocaleString('en-US')} hours`;
+/** The hours footnote, left out when every real hour is shown. */
+function hoursNote(shown: number, realHours: number, filter: string): string[] {
+  if (shown >= realHours) return [];
+  const count = `${shown.toLocaleString('en-US')} of ${realHours.toLocaleString('en-US')} hours`;
   return [
     filter && filter !== 'all hours'
       ? `Hours shown: ${filter} (${count})`

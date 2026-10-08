@@ -1,7 +1,9 @@
 // src/storage/legacy.ts
 //
-// Reading the two legacy bundle formats, v1 (`GVAP`, Area-only) and v2
-// (`GVIP`, Interface-only), upgraded to v3 in memory. One-way: the original
+// Reading the older bundle formats, v1 (`GVAP`, Area-only) and v2
+// (`GVIP`, Interface-only) into the v3 manifest, and v3 as it is: each kind's
+// `deserialize` then puts a v3 table on the 8,784-hour slot (see
+// `PRE_SLOT_VERSION`). All in memory and one-way: the original
 // is never rewritten (it may be the user's only copy). Kept out of
 // `store.ts` so the live save path carries nothing about formats nothing
 // writes.
@@ -15,6 +17,7 @@ import { slotKey, type TableSlotKey } from '../model/case-model';
 import {
   BUNDLE_VERSION,
   BYTES_TAG,
+  PRE_SLOT_VERSION,
   type ManifestCaseV3,
   type ManifestTableV3,
   type ManifestV3,
@@ -112,7 +115,7 @@ function migrateAreaManifest(raw: LegacyAreaManifest): ManifestV3 {
     };
   });
 
-  const manifest: ManifestV3 = { version: BUNDLE_VERSION, cases };
+  const manifest: ManifestV3 = { version: PRE_SLOT_VERSION, cases };
   // Only GVAP carries groupings, and only when non-empty.
   if (raw.groupings !== undefined) manifest.groupings = raw.groupings;
   return manifest;
@@ -144,7 +147,7 @@ function migrateInterfaceManifest(raw: LegacyInterfaceManifest): ManifestV3 {
     };
   });
 
-  return { version: BUNDLE_VERSION, cases };
+  return { version: PRE_SLOT_VERSION, cases };
 }
 
 /** The manifest's declared version, refused (never defaulted) when missing or
@@ -173,7 +176,8 @@ function migratedNote(version: number, what: string): string {
  * Migrate-or-refuse on `manifest.version`: the ONE function both entry points
  * use. `readBundleFile` maps its magic to a version first; `loadBundle` (OPFS,
  * no magic) reads the version directly. Pure: cubes pass through untouched,
- * since a v1/v2 case holds one table whose cube is the whole case block.
+ * since a v1/v2 case holds one table whose cube is the whole case block, and
+ * Feb 29 is inserted per table, where the plane count is known.
  */
 export function migrateManifest(
   raw: unknown,
@@ -187,6 +191,14 @@ export function migrateManifest(
       `Saved bundle is version ${version}; this build reads version ${BUNDLE_VERSION}. ` +
         `Upgrade the app to open it.`,
     );
+  }
+  if (version === PRE_SLOT_VERSION) {
+    // The manifest is unchanged; each kind's `deserialize` inserts Feb 29.
+    return {
+      manifest: raw as ManifestV3,
+      cubes,
+      warnings: [migratedNote(PRE_SLOT_VERSION, 'Feb 29 not kept')],
+    };
   }
   if (version === 1) {
     return {
@@ -203,6 +215,6 @@ export function migrateManifest(
     };
   }
   throw new Error(
-    `Saved bundle is version ${version}; this build reads versions 1, 2 and ${BUNDLE_VERSION}.`,
+    `Saved bundle is version ${version}; this build reads versions 1, 2, ${PRE_SLOT_VERSION} and ${BUNDLE_VERSION}.`,
   );
 }

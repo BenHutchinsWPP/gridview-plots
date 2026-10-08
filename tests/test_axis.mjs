@@ -3,7 +3,7 @@
 // is SILENT (one area's numbers under another's name), so it is checked
 // against the bytes of real ingested cubes:
 //
-//   1. every cube is axis.length × metrics.length × 8760 values;
+//   1. every cube is axis.length × metrics.length × 8784 values;
 //   2. every present plane lands at its NEW index, byte-identical, presence
 //      kept;
 //   3. planes for areas a file never carried are presence 0 and NaN, never 0.
@@ -19,9 +19,9 @@ const { finalizeCase, AREA_LONG } = await import('../src/tables/area/long.ts');
 const { createAccumulator, blitBlock, unionEntities } = await import('../src/tables/long/pool.ts');
 const { reindexCase, sameAxis } = await import('../src/tables/area/axis.ts');
 const { CaseStore } = await import('../src/model/case-model.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 const NEWLINE = 10;
 
 let checks = 0;
@@ -97,6 +97,7 @@ async function ingestFile(file, areas, label, metrics = METRICS) {
       plan.sourceMetricCount,
       scan.rows,
       YEAR,
+      1,
     ),
   );
   return finalizeCase(accumulator, label, header.metricNames, YEAR, areas).data;
@@ -217,7 +218,7 @@ for (const [label, after] of [
   assert.equal(
     after.cube.length,
     axis.length * METRICS.length * HOURS,
-    `${label}: cube is axis x metrics x 8760`,
+    `${label}: cube is axis x metrics x 8784`,
   );
   assert.equal(
     after.presence.length,

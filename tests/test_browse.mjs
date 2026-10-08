@@ -25,7 +25,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import './test_loader.mjs';
 
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS, realHours } = await import('../src/model/calendar.ts');
 const { RANKED, RANKED_FIELDS } = await import('../src/kernels.ts');
 const { planeStartsFor, rankScopedRows } = await import('../src/ui/browse-planes.ts');
 const {
@@ -96,7 +96,10 @@ const {
 /** The Case labels a drawer export resolves rows' Case ids through. */
 const CASE_LABELS = (caseId) => ({ c1: 'Case 1', c2: 'Case 2' })[caseId] ?? caseId;
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
+/** What a 2031 fixture keeps through a calendar mask: the slot less its
+ * phantom Feb 29. */
+const REAL_HOURS = realHours(2031, 1);
 let checks = 0;
 function ok(label) {
   checks++;
@@ -3432,7 +3435,7 @@ const interfaceTableIn = (data) => ({
     // the set; all members gone is the empty-bucket refusal.
     const ghost = drawGen({ ...spec, subject: { ...spec.subject, members: ['ALDER', 'GHOST'] } });
     assert.equal(ghost.stats.mean, 10);
-    assert.equal(ghost.n, HOURS);
+    assert.equal(ghost.n, REAL_HOURS);
     ok('a frozen member gone from the study simply does not contribute');
     const emptied = drawGen({ ...spec, subject: { ...spec.subject, members: ['GHOST'] } });
     assert.equal(emptied.values, null);
@@ -3738,7 +3741,7 @@ const interfaceTableIn = (data) => ({
   };
   assert.equal(filtersLabel(NONE), 'all hours');
   assert.equal(
-    filtersLabel({ ...NONE, dates: [{ start: 50, end: 68 }], hoursOfDay: new Set([24, 2]) }),
+    filtersLabel({ ...NONE, dates: [{ start: 50, end: 69 }], hoursOfDay: new Set([24, 2]) }),
     'Dates: Feb 20 – Mar 10 · Hour (HE): 2, 24',
   );
   assert.equal(
@@ -3755,7 +3758,7 @@ const interfaceTableIn = (data) => ({
       ...NONE,
       dates: [
         { start: 50, end: 52 },
-        { start: 194, end: 194 },
+        { start: 195, end: 195 },
       ],
     }),
     'Dates: Feb 20 – Feb 22, Jul 14',
@@ -4294,17 +4297,17 @@ const interfaceTableIn = (data) => ({
   // 1 of table 2 are absent from their cubes, so their stats must be blank
   // rather than whatever sits at offset 0.
   const plane = (fill) => {
-    const values = new Float32Array(HOURS_PER_YEAR);
+    const values = new Float32Array(YEAR_SLOT_HOURS);
     values.fill(fill);
     return values;
   };
   const cubeOf = (a, b) => {
-    const cube = new Float32Array(2 * HOURS_PER_YEAR);
+    const cube = new Float32Array(2 * YEAR_SLOT_HOURS);
     cube.set(plane(a), 0);
-    cube.set(plane(b), HOURS_PER_YEAR);
+    cube.set(plane(b), YEAR_SLOT_HOURS);
     return cube;
   };
-  const mask = new Uint8Array(HOURS_PER_YEAR);
+  const mask = new Uint8Array(YEAR_SLOT_HOURS);
   mask.fill(1);
   const tables = [
     { data: { cube: cubeOf(4, 999), presence: new Uint8Array([1, 0]) }, mask },
@@ -4318,9 +4321,9 @@ const interfaceTableIn = (data) => ({
     axisIndexOf: (row) => axisIndexes[row],
     planesOf: (data) => ({
       presence: data.presence,
-      planeStart: (axisIndex) => axisIndex * HOURS_PER_YEAR,
+      planeStart: (axisIndex) => axisIndex * YEAR_SLOT_HOURS,
     }),
-    scratch: new Float32Array(HOURS_PER_YEAR),
+    scratch: new Float32Array(YEAR_SLOT_HOURS),
   });
   assert.equal(ranked.length, 4 * RANKED_FIELDS, 'one row of fields per scoped row');
   const mean = (row) => ranked[row * RANKED_FIELDS + RANKED.mean];

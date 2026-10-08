@@ -27,7 +27,7 @@
 //     (`./limits.ts`). Only MW/MWh is divided by a limit; any other unit
 //     divides by its own peak.
 
-import { HOURS_PER_YEAR, buildCalendar, buildMask } from '../../model/calendar';
+import { YEAR_SLOT_HOURS, buildCalendar, buildMask } from '../../model/calendar';
 import {
   refusedSeries,
   type ResolveOptions,
@@ -133,7 +133,7 @@ export function resolveInterfaceSeries(
     rangeText = coefficients ? rangeLabel(use, SUMMED_LIMITS) : rangeLabel(use);
   }
 
-  for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
     buffers.display[hour] = buffers.mask[hour] === 1 ? buffers.series[hour] : NaN;
   }
 

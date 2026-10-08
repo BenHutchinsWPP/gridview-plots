@@ -6,7 +6,7 @@
 // tests/test_ingest_area.mjs drives it directly in Node.
 
 /** block.c's ABI_VERSION; a stale committed binary fails at instantiate. */
-export const PARSER_ABI = 8;
+export const PARSER_ABI = 9;
 
 import { afterNextNewline, NEWLINE } from '../../ingest';
 
@@ -25,13 +25,14 @@ export interface ParserExports {
   row_area_ptr(): number;
   row_hour_ptr(): number;
   row_tou_ptr(): number;
+  row_year_ptr(): number;
   area_seen_ptr(): number;
   last_rows(): number;
   last_emitted(): number;
   last_unknown_area(): number;
   last_bad_row(): number;
   last_overflow(): number;
-  last_year_mismatch(): number;
+  last_out_of_range(): number;
   last_bad_id(): number;
   last_bad_tou(): number;
   last_bad_cell(): number;
@@ -39,13 +40,17 @@ export interface ParserExports {
   set_key_layout(keyCols: number, entityCol: number): number;
   area_table_reset(): void;
   area_table_put(hash: number, idx: number): number;
-  parse_block(len: number, year: number): number;
+  parse_block(len: number, firstYear: number, numYears: number): number;
   scan_axis(len: number): number;
   axis_names(): number;
   axis_off_ptr(): number;
   axis_len_ptr(): number;
   axis_rows(): number;
   axis_overflow(): number;
+  scan_min_year(): number;
+  scan_years(): number;
+  scan_year_rows_ptr(): number;
+  scan_year_overflow(): number;
 }
 
 /** Where a long export's key columns end and metrics begin: numbers only, so
@@ -64,11 +69,19 @@ export interface AxisScan {
   names: string[];
   /** Non-blank rows: the exact `maxRows` for a parse of these bytes. */
   rows: number;
+  /** The earliest and latest year a row's Date names, or NaN for both when
+   * no Date reads (the parse refuses those rows with the reason). */
+  minYear: number;
+  maxYear: number;
+  /** `yearRows[k]` rows are dated in year `minYear + k`; a zero inside the
+   * span is a year this block skips. Rows with an unreadable Date are not in
+   * it. */
+  yearRows: number[];
 }
 
 /** One parsed block as a ROW LIST: each row carries its own placement. */
 export interface BlockPayload {
-  /** Rows placed; Feb 29 and unplaceable rows are excluded. */
+  /** Rows placed; unplaceable rows are refused before a payload exists. */
   rows: number;
   /** Non-blank rows, placed or not. */
   scanned: number;
@@ -76,6 +89,9 @@ export interface BlockPayload {
   /** values[row * planes + p] for active plane p. */
   values: Float32Array;
   rowEntity: Uint16Array;
+  /** Each row's year, as an offset from the Case's `firstYear`. */
+  rowYear: Uint8Array;
+  /** Each row's hour within its year's 8,784-hour slot. */
   rowHour: Uint16Array;
   /** Each row's TOU code from the file, 0 = OffPeak, 1 = OnPeak. Per row, so
    * `blitBlock` is the one place two rows' TOU for an hour are compared. */
@@ -93,6 +109,7 @@ function emptyPayload(entityCount: number, planes: number): BlockPayload {
     planes,
     values: new Float32Array(0),
     rowEntity: new Uint16Array(0),
+    rowYear: new Uint8Array(0),
     rowHour: new Uint16Array(0),
     rowTou: new Uint8Array(0),
     entitySeen: new Uint8Array(entityCount),
@@ -165,16 +182,16 @@ function loadInbuf(parser: ParserExports, bytes: Uint8Array, from: number, to: n
   return padded;
 }
 
-/** Read one block's identity column only: distinct names and the non-blank
- * row count. Skips metric fields whole, so it costs about a quarter of a
- * parse. */
+/** Read one block's identity column and each Date's year only: distinct
+ * names, the non-blank row count and the rows per year. Skips metric fields
+ * whole, so it costs about a quarter of a parse. */
 export function scanAxis(
   parser: ParserExports,
   bytes: Uint8Array,
   from: number,
   to: number,
 ): AxisScan {
-  if (to - from <= 0) return { names: [], rows: 0 };
+  if (to - from <= 0) return { names: [], rows: 0, minYear: NaN, maxYear: NaN, yearRows: [] };
 
   const padded = loadInbuf(parser, bytes, from, to);
   const rows = parser.scan_axis(padded);
@@ -188,6 +205,19 @@ export function scanAxis(
     );
   }
 
+  const yearOverflow = parser.scan_year_overflow();
+  if (yearOverflow > 0) {
+    throw new Error(
+      `This block's dates span more than 256 years (${yearOverflow} row(s) past them). A Case ` +
+        `spans at most 256 years, so the load is refused.`,
+    );
+  }
+  const years = parser.scan_years();
+  const minYear = years > 0 ? parser.scan_min_year() : NaN;
+  const yearRows = Array.from(
+    new Uint32Array(parser.memory.buffer, parser.scan_year_rows_ptr(), years),
+  );
+
   const count = parser.axis_names();
   const inbufPtr = parser.inbuf_ptr();
   const offsets = new Uint32Array(parser.memory.buffer, parser.axis_off_ptr(), count);
@@ -200,14 +230,15 @@ export function scanAxis(
     names.push(decoder.decode(memory.subarray(at, at + lengths[i])));
   }
 
-  return { names, rows };
+  return { names, rows, minYear, maxYear: minYear + years - 1, yearRows };
 }
 
 /**
  * Parse `bytes[from, to)` (a row boundary to just after a `\n`) into a row
  * list of the retained planes. `maxRows` is the scan's exact count; an
- * overflow is refused, never truncated. Any row order parses the same. `year`
- * is the Case's, read off its first data row; a row in any other is refused.
+ * overflow is refused, never truncated. Any row order parses the same. The
+ * Case spans `numYears` years from `firstYear`; a row dated outside them is
+ * refused.
  */
 export function parseBytes(
   parser: ParserExports,
@@ -218,7 +249,8 @@ export function parseBytes(
   entityCount: number,
   sourceMetricCount: number,
   maxRows: number,
-  year: number,
+  firstYear: number,
+  numYears: number,
 ): BlockPayload {
   const planes = activePlanes.length;
   if (to - from <= 0 || maxRows === 0) return emptyPayload(entityCount, planes);
@@ -241,8 +273,8 @@ export function parseBytes(
   planeOf.fill(-1);
   for (let p = 0; p < planes; p++) planeOf[activePlanes[p]] = p;
 
-  const scanned = parser.parse_block(loadInbuf(parser, bytes, from, to), year);
-  refuseCounted(parser, maxRows, year);
+  const scanned = parser.parse_block(loadInbuf(parser, bytes, from, to), firstYear, numYears);
+  refuseCounted(parser, maxRows, firstYear, numYears);
 
   const rows = parser.last_emitted();
   if (rows === 0) return emptyPayload(entityCount, planes);
@@ -253,6 +285,7 @@ export function parseBytes(
     planes,
     values: new Float32Array(parser.memory.buffer, parser.values_ptr(), rows * planes).slice(),
     rowEntity: new Uint16Array(parser.memory.buffer, parser.row_area_ptr(), rows).slice(),
+    rowYear: new Uint8Array(parser.memory.buffer, parser.row_year_ptr(), rows).slice(),
     rowHour: new Uint16Array(parser.memory.buffer, parser.row_hour_ptr(), rows).slice(),
     rowTou: new Uint8Array(parser.memory.buffer, parser.row_tou_ptr(), rows).slice(),
     entitySeen: new Uint8Array(parser.memory.buffer, parser.area_seen_ptr(), entityCount).slice(),
@@ -264,7 +297,12 @@ export function parseBytes(
  * row is counted against one refusal, in the order C checks them, so the
  * first message here names the first thing wrong with the file.
  */
-function refuseCounted(parser: ParserExports, maxRows: number, year: number): void {
+function refuseCounted(
+  parser: ParserExports,
+  maxRows: number,
+  firstYear: number,
+  numYears: number,
+): void {
   const overflow = parser.last_overflow();
   if (overflow > 0) {
     throw new Error(
@@ -280,12 +318,13 @@ function refuseCounted(parser: ParserExports, maxRows: number, year: number): vo
         `column. Those rows would be dropped silently, so the load is refused.`,
     );
   }
-  const mismatched = parser.last_year_mismatch();
-  if (mismatched > 0) {
+  const outOfRange = parser.last_out_of_range();
+  if (outOfRange > 0) {
+    const years = numYears > 1 ? `${firstYear}-${firstYear + numYears - 1}` : `${firstYear}`;
     throw new Error(
-      `${mismatched} row(s) carry a year other than ${year}, which is the year on this file's ` +
-        `first data row. A case is one calendar year of 8,760 hours, so a second year would be ` +
-        `folded onto the same hours. Split the export by year and load the files separately.`,
+      `${outOfRange} row(s) are dated outside ${years}, which this Case covers. A row from ` +
+        `another year has no place in the Case, so the load is refused rather than folding ` +
+        `it onto another year's hours.`,
     );
   }
   const badId = parser.last_bad_id();

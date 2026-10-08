@@ -8,7 +8,7 @@
 // The sort is monotonic, so thinning a curve keeps its shape exactly: each
 // output column's lowest and highest point are its first and last.
 
-import { HOURS_PER_YEAR } from '../model/calendar';
+import { YEAR_SLOT_HOURS } from '../model/calendar';
 import { circle, polyline } from './svg';
 import { thinLine } from './thin';
 import { COLUMNS_PER_PT } from './time';
@@ -68,7 +68,7 @@ export const DURATION_PANE: PaneRenderer = {
   // which hours are in them: every kept hour is part of the curve.
   hoursShown(lines) {
     let count = 0;
-    for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+    for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
       if (lines.some((values) => !Number.isNaN(values[hour]))) count++;
     }
     return count;

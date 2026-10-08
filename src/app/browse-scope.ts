@@ -4,7 +4,7 @@
 // cases, under the hour filter. The same arithmetic for every kind, generic
 // over the kind's row type so this module never learns what it holds.
 
-import { buildCalendar, buildMask, DAY_NAMES, HOURS_PER_YEAR } from '../model/calendar';
+import { buildCalendar, buildMask, DAY_NAMES, YEAR_SLOT_HOURS } from '../model/calendar';
 import { setLabel } from '../model/date-range';
 import type { Filters } from '../model/types';
 
@@ -175,7 +175,7 @@ export function createBrowseScopes(): BrowseScopes {
       const tables = scoped.map((row) => {
         let mask = masks.get(row.data);
         if (!mask) {
-          mask = new Uint8Array(HOURS_PER_YEAR);
+          mask = new Uint8Array(YEAR_SLOT_HOURS);
           masks.set(row.data, mask);
         }
         buildMask(filters, buildCalendar(row.data.year), row.data.tou, mask);

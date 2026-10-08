@@ -2,11 +2,11 @@
 //
 // The long-shape drop's metric picker. In shape L the entities are ROWS, so
 // their count is unknown until the scan and the metric axis is the only
-// choice; this is where the coming allocation (entities x metrics x 8760 x
+// choice; this is where the coming allocation (entities x metrics x 8784 x
 // 4 B) is priced BEFORE it is attempted. Kind-neutral: it takes a noun and a
 // list of strings. Area's own picker groups by area's rules and is separate.
 
-import { HOURS_PER_YEAR } from '../model/calendar';
+import { YEAR_SLOT_HOURS } from '../model/calendar';
 import { confirmLargeAllocation } from './confirm-allocation';
 
 const BYTES_PER_VALUE = 4; // Float32Array
@@ -42,7 +42,7 @@ export function showLongMetricPicker(request: LongMetricPickerRequest): Promise<
   // The same product `createAccumulator` is about to hand to
   // `new Float32Array`, per file, so the number on screen, the number in the
   // confirmation and the number in the refusal cannot disagree.
-  const perMetric = entityCount * HOURS_PER_YEAR * BYTES_PER_VALUE;
+  const perMetric = entityCount * YEAR_SLOT_HOURS * BYTES_PER_VALUE;
 
   // An unpriced multi-GB allocation is what a skipped picker must not become.
   if (request.everything) {
@@ -146,7 +146,7 @@ export function showLongMetricPicker(request: LongMetricPickerRequest): Promise<
       readout.textContent =
         `${chosen.size} metric${chosen.size === 1 ? '' : 's'} × ` +
         `${entityCount.toLocaleString()} ${noun}${entityCount === 1 ? '' : 's'} × ` +
-        `${HOURS_PER_YEAR} h × 4 B ≈ ${(bytes / (1024 * 1024)).toFixed(0)} MB` +
+        `${YEAR_SLOT_HOURS} h × 4 B ≈ ${(bytes / (1024 * 1024)).toFixed(0)} MB` +
         (fileCount === 1 ? '' : ` across ${fileCount} files`);
       confirm.disabled = chosen.size === 0;
     }

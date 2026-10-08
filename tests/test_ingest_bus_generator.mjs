@@ -25,9 +25,9 @@ const generatorWide = await import('../src/tables/generator/wide.ts');
 const { serializeBusTable, deserializeBusTable } = await import('../src/tables/bus/types.ts');
 const { serializeGeneratorTable, deserializeGeneratorTable } =
   await import('../src/tables/generator/types.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 const NEWLINE = 10;
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -97,7 +97,7 @@ function loadWide(bytes, plan, spec, finalize, blockBytes = 32 * 1024) {
     if (to <= from) continue;
     blitBlock(
       accumulator,
-      parseBytes(parser, layout, bytes, from, to, columnPlan.activePlanes, plan.year),
+      parseBytes(parser, layout, bytes, from, to, columnPlan.activePlanes, plan.year, 1),
     );
   }
   const shaped = finalizeWide(accumulator, 'case', plan.year, plan.title, spec);

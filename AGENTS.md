@@ -88,13 +88,31 @@ committed binary fails at instantiate instead of misreading rows.
 `tests/test_rot_guards.mjs` asserts they agree and that no other file states
 an ABI number.
 
+**`rowHour` is the hour within one year's slot (u16, 0..8783), never an index
+across a span.** A u16 span index wraps at 65,535 hours, 7.46 years in, and
+folds later years onto earlier hours. The year leaves wasm apart, as the u8
+`rowYear` offset from `firstYear`. Asserted by `tests/test_long_refusals.mjs`
+on a nine-year file.
+
 ### Ingest
 
 - The axis is read from the file, never assumed. Column counts and order vary.
 - **Row order carries no meaning.** A value-sorted export must load
   byte-identically to a date-ordered one. Do not add an ordering check.
-- Feb 29 is dropped, so every case is 8,760 hours. Both `block.c` files
-  enforce it; no kind derives it differently.
+- **Every year is a fixed 8,784-hour slot on the leap calendar** (Feb 29 =
+  hours 1416..1439), so a date is the same index in every year and Case and
+  overlay, downloads and the date filter need no per-year mapping. Rejected:
+  true hours per year, which would make each of those map dates per year. A
+  non-leap year's Feb 29 is NaN and flagged phantom in the calendar, with no
+  weekday. A Feb 29 dated in a non-leap year is a bad date, refused by both
+  `block.c` files, never a blank to fill.
+- **The slot is storage, never a count.** Every "N of M hours", coverage check
+  and status sentence uses `realHours`, so a non-leap Case reads 8,760 of
+  8,760, never 8,760 of 8,784. Asserted by `tests/test_calendar.mjs`,
+  `tests/test_long_refusals.mjs`, `tests/test_ingest_interface.mjs`,
+  `tests/test_ingest_area.mjs`, `tests/test_drop_load.mjs`,
+  `tests/test_render_frame.mjs`, `tests/test_panes.mjs` and
+  `tests/test_figure.mjs`.
 - Hour is hour-ending 1-24, converted with `hour - 1`. A new kind's parsing
   must state its convention and prove it with a fixture.
 - One row per (entity, hour). A duplicate is refused with a coverage map,
@@ -148,6 +166,12 @@ Bundles are `.gvmb`. The OPFS migration from the legacy blob is one-way:
 old blobs are upgraded in memory, never written back, never deleted (it may be
 the user's only copy).
 
+**A v4 table entry carries `firstYear`/`numYears` beside `year` and 8,784 hours
+per plane.** A v3 (or legacy) entry has no `numYears`: `savedHoursOnSlot` inserts
+a blank Feb 29 inside every plane, never padding the end, which would put every
+hour after Feb 28 a day off. v3 is read, never written. Asserted by
+`tests/test_storage.mjs`.
+
 **Anything a bundle saves against a Case names it by its index in the
 manifest's `cases`, never by a Case id.** Restore mints fresh ids, so id-keyed
 entries need a remap on every restore path. A pin's row id is rebuilt at
@@ -166,6 +190,12 @@ The Contents inventory's session-input keys (`limits (shared)`,
 `groups:<kind>`, the lookup variants) are wire format as well. A restore
 replaces a session row only when the bundle carried that input and it was
 adopted, so the strip never names a file whose content was not taken up.
+
+**An hourly download's rows are the 8,784-hour slot**, so the same date is the
+same row in every year and Case. Wide always writes Feb 29, blank for a
+non-leap series; long writes a non-leap series no Feb 29 rows. `HourOfYear` is
+the 0-based slot hour (Mar 1 HE 1 is 1440 in every year), never the real hour
+of the year. Asserted by `tests/test_hourly_csv.mjs`.
 
 ### UI
 

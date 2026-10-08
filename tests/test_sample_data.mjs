@@ -80,6 +80,16 @@ try {
     'bus-long.csv': ['bus', 'L'],
     'generator-wide.csv': ['generator', 'W'],
     'generator-long.csv': ['generator', 'L'],
+    'area-wide-multiyear.csv': ['area', 'W'],
+    'bus-long-multiyear.csv': ['bus', 'L'],
+    'area-long-nineyear.csv': ['area', 'L'],
+    'area-wide-multiyear-gap.csv': ['area', 'W'],
+    'bus-long-multiyear-duplicate.csv': ['bus', 'L'],
+    'area-long-multiyear-feb29-nonleap.csv': ['area', 'L'],
+    'area-wide-split-years-a.csv': ['area', 'W'],
+    'area-wide-split-years-b.csv': ['area', 'W'],
+    'case-mixedrange-area-wide.csv': ['area', 'W'],
+    'case-mixedrange-bus-long.csv': ['bus', 'L'],
     'bus-list.csv': ['bus', 'R'],
     'generator-list.csv': ['generator', 'R'],
     'groupings.csv': ['groupings', undefined],
@@ -114,6 +124,10 @@ try {
   }
 
   // --- 3. the real case-plan readers accept them ---------------------------
+  //
+  // The multi-year files, their anomalies and the year-split pair are left
+  // out: a case plan carries one year, read off the first data row, and a
+  // span has several.
 
   {
     const plan = await areaWide.readCasePlan(fileOf('area-wide.csv'));
@@ -436,6 +450,166 @@ try {
       header.some((name) => !listed.has(name.trim())),
       'an hourly generator that the list has never heard of',
     );
+  });
+
+  /** Data rows of a wide or long file as [year, month, day, hour], from the
+   *  Date and Hour cells wherever its header puts them. */
+  function datedRows(name) {
+    const lines = textOf(dirA, name).trim().split('\r\n');
+    const headerAt = lines.findIndex((line) => /^Date\s*,/.test(line));
+    return lines.slice(headerAt + 1).map((line) => {
+      const [date, hour] = splitCsvLine(line);
+      const [month, day, year] = date.split('/').map(Number);
+      return [year, month, day, Number(hour)];
+    });
+  }
+  const isLeap = (y) => y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
+  const yearsOf = (name) => [...new Set(datedRows(name).map(([y]) => y))].sort((a, b) => a - b);
+  const contiguous = (years) => years.every((y, i) => i === 0 || y === years[i - 1] + 1);
+  const MULTI_YEAR = ['area-wide-multiyear.csv', 'bus-long-multiyear.csv'];
+
+  property('a contiguous multi-year span, one file of each shape', () => {
+    assert.deepEqual(
+      MULTI_YEAR.map((name) => ROUTES[name][1]).sort(),
+      ['L', 'W'],
+      'one file of each shape',
+    );
+    for (const name of MULTI_YEAR) {
+      const years = yearsOf(name);
+      assert.equal(years.length, 3, `${name} spans ${years}`);
+      assert.ok(contiguous(years), `${name} skips a year: ${years}`);
+    }
+    const dateLine = textOf(dirA, 'area-wide-multiyear.csv').split('\r\n')[2];
+    const years = yearsOf('area-wide-multiyear.csv');
+    const [first, last] = [years[0], years[years.length - 1]];
+    assert.match(
+      textOf(dirA, 'area-wide-multiyear.csv').split('\r\n')[0],
+      new RegExp(`Data for Year ${first}$`),
+      'the title keeps one year, the first, singular',
+    );
+    assert.match(
+      dateLine,
+      new RegExp(
+        `^\\(From the first hour of \\d+/\\d+/${first} to the last hour of \\d+/\\d+/${last}\\.`,
+      ),
+      'the date line spans the whole run',
+    );
+  });
+
+  property('Feb 29 rows in the one leap year of a multi-year span', () => {
+    for (const name of MULTI_YEAR) {
+      const leapYears = yearsOf(name).filter(isLeap);
+      assert.equal(leapYears.length, 1, `${name} spans exactly one leap year`);
+      const feb29 = datedRows(name).filter(([, m, d]) => m === 2 && d === 29);
+      assert.ok(feb29.length > 0, `${name} carries Feb 29 rows`);
+      assert.ok(
+        feb29.every(([y]) => y === leapYears[0]),
+        `${name}: every Feb 29 row is in ${leapYears[0]}`,
+      );
+    }
+  });
+
+  property('rows shuffled across years', () => {
+    const years = datedRows('bus-long-multiyear.csv').map(([y]) => y);
+    const descents = years.filter((y, i) => i > 0 && y < years[i - 1]).length;
+    assert.ok(descents > 1, 'a later year comes before an earlier one, more than once');
+  });
+
+  property('a 9-year span, past hour 65,535', () => {
+    const rows = datedRows('area-long-nineyear.csv');
+    const years = yearsOf('area-long-nineyear.csv');
+    assert.equal(years.length, 9, `spans ${years}`);
+    assert.ok(contiguous(years), `skips a year: ${years}`);
+    assert.ok(
+      rows.some(([y]) => y === years[8]),
+      'the ninth year carries rows',
+    );
+    // Counted in true hours, the shortest count a span reader could use, so
+    // the 8,784-hour slot only pushes these rows further past the wrap.
+    const spanHour = ([y, m, d, h]) => {
+      let hours = 0;
+      for (let year = years[0]; year < y; year++) hours += isLeap(year) ? 8784 : 8760;
+      const dayOfYear = new Date(Date.UTC(y, m - 1, d)) - new Date(Date.UTC(y, 0, 1));
+      return hours + (dayOfYear / 86400000) * 24 + h - 1;
+    };
+    const latest = Math.max(...rows.map(spanHour));
+    assert.ok(latest > 65535, `the latest row is span hour ${latest}, inside a u16`);
+  });
+
+  /** Every (entity, date, hour) a wide or long file writes, one string each,
+   *  repeats kept. A long row's entity is its first key column. */
+  function entityHours(name) {
+    const lines = textOf(dirA, name).trim().split('\r\n');
+    const headerAt = lines.findIndex((line) => /^Date\s*,/.test(line));
+    const entities = splitCsvLine(lines[headerAt])
+      .slice(3)
+      .map((cell) => cell.trim());
+    return lines.slice(headerAt + 1).flatMap((line) => {
+      const [date, hour, , key] = splitCsvLine(line);
+      return ROUTES[name][1] === 'W'
+        ? entities.map((entity) => `${entity}@${date} ${hour}`)
+        : [`${key}@${date} ${hour}`];
+    });
+  }
+  const repeated = (keys) => keys.filter((key, i) => keys.indexOf(key) !== i);
+
+  property('a multi-year span with a gap year', () => {
+    const years = yearsOf('area-wide-multiyear-gap.csv');
+    assert.equal(years.length, 2, `spans ${years}`);
+    assert.ok(!contiguous(years), `skips no year: ${years}`);
+    const missing = years[0] + 1;
+    assert.ok(!years.includes(missing) && years[1] === missing + 1, `${missing} alone is missing`);
+    assert.match(
+      textOf(dirA, 'area-wide-multiyear-gap.csv').split('\r\n')[2],
+      new RegExp(`to the last hour of \\d+/\\d+/${years[1]}\\.`),
+      'the date line still claims the whole run',
+    );
+  });
+
+  property('a duplicate (entity, hour) in year 2 of a span', () => {
+    const name = 'bus-long-multiyear-duplicate.csv';
+    const years = yearsOf(name);
+    assert.equal(years.length, 3, `spans ${years}`);
+    const dupes = repeated(entityHours(name));
+    assert.equal(dupes.length, 1, `exactly one key is written twice: ${dupes}`);
+    assert.ok(
+      dupes[0].includes(`/${years[1]} `),
+      `the duplicate ${dupes[0]} is in ${years[1]}, the second year`,
+    );
+  });
+
+  property('a Feb 29 row in a non-leap year of a span', () => {
+    const name = 'area-long-multiyear-feb29-nonleap.csv';
+    const feb29 = datedRows(name).filter(([, m, d]) => m === 2 && d === 29);
+    const bad = feb29.filter(([y]) => !isLeap(y));
+    assert.equal(bad.length, 1, 'one row on a Feb 29 its year does not have');
+    assert.ok(
+      feb29.some(([y]) => isLeap(y)),
+      'beside the real Feb 29 rows of the leap year',
+    );
+    assert.deepEqual(repeated(entityHours(name)), [], 'and no other anomaly');
+  });
+
+  property('a same-study pair split by years, contiguous', () => {
+    const [a, b] = ['area-wide-split-years-a.csv', 'area-wide-split-years-b.csv'];
+    assert.deepEqual(yearsOf(a), [2030, 2031]);
+    assert.deepEqual(yearsOf(b), [2032]);
+    assert.ok(contiguous([...yearsOf(a), ...yearsOf(b)]), 'the union skips no year');
+    const header = (name) => textOf(dirA, name).split('\r\n')[4];
+    assert.equal(header(a), header(b), 'one entity axis');
+    assert.deepEqual(
+      repeated([...entityHours(a), ...entityHours(b)]),
+      [],
+      'no (area, hour) in both',
+    );
+  });
+
+  property('a Case whose Area and Bus ranges differ', () => {
+    const [area, bus] = ['case-mixedrange-area-wide.csv', 'case-mixedrange-bus-long.csv'];
+    assert.equal(ROUTES[area][0], 'area');
+    assert.equal(ROUTES[bus][0], 'bus');
+    for (const name of [area, bus]) assert.ok(contiguous(yearsOf(name)), `${name} skips a year`);
+    assert.notDeepEqual(yearsOf(area), yearsOf(bus), 'the two tables span different years');
   });
 
   // Nothing claimed and unasserted: the manifest is a promise the suite keeps.

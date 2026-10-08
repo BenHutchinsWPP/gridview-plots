@@ -1315,7 +1315,7 @@ console.log(
         refusing,
       ]),
     );
-    const series = { name: 'SAMPLE', color: '#1f77b4', unit: 'MW', values: new Float32Array(8760) };
+    const series = { name: 'SAMPLE', color: '#1f77b4', unit: 'MW', values: new Float32Array(8784) };
     createPane(0, elements, {}, factories, 'box').render(frameOf([series]));
     assert.deepEqual(
       elements.body.querySelectorAll('.pane-banner-refusal').map((node) => node.textContent),
@@ -1392,6 +1392,29 @@ console.log(
       ['menu default'],
       'a Ctrl-click on the strip opens no menu on macOS, where it is a right-click',
     );
+  }
+  {
+    // The readout counts real hours: the slot's 8,784 is storage, and a
+    // phantom Feb 29 holds none.
+    const readout = (dates, years) => {
+      const host = new FakeElement();
+      createDateStrip(host, () => {}).render(dates, years);
+      const summary = host.querySelector('.ds-readout').children[0];
+      return summary.children.map((node) => node.textContent).join('');
+    };
+    assert.equal(readout(null, [2031]), 'All dates · 8,760 of 8,760 h');
+    assert.equal(readout(null, [2032]), 'All dates · 8,784 of 8,784 h');
+    assert.equal(readout(null, [2031, 2032]), 'All dates · 8,784 of 8,784 h');
+    assert.equal(readout(null, []), 'All dates · 8,760 of 8,760 h');
+    const feb = [{ start: 58, end: 60 }];
+    assert.equal(readout(feb, [2031]), '2 days · 48 of 8,760 h', 'Feb 29 of 2031 is no day');
+    assert.equal(readout(feb, [2032]), '3 days · 72 of 8,784 h');
+    const year = [{ start: 0, end: 365 }];
+    assert.equal(readout(year, [2031]), '365 days · 8,760 of 8,760 h');
+    assert.equal(readout(year, [2031, 2032]), '366 days · 8,784 of 8,784 h');
+    const week = [{ start: 56, end: 62 }];
+    assert.equal(readout(week, [2031]), '6 days · 144 of 8,760 h');
+    assert.equal(readout(week, [2031, 2032]), '7 days · 168 of 8,784 h');
   }
   const charts = read('src/ui/charts.ts');
   const guard = charts.slice(charts.indexOf('function datesFromPane'));

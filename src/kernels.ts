@@ -10,19 +10,19 @@
 //      Float32Array and accumulated in plain JS numbers.
 //   2. **NaN never reaches a kernel.** `applyMask` drops it on the way through.
 
-import { HOURS_PER_YEAR } from './model/calendar';
+import { YEAR_SLOT_HOURS } from './model/calendar';
 
-/** One 8,760-point buffer, allocated once per drawn line and reused. Never
+/** One 8,784-point buffer, allocated once per drawn line and reused. Never
  * allocate one inside a render path. */
 export function createScratch(): Float32Array {
-  return new Float32Array(HOURS_PER_YEAR);
+  return new Float32Array(YEAR_SLOT_HOURS);
 }
 
 /** Gather the hours the mask keeps into `out`, dropping NaN. Returns the
  * count written. */
 export function applyMask(series: Float32Array, mask: Uint8Array, out: Float32Array): number {
   let n = 0;
-  for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
     if (mask[hour] === 0) continue;
     const value = series[hour];
     if (Number.isNaN(value)) continue;
@@ -311,13 +311,15 @@ function sameBytes(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
 
 /**
  * Stats for every scoped row, one pass per row's plane. `planeStarts[i]` is
- * where row `i` begins in `cube`, or -1 when the case lacks it. Results are
+ * where row `i` begins in `cube`, or -1 when the case lacks it; each plane is
+ * `planeLength` values, the table's own (its mask's length). Results are
  * `RANKED_FIELDS` numbers per row in `out` (read with `rankedRow`). `scratch`
  * is reused across rows, so nothing is allocated per interaction.
  */
 export function rankedStats(
   cube: Float32Array,
   planeStarts: Int32Array,
+  planeLength: number,
   mask: Uint8Array,
   scratch: Float32Array = createScratch(),
   out?: Float64Array,
@@ -341,7 +343,7 @@ export function rankedStats(
       result[base + RANKED.n] = 0;
       continue;
     }
-    const plane = cube.subarray(start, start + HOURS_PER_YEAR);
+    const plane = cube.subarray(start, start + planeLength);
     const n = applyMask(plane, mask, scratch);
     const summary = stats(scratch, n);
     // `stats` first: `quartiles` reorders `scratch` in place.

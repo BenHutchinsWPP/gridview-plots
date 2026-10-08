@@ -9,7 +9,8 @@
 //     drawn.
 //   * Word-safe SVG: no class, style, foreignObject, clipPath or
 //     dominant-baseline; Aptos first; sized in inches over a point viewBox.
-//   * The hours footnote carries a count and is absent at 8,760 hours.
+//   * The hours footnote counts out of the Cases' real hours, never the
+//     slot's, and is absent when every real hour is shown.
 //   * Warnings, weighted means and lines not drawn reach a footnote or the
 //     row they concern; long cells and notes wrap; a crowded plot is flagged.
 //   * The caption and filename name what every line shares; an edit by id
@@ -25,7 +26,7 @@
 //     shared columns so every band total keeps its extremes.
 //   * X-Y: each axis titled by its series' full label, in the pane's order;
 //     no legend; the fit and its equation only when on; one mark per pixel.
-//   * Heatmap: 24 × 365 vector cells on the pane's colour scale, a colour bar
+//   * Heatmap: 24 × 366 vector cells on the pane's colour scale, a colour bar
 //     for a legend, the key in the context line, filtered hours footnoted.
 //   * A bus key is `number name kV`, the kV only where the BusList states one.
 //
@@ -38,7 +39,8 @@ const { buildFigure, figureLines, FIGURE_SIZES, LIMIT_DASH, LINE_DASHES } =
   await import('../src/figure/build.ts');
 const { thinLine, thinShared } = await import('../src/figure/thin.ts');
 const { runningTotals } = await import('../src/figure/stacked.ts');
-const { HOURS_PER_YEAR: H } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS: H, YEAR_SLOT_DAYS } = await import('../src/model/calendar.ts');
+const { weekdayOf } = await import('../src/model/date-range.ts');
 const { resolveDraws } = await import('../src/app/draw.ts');
 const { createSeriesPool } = await import('../src/series/pool.ts');
 const { rowKeyOf } = await import('../src/model/case-model.ts');
@@ -58,6 +60,9 @@ const facets = (over) => ({
 });
 
 const flat = (level) => new Float32Array(H).fill(level);
+/** `values` as a non-leap year holds them: its Feb 29 is no hours. */
+const FEB_29 = 59 * 24;
+const nonLeap = (values) => values.fill(NaN, FEB_29, FEB_29 + 24);
 
 function line(over = {}, level = 100) {
   const f = facets(over.facets);
@@ -79,6 +84,8 @@ function build(lines, over = {}) {
     hourFilter: 'all hours',
     size: FIGURE_SIZES.half,
     measureText,
+    // A non-leap Case's, as `nonLeap` lays out its values.
+    realHours: 8760,
     ...over,
   });
 }
@@ -293,15 +300,40 @@ ok('data is cropped to the window by the builder: no point falls outside the plo
 
 // ------------------------------------------------------------ 4. footnotes
 
-ok('the hours footnote states the filter and a count, and is absent at 8,760 hours', () => {
-  assert.deepEqual(footnotes(build([line()])), [], 'every hour shown: no footnote');
-  const values = flat(100);
-  for (let h = 0; h < H; h++) if (h % 24 < 12) values[h] = NaN;
-  const filtered = build([line({ values })], { hourFilter: 'Hour (HE): 13, 14' });
-  assert.deepEqual(footnotes(filtered), ['Hours shown: Hour (HE): 13, 14 (4,380 of 8,760 hours)']);
-  const zoomed = build([line()], { xWindow: [23.5, 191.5] });
-  assert.deepEqual(footnotes(zoomed), ['Hours shown: 168 of 8,760 hours']);
-});
+ok(
+  'the hours footnote states the filter and a count of real hours, and is absent at all of them',
+  () => {
+    const year = () => line({ values: nonLeap(flat(100)) });
+    assert.deepEqual(
+      footnotes(build([year()])),
+      [],
+      'every real hour of a non-leap year: no footnote',
+    );
+    const values = nonLeap(flat(100));
+    for (let h = 0; h < H; h++) if (h % 24 < 12) values[h] = NaN;
+    const filtered = build([line({ values })], { hourFilter: 'Hour (HE): 13, 14' });
+    assert.deepEqual(footnotes(filtered), [
+      'Hours shown: Hour (HE): 13, 14 (4,380 of 8,760 hours)',
+    ]);
+    const zoomed = build([year()], { xWindow: [23.5, 191.5] });
+    assert.deepEqual(footnotes(zoomed), ['Hours shown: 168 of 8,760 hours']);
+
+    // A leap year's Feb 29 is real: all 8,784 hours is the whole year.
+    assert.deepEqual(
+      footnotes(build([line()], { realHours: 8784 })),
+      [],
+      'every hour of a leap year',
+    );
+    const leapHalf = flat(100);
+    for (let h = 0; h < H; h++) if (h % 24 < 12) leapHalf[h] = NaN;
+    assert.deepEqual(
+      footnotes(
+        build([line({ values: leapHalf })], { hourFilter: 'Hour (HE): 13, 14', realHours: 8784 }),
+      ),
+      ['Hours shown: Hour (HE): 13, 14 (4,392 of 8,784 hours)'],
+    );
+  },
+);
 
 ok('a warning some lines carry is a marked footnote; one every line carries is plain', () => {
   const plain = 'SAMPLE_WARN: "LMP" should be weighted by "Load"; every area weighs 1.';
@@ -552,7 +584,7 @@ ok('thinning keeps every column’s minimum and maximum and every NaN break', ()
   for (const run of runs) for (const [h, v] of run) assert.equal(v, values[h]);
 });
 
-ok('a figure of a year is thinned to its output columns, not 8,760 points', () => {
+ok('a figure of a year is thinned to its output columns, not 8,784 points', () => {
   const values = Float32Array.from({ length: H }, (_, h) => (h % 2 ? 1 : 0) * 100);
   const figure = build([line({ values })]);
   const points = (figure.svg.match(/[ML][\d.]+ [\d.]+/g) ?? []).length;
@@ -690,7 +722,7 @@ ok('a duration figure keeps the pane’s % of interval axis and its zoom window'
   for (let i = 1; i < ys.length; i++) assert.ok(ys[i] <= ys[i - 1] + 1e-9, 'monotonic');
 
   // A filtered line: the footnote counts its kept hours, whatever the zoom.
-  const kept = flat(5);
+  const kept = nonLeap(flat(5));
   for (let h = 0; h < H; h++) if (h % 2) kept[h] = NaN;
   const filtered = build([line({ values: kept })], {
     pane: 'duration',
@@ -1010,7 +1042,7 @@ ok('an X-Y figure merges points on one output pixel and counts only hours both h
   const figure = xyFigure(xyPair());
   assert.equal(xyPoints(figure), 10, '8,760 pairs on ten distinct points');
   const [a, b] = xyPair();
-  const gappy = Float32Array.from(b.values);
+  const gappy = nonLeap(Float32Array.from(b.values));
   gappy.fill(NaN, 0, 760);
   const kept = xyFigure([a, { ...b, values: gappy }], { hourFilter: 'hours 761-8760' });
   assert.deepEqual(footnotes(kept), ['Hours shown: hours 761-8760 (8,000 of 8,760 hours)']);
@@ -1030,10 +1062,10 @@ function heatmapFigure(lines, over = {}) {
 const fills = (svg) => [...svg.matchAll(/<rect [^>]*fill="(#[0-9a-f]{6})"\/>/g)].map((m) => m[1]);
 const BAR_STEPS = 64;
 
-ok('a heatmap figure draws 24 × 365 cells as rectangles, and its key in the context line', () => {
+ok('a heatmap figure draws 24 × 366 cells as rectangles, and its key in the context line', () => {
   const values = Float32Array.from({ length: H }, (_, h) => 10 + (h % 24));
   const figure = heatmapFigure([line({ values })]);
-  assert.equal(fills(figure.svg).length, 1 + 24 * 365 + BAR_STEPS);
+  assert.equal(fills(figure.svg).length, 1 + 24 * YEAR_SLOT_DAYS + BAR_STEPS);
   assert.ok(!/<image/.test(figure.svg), 'vector, never a bitmap');
   assert.equal(
     textOf(figure, 'context'),
@@ -1167,8 +1199,8 @@ function intervalFigure(lines, interval = {}, over = {}) {
       mean: true,
       band: false,
       picked: null,
-      // 2035's, which opens on a Monday.
-      weekdays: Array.from({ length: 365 }, (_, day) => day % 7),
+      // 2035's, which opens on a Monday and has no Feb 29.
+      weekdays: Array.from({ length: YEAR_SLOT_DAYS }, (_, day) => weekdayOf(2035, day)),
       ...interval,
     },
     ...over,
@@ -1183,7 +1215,7 @@ const shaped = () =>
 
 ok('an interval figure draws one line per period, and the mean, with no opacity or clip', () => {
   const figure = intervalFigure([line({ values: shaped() })]);
-  // 365 day lines plus the mean.
+  // 365 day lines plus the mean: the slot's phantom Feb 29 is no day.
   assert.equal(polylines(figure.svg).length, 366);
   assert.ok(polylines(figure.svg).includes('#1a1a1a'), 'the mean in black');
   assert.ok(!/opacity|clipPath/.test(figure.svg), 'tints and cropping, not opacity or a clip');
@@ -1203,7 +1235,7 @@ ok('an interval figure names ten picked days in their own colours, and ramps ele
     for (const d of days) for (let h = 0; h < 24; h++) values[d * 24 + h] = 100 + h;
     return values;
   };
-  const three = intervalFigure([line({ values: only([50, 194, 214]) })]);
+  const three = intervalFigure([line({ values: only([50, 195, 215]) })]);
   assert.equal(textOf(three, 'legend.key[0]'), 'Tue Feb 20');
   assert.equal(textOf(three, 'legend.key[2]'), 'Fri Aug 3');
   assert.equal(textOf(three, 'legend.from'), undefined, 'no ramp');

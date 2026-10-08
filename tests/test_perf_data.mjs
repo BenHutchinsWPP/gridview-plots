@@ -6,8 +6,10 @@
 //      different inputs.
 //   3. The ladder's rungs and their entity, row and metric counts hold.
 //   4. scripts/file-blob.mjs reads the same bytes as a whole-file read.
+//   5. The span rungs are 10 contiguous years, leap days kept, by
+//      declaration, by head, and by one width-1 span written in full.
 //
-// No timing assertions, and only the smallest rung is ever generated.
+// No timing assertions, and no rung bigger than the smallest is generated.
 
 import './test_loader.mjs';
 import assert from 'node:assert/strict';
@@ -22,9 +24,14 @@ const {
   ALL_RUNGS,
   DROPS,
   DROP_CASES,
+  SPAN_RUNGS,
+  SPAN_YEARS,
   CONTROL_RUNG,
   DEFAULT_SEED,
   entityName,
+  projectBytes,
+  spanHours,
+  wideRung,
 } = await import('../scripts/make-perf-data.mjs');
 const { fileBlob } = await import('../scripts/file-blob.mjs');
 
@@ -53,12 +60,14 @@ try {
   assert.equal(entry.shape, 'wide');
   assert.equal(entry.entities, control.entities);
   assert.equal(entry.metrics, control.metrics);
+  assert.equal(entry.firstYear, first.year);
+  assert.equal(entry.lastYear, first.year, 'a ladder rung is one year');
   ok(
     `manifest records the control rung's shape, ${entry.entities} entities and ${entry.metrics} metric`,
   );
 
   // 8,760 and not 8,784: the generator writes a non-leap year so no rung's
-  // cost is inflated by Feb 29 rows both parsers drop anyway.
+  // cost is inflated by Feb 29 rows.
   assert.equal(entry.rows, first.hoursPerYear);
   assert.equal(entry.rows, 8760, 'a full year is exactly 8,760 hours');
   ok('manifest records 8,760 data rows -- one full non-leap year');
@@ -219,6 +228,83 @@ try {
     );
   }
   ok(`${worst.name} holds ${DROP_CASES} cases of ${worst.quantitiesPerCase} distinct quantities`);
+
+  // ------------------------------------------------------------- the span
+  //
+  // 2034..2043 holds two leap years, and a multi-year Case keeps Feb 29.
+  const spanRealHours = 8 * 8760 + 2 * 8784;
+  assert.equal(SPAN_YEARS, 10);
+  for (const rung of SPAN_RUNGS) {
+    assert.equal(rung.years, SPAN_YEARS, `${rung.name} spans ${SPAN_YEARS} years`);
+    assert.ok(rung.proves, `${rung.name} states what it proves`);
+    assert.equal(spanHours(rung), spanRealHours, `${rung.name}: real hours`);
+    // Projected size scales with real hours, or the --yes guard misjudges a
+    // multi-gigabyte write. A one-year rung at the same width is the yardstick.
+    const oneYear = projectBytes({ ...rung, years: 1 });
+    const ratio = projectBytes(rung) / oneYear;
+    assert.ok(
+      ratio > 0.99 * (spanRealHours / 8760) && ratio <= spanRealHours / 8760,
+      `${rung.name}: projection scales with the span (${ratio.toFixed(3)})`,
+    );
+    assert.ok(!rung.hashed, `${rung.name} is not hashed`);
+  }
+  assert.deepEqual(
+    SPAN_RUNGS.map((rung) => [rung.shape, rung.entities]),
+    [
+      ['wide', 215],
+      ['wide', 5900],
+      ['long', 200],
+    ],
+    'the span runs at the control width, bus width and the row-dominated shape',
+  );
+  ok(
+    `${SPAN_RUNGS.length} span rung(s) declare ${SPAN_YEARS} years of ${spanRealHours} real hours`,
+  );
+
+  // The invented multi-year preamble: the title keeps the first year,
+  // singular; the date line runs to the last.
+  for (const rung of SPAN_RUNGS.filter((r) => r.shape === 'wide')) {
+    const head = (await writeHead(rung, { limit: 1024 * 1024 })).toString('latin1');
+    const lines = head.split('\r\n');
+    assert.match(lines[0], /Data for Year 2034$/, `${rung.name}: title`);
+    assert.match(lines[2], /first hour of 1\/1\/2034 to the last hour of 12\/31\/2043\./);
+    assert.match(head, /\r\n1\/1\/2034,1,/, `${rung.name}: rows start on the first year`);
+  }
+  ok('a wide span head titles its first year and dates the whole run');
+
+  // The walker across New Years and leap days, through a width-1 span: the
+  // whole file is a few megabytes.
+  {
+    const tiny = { ...wideRung(1), name: 'wide-1-span', years: SPAN_YEARS };
+    const made = await generate({ out: join(workspace, 'span'), rungs: [tiny] });
+    const file = made.files[0];
+    assert.equal(file.rows, spanRealHours, 'one row per real hour of the span');
+    assert.equal(file.firstYear, 2034);
+    assert.equal(file.lastYear, 2043);
+    const rows = readFileSync(join(workspace, 'span', file.file), 'latin1')
+      .split('\r\n')
+      .filter((line) => /^\d+\/\d+\/\d{4},/.test(line));
+    const perYear = new Map();
+    for (const row of rows) {
+      const year = Number(row.split(',')[0].split('/')[2]);
+      perYear.set(year, (perYear.get(year) ?? 0) + 1);
+    }
+    assert.deepEqual(
+      [...perYear],
+      Array.from({ length: SPAN_YEARS }, (_, i) => [
+        2034 + i,
+        2034 + i === 2036 || 2034 + i === 2040 ? 8784 : 8760,
+      ]),
+      'every year in date order, 8,784 hours in a leap year',
+    );
+    assert.deepEqual(
+      rows.filter((row) => row.startsWith('2/29/')).map((row) => row.split(',')[0]),
+      [...Array(24).fill('2/29/2036'), ...Array(24).fill('2/29/2040')],
+      'Feb 29 only in the leap years',
+    );
+    assert.match(rows.at(-1), /^12\/31\/2043,24,/);
+  }
+  ok('a span walks every real hour of 2034-2043 in date order, Feb 29 kept');
 
   // ------------------------------------------- a rung is its title's export
   //

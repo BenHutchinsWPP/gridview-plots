@@ -1,9 +1,11 @@
 // src/ingest.ts
 //
 // Ingest helpers that are the same for every table kind: CSV line hygiene,
-// the non-leap calendar, the SIMD gate, the worker count, the dispatch loop,
+// the date-to-slot-day rule, the SIMD gate, the worker count, the dispatch loop,
 // and the failure attribution that makes partial import safe. Nothing here
 // knows what a column MEANS.
+
+import { isLeapYear, SLOT_MONTH_LENGTHS, SLOT_MONTH_STARTS } from './model/calendar';
 
 // ---------------------------------------------------------------- CSV text
 
@@ -27,17 +29,14 @@ export function afterNextNewline(bytes: Uint8Array, from: number): number {
   return at < 0 ? -1 : at + 1;
 }
 
-/** Cumulative days before each month and each month's length, non-leap (the
- * tables `parser/common/fields.h` uses). */
-const CUM = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-const DIM = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-/** Day-of-year (0-based) for a 1-based month/day, or -1 for Feb 29 / invalid. */
-export function dayOfYear(month: number, day: number): number {
+/** Day of the year slot (0-based, leap calendar: Feb 29 = 59, Mar 1 = 60 in
+ * every year) for a 1-based month/day, or -1 for a day `year` lacks. The same
+ * rule as `date_to_day` in `parser/common/fields.h`. */
+export function dayOfYear(year: number, month: number, day: number): number {
   if (month < 1 || month > 12 || day < 1) return -1;
-  if (month === 2 && day === 29) return -1; // Feb 29 is dropped at ingest
-  if (day > DIM[month - 1]) return -1;
-  return CUM[month - 1] + day - 1;
+  if (day > SLOT_MONTH_LENGTHS[month - 1]) return -1;
+  if (month === 2 && day === 29 && !isLeapYear(year)) return -1;
+  return SLOT_MONTH_STARTS[month - 1] + day - 1;
 }
 
 // ---------------------------------------------------------------- feature gate

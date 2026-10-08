@@ -31,13 +31,53 @@ const { createInventory, LIMITS_COLUMN, SHARED_LIMITS_INPUT, NOT_RECORDED } =
   await import('../src/inventory/store.ts');
 const { buildLookup, parseLookupCsv } = await import('../src/lookups/parse.ts');
 
-const HOURS = 8760;
+const HOURS = 8784;
+/** A v3 (or legacy) bundle's plane: Feb 29 dropped, Mar 1 at 1416. */
+const PRE_SLOT_HOURS = 8760;
+const FEB_29 = 59 * 24;
 
 let passed = 0;
 function check(label, fn) {
   fn();
   passed++;
   console.log(`ok - ${label}`);
+}
+
+/** A slot table as a v3 or legacy bundle saved it: Feb 29 cut out of every
+ * plane (one per presence byte), the TOU array and `hoursPresent`. */
+function preSlot(table) {
+  const cut = (from, planes) => {
+    const out = new from.constructor(planes * PRE_SLOT_HOURS);
+    for (let plane = 0; plane < planes; plane++) {
+      const row = from.subarray(plane * HOURS, (plane + 1) * HOURS);
+      out.set(row.subarray(0, FEB_29), plane * PRE_SLOT_HOURS);
+      out.set(row.subarray(FEB_29 + 24), plane * PRE_SLOT_HOURS + FEB_29);
+    }
+    return out;
+  };
+  return {
+    ...table,
+    cube: cut(table.cube, table.presence.length),
+    tou: cut(table.tou, 1),
+    hoursPresent: table.hoursPresent && cut(table.hoursPresent, 1),
+  };
+}
+
+/** What `preSlot(table)` restores to: `table` with its Feb 29 blank. */
+function feb29Blank(table) {
+  const blank = (from, planes, fill) => {
+    const out = from.slice();
+    for (let plane = 0; plane < planes; plane++) {
+      out.fill(fill, plane * HOURS + FEB_29, plane * HOURS + FEB_29 + 24);
+    }
+    return out;
+  };
+  return {
+    ...table,
+    cube: blank(table.cube, table.presence.length, NaN),
+    tou: blank(table.tou, 1, 0xff),
+    hoursPresent: table.hoursPresent && blank(table.hoursPresent, 1, 0),
+  };
 }
 
 /** For the async `readBundleFile` checks, awaited in order. */
@@ -56,7 +96,7 @@ function bytesOf(view) {
   return Buffer.from(view.buffer, view.byteOffset, view.byteLength);
 }
 
-/** A synthetic Area table: 3 areas x 2 metrics x 8760 h, with the second
+/** A synthetic Area table: 3 areas x 2 metrics x 8784 h, with the second
  * metric of the last area ABSENT -- NaN in the cube, 0 in the bitmap. That is
  * the plane whose presence byte must come back as 0. */
 function areaTable(areas = ['AREA01', 'AREA02', 'AREA03']) {
@@ -88,7 +128,7 @@ function areaTable(areas = ['AREA01', 'AREA02', 'AREA03']) {
   };
 }
 
-/** A synthetic Interface table: 2 interfaces x 8760 h, the second absent. */
+/** A synthetic Interface table: 2 interfaces x 8784 h, the second absent. */
 function interfaceTable(quantity, unit) {
   const interfaces = ['PATH_A', 'PATH_B'];
   const cube = new Float32Array(interfaces.length * HOURS);
@@ -184,8 +224,8 @@ function roundTrip(
 
 check('v3 manifest holds every table of every Case, keyed by slot', () => {
   const { manifest } = buildManifest([studyCase()], { groupings: GROUPINGS_CSV });
-  assert.equal(manifest.version, 3);
-  assert.equal(BUNDLE_VERSION, 3);
+  assert.equal(manifest.version, 4);
+  assert.equal(BUNDLE_VERSION, 4);
   assert.equal(manifest.cases.length, 1);
 
   const entry = manifest.cases[0];
@@ -209,6 +249,12 @@ check('v3 manifest holds every table of every Case, keyed by slot', () => {
     tables.reduce((sum, table) => sum + table.cubeBytes, 0),
   );
   assert.equal(entry.tables['area '].cubeBytes, 3 * 2 * HOURS * 4);
+  // v4 names the year span beside `year`, which it still writes.
+  for (const table of tables) {
+    assert.equal(table.year, 2032);
+    assert.equal(table.firstYear, 2032);
+    assert.equal(table.numYears, 1);
+  }
 });
 
 check('a Case with an Area and an Interface table round-trips both, cube bytes intact', () => {
@@ -360,6 +406,133 @@ check('the mapping currently loaded reaches the bundle, stated rather than defau
   assert.equal('groupings' in buildManifest([studyCase()], {}).manifest, false);
 });
 
+// ------------------------------------------------- v3 bundles: Feb 29 inserted
+//
+// A v3 table entry has no `numYears` and 8,760 hours per plane. Restoring it
+// inserts a blank Feb 29 INSIDE every plane; padding the end would hand
+// Feb 29 Mar 1's hours and put every later hour a day off.
+
+/** A one-quantity wide table of any kind: `planes` entities, values
+ * distinct per plane and hour so a misplaced hour shows. */
+function oneQuantityTable(axisField, axis, quantity) {
+  const cube = new Float32Array(axis.length * HOURS);
+  for (let i = 0; i < cube.length; i++) cube[i] = (i % HOURS) + 0.25 * Math.floor(i / HOURS);
+  const tou = new Uint8Array(HOURS);
+  for (let hour = 0; hour < HOURS; hour++) tou[hour] = (hour >> 3) % 2;
+  return {
+    cube,
+    [axisField]: axis,
+    presence: new Uint8Array(axis.length).fill(1),
+    tou,
+    hoursPresent: new Uint8Array(HOURS).fill(1),
+    sourceColumns: [...axis],
+    year: 2031,
+    quantity,
+  };
+}
+
+const V3_TABLES = () => [
+  [AREA_SLOT, areaTable()],
+  [FLOW_SLOT, interfaceTable('Power Flow (MW)', 'MW')],
+  [
+    { kind: 'bus', variant: 'LMP ($/MWh)' },
+    { ...oneQuantityTable('buses', Int32Array.from([10001, 10002]), 'LMP'), names: ['A', 'B'] },
+  ],
+  [
+    { kind: 'generator', variant: 'Generation (MWh)' },
+    oneQuantityTable('generators', ['UNIT_1', 'UNIT_2', 'UNIT_3'], 'Generation'),
+  ],
+];
+
+/** A v3 bundle as an older build wrote it, from slot tables: each cut to
+ * 8,760 hours, `firstYear`/`numYears` absent, version 3. */
+function v3Bundle(slotTables) {
+  const tables = new Map(
+    slotTables.map(([key, data]) => [slotKey(key), { key, data: preSlot(data) }]),
+  );
+  const { manifest, cubes } = buildManifest([{ id: 'old', name: 'Old Case', tables }], {});
+  const wire = JSON.parse(JSON.stringify(manifest));
+  wire.version = 3;
+  for (const table of Object.values(wire.cases[0].tables)) {
+    delete table.firstYear;
+    delete table.numYears;
+  }
+  return { wire, blocks: toCaseBlocks(wire, cubes) };
+}
+
+check('a v3 bundle of every kind restores with a NaN Feb 29 inside every plane', () => {
+  const slotTables = V3_TABLES();
+  const { wire, blocks } = v3Bundle(slotTables);
+  const before = JSON.stringify(wire);
+  const migrated = migrateManifest(wire, blocks);
+  assert.match(migrated.warnings[0], /version-3 \(Feb 29 not kept\) bundle to version 4/);
+  const bundle = restoreBundle(migrated.manifest, migrated.cubes, migrated.warnings);
+  assert.equal(JSON.stringify(wire), before, 'the v3 manifest itself is left as it was');
+
+  const back = bundle.restoredCases[0];
+  for (const [key, original] of slotTables) {
+    const kind = key.kind;
+    const data = back.tables.get(slotKey(key)).data;
+    const planes = original.presence.length;
+    assert.equal(data.cube.length, planes * HOURS, `${kind}: every plane on the slot`);
+    if (kind === 'area') assert.ok(planes >= 4 && original.metrics.length >= 2);
+    const saved = preSlot(original).cube;
+    for (let plane = 0; plane < planes; plane++) {
+      const at = plane * HOURS;
+      // Before Feb 29 unchanged; NaN through Feb 29; Mar 1 one day on.
+      assert.ok(
+        bytesOf(data.cube.subarray(at, at + FEB_29)).equals(
+          bytesOf(saved.subarray(plane * PRE_SLOT_HOURS, plane * PRE_SLOT_HOURS + FEB_29)),
+        ),
+        `${kind} plane ${plane}: hours before Feb 29 unchanged`,
+      );
+      for (let hour = FEB_29; hour < FEB_29 + 24; hour++) {
+        assert.ok(Number.isNaN(data.cube[at + hour]), `${kind} plane ${plane} hour ${hour} NaN`);
+      }
+      assert.ok(
+        Object.is(data.cube[at + 1440], saved[plane * PRE_SLOT_HOURS + 1416]),
+        `${kind} plane ${plane}: Mar 1 moved from 1416 to 1440`,
+      );
+    }
+    const expected = feb29Blank(original);
+    assert.ok(bytesOf(data.cube).equals(bytesOf(expected.cube)), `${kind}: whole cube`);
+    assert.ok(bytesOf(data.tou).equals(bytesOf(expected.tou)), `${kind}: TOU 0xff on Feb 29`);
+    assert.ok(
+      bytesOf(data.hoursPresent).equals(bytesOf(expected.hoursPresent)),
+      `${kind}: hoursPresent 0 on Feb 29`,
+    );
+    assert.equal(data.tou[FEB_29], 0xff);
+    assert.equal(data.hoursPresent[FEB_29 + 23], 0);
+    assert.equal(data.year, original.year);
+  }
+
+  // The next save writes v4, never v3.
+  const again = buildManifest([{ id: 'old', name: 'Old Case', tables: back.tables }], {}).manifest;
+  assert.equal(again.version, 4);
+  for (const table of Object.values(again.cases[0].tables)) {
+    assert.deepEqual([table.year, table.firstYear, table.numYears], [table.year, table.year, 1]);
+  }
+});
+
+check('a v3 table saved without hoursPresent restores with none, not a year of absence', () => {
+  const [key, table] = V3_TABLES()[3];
+  const { wire, blocks } = v3Bundle([[key, { ...table, hoursPresent: undefined }]]);
+  const data = casesFromManifest(wire, blocks).cases[0].tables.get(slotKey(key)).data;
+  assert.equal(data.hoursPresent, undefined);
+  assert.equal(data.cube.length, 3 * HOURS);
+});
+
+check('a v3 table whose cube is already on the slot is refused, not read a day off', () => {
+  const { manifest, cubes } = buildManifest([studyCase()], {});
+  const wire = JSON.parse(JSON.stringify(manifest));
+  wire.version = 3;
+  for (const table of Object.values(wire.cases[0].tables)) delete table.numYears;
+  assert.throws(
+    () => casesFromManifest(wire, toCaseBlocks(wire, cubes)),
+    /expected .*8760 h per plane, saved before Feb 29 was kept/,
+  );
+});
+
 // ------------------------------------------------- unknown table kinds
 
 check('an unknown table kind is skipped with a warning and the rest still loads', () => {
@@ -415,8 +588,9 @@ check('a version newer than this build is refused by name, never parsed', () => 
   const { manifest, cubes } = buildManifest([studyCase()], { groupings: GROUPINGS_CSV });
   const wire = JSON.parse(JSON.stringify(manifest));
   const blocks = toCaseBlocks(wire, cubes);
-  wire.version = 4;
-  assert.throws(() => casesFromManifest(wire, blocks), /version 4.*version 3|upgrade/i);
+  wire.version = 5;
+  assert.throws(() => casesFromManifest(wire, blocks), /version 5.*version 4.*Upgrade the app/);
+  assert.throws(() => migrateManifest(wire, blocks), /version 5.*version 4.*Upgrade the app/);
 });
 
 check('an older (legacy) version is refused here — migration happens earlier, not a guess', () => {
@@ -537,7 +711,9 @@ function bundleFileBytes(magic, manifestObj, cubeChunks = []) {
 }
 
 check('a legacy GVAP manifest with a populated areas array migrates to v3 and restores', () => {
-  const table = areaTable();
+  const slotTable = areaTable();
+  const table = preSlot(slotTable);
+  const expected = feb29Blank(slotTable);
   const raw = { version: 1, cases: [legacyAreaCase('Legacy Base Case', table)] };
 
   const migrated = migrateManifest(raw, [cubeBuffer(table.cube)]);
@@ -546,7 +722,7 @@ check('a legacy GVAP manifest with a populated areas array migrates to v3 and re
     [migratedNote(1, 'Area-only')],
     'the user-facing migration notice',
   );
-  assert.equal(migrated.manifest.version, 3);
+  assert.equal(migrated.manifest.version, 3, 'a v3 manifest, put on the slot per table');
   assert.equal('groupings' in migrated.manifest, false, 'no groupings field on this fixture');
   assert.equal(migrated.manifest.cases.length, 1);
 
@@ -566,9 +742,9 @@ check('a legacy GVAP manifest with a populated areas array migrates to v3 and re
   const back = restored.cases[0].tables.get(slotKey(AREA_SLOT)).data;
   assert.deepEqual(back.areas, table.areas);
   assert.deepEqual(back.metrics, table.metrics);
-  assert.ok(bytesOf(back.cube).equals(bytesOf(table.cube)), 'cube bytes intact through migration');
+  assert.ok(bytesOf(back.cube).equals(bytesOf(expected.cube)), 'cube on the slot, Feb 29 NaN');
   assert.ok(bytesOf(back.presence).equals(bytesOf(table.presence)), 'presence bitmap intact');
-  assert.ok(bytesOf(back.tou).equals(bytesOf(table.tou)), 'TOU bitmap intact');
+  assert.ok(bytesOf(back.tou).equals(bytesOf(expected.tou)), 'TOU on the slot, Feb 29 0xff');
 });
 
 check(
@@ -578,7 +754,7 @@ check(
     // The table's cube/presence are sized for the FULL axis -- only the
     // legacy JSON's `areas` list is empty, exactly the v1 shape whose
     // `entry.areas.length === 0` triggers deserializeAreaTable's fallback.
-    const table = areaTable(allAreas());
+    const table = preSlot(areaTable(allAreas()));
     const raw = {
       version: 1,
       cases: [legacyAreaCase('Legacy Empty-Areas Case', table, { areas: [] })],
@@ -603,7 +779,9 @@ check(
 check(
   'a legacy GVIP manifest migrates: name becomes the Case name, quantity becomes the slot variant',
   () => {
-    const table = interfaceTable('Power Flow (MW)', 'MW');
+    const slotTable = interfaceTable('Power Flow (MW)', 'MW');
+    const table = preSlot(slotTable);
+    const expected = feb29Blank(slotTable);
     const raw = { version: 2, cases: [legacyInterfaceCase('Legacy Interface Case', table)] };
 
     const migrated = migrateManifest(raw, [cubeBuffer(table.cube)]);
@@ -634,16 +812,16 @@ check(
     assert.equal(back.quantity, 'Power Flow (MW)');
     assert.equal(back.unit, 'MW');
     assert.deepEqual(back.interfaces, table.interfaces);
-    assert.ok(bytesOf(back.cube).equals(bytesOf(table.cube)));
+    assert.ok(bytesOf(back.cube).equals(bytesOf(expected.cube)));
     assert.ok(bytesOf(back.presence).equals(bytesOf(table.presence)), 'presence bitmap intact');
-    assert.ok(bytesOf(back.tou).equals(bytesOf(table.tou)), 'TOU array intact');
+    assert.ok(bytesOf(back.tou).equals(bytesOf(expected.tou)), 'TOU array on the slot');
   },
 );
 
 check(
   "a legacy GVAP manifest's groupings string survives migration into the v3 top-level field",
   () => {
-    const table = areaTable();
+    const table = preSlot(areaTable());
     const raw = {
       version: 1,
       groupings: GROUPINGS_CSV,
@@ -759,7 +937,11 @@ check(
         cases: new Map([['case-1', limit('mine.csv', 250)]]),
       },
     });
-    assert.equal(manifest.version, 3, 'an optional field is not a new envelope version');
+    assert.equal(
+      manifest.version,
+      BUNDLE_VERSION,
+      'an optional field is not a new envelope version',
+    );
     const wire = JSON.parse(JSON.stringify(manifest));
     const bundle = restoreBundle(wire, toCaseBlocks(wire, cubes));
     assert.equal(bundle.limits.shared.source, 'shared.csv');
@@ -1170,7 +1352,7 @@ function inventoriedStudy() {
 
 check('a bundle stores its inventory against its own case list, never a live Case id', () => {
   const { wire, bundle } = inventoriedStudy();
-  assert.equal(wire.version, 3, 'an optional field is not a new envelope version');
+  assert.equal(wire.version, BUNDLE_VERSION, 'an optional field is not a new envelope version');
   const text = JSON.stringify(wire.inventory);
   assert.ok(!text.includes('case-2') && !text.includes('case-1'), 'no live Case id is written');
   assert.deepEqual(
@@ -1439,7 +1621,7 @@ check('an old bundle whose area mapping is a bare header reconstructs no groups 
 });
 
 check('a legacy-migrated bundle reconstructs too', () => {
-  const table = areaTable();
+  const table = preSlot(areaTable());
   const raw = { version: 1, cases: [legacyAreaCase('Legacy Base Case', table)] };
   const migrated = migrateManifest(raw, [cubeBuffer(table.cube)]);
   const bundle = restoreBundle(migrated.manifest, migrated.cubes, migrated.warnings);

@@ -40,6 +40,7 @@ function parseRange(instance, bytes, from, to, plan, entityCount) {
     plan.sourceMetricCount,
     scan.rows,
     year,
+    1,
   );
 }
 
@@ -51,9 +52,9 @@ function scanAxis(bytes, parser) {
 const { finalizeCase, applyDerived, AREA_LONG } = await import('../src/tables/area/long.ts');
 const { createAccumulator, blitBlock } = await import('../src/tables/long/pool.ts');
 const { allAreas } = await import('../src/tables/area/groupings.ts');
-const { HOURS_PER_YEAR, TOU_LABELS } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS, TOU_LABELS } = await import('../src/model/calendar.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 const NEWLINE = 10;
 
 let checks = 0;
@@ -128,9 +129,9 @@ function referenceCube(text, metrics, axis = areas) {
     const line = lines[i].replace(/\r$/, '');
     if (line.length === 0) continue;
     const fields = line.split(',');
-    const [month, day] = fields[0].split('/').map(Number);
-    const doy = dayOfYear(month, day);
-    if (doy < 0) continue; // Feb 29, dropped at ingest
+    const [month, day, year] = fields[0].split('/').map((part) => parseInt(part, 10));
+    const doy = dayOfYear(year, month, day);
+    if (doy < 0) continue; // a day its year lacks; the parser refuses the file
     const hour = doy * 24 + (Number(fields[1]) - 1);
     const area = axis.indexOf(fields[3].trim());
     if (area < 0) continue;
@@ -594,12 +595,12 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
     'every area must be found, including one absent from the first hour',
   );
   assert.equal(scan.rows, thinned.length - 1);
-  // The scan reports the axis and the row bound, and deliberately nothing about
-  // ordering -- see AxisScan. A field here is a field someone can build a
-  // refusal on, and row order carries no meaning.
+  // The scan reports the axis, the row bound and rows per year, and
+  // deliberately nothing about ordering -- see AxisScan. A field here is a
+  // field someone can build a refusal on, and row order carries no meaning.
   assert.deepEqual(
     Object.keys(scan).sort(),
-    ['names', 'rows'],
+    ['maxYear', 'minYear', 'names', 'rows', 'yearRows'],
     'the scan must not report ordering: no inversion count, no hour range',
   );
   ok(`the area axis is read from every row: ${scan.names.length} areas, ${scan.rows} rows`);
@@ -626,7 +627,7 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
 
 // A row the parser cannot place is refused, never dropped: an hour outside
 // 1-24 (an hour-beginning 0-23 export would otherwise load shifted), an
-// unreadable date, a row that ends before Name. Feb 29 alone is dropped.
+// unreadable date, a Feb 29 its year lacks, a row that ends before Name.
 {
   const axis = ['A', 'B'];
   const good = ['1/1/2035,1,OffPeak,A,1', '1/1/2035,1,OffPeak,B,2'];
@@ -644,9 +645,13 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
   ]) {
     await assert.rejects(load([bad]), /could not read/, `${what} is refused`);
   }
-  const leap = await load(['2/29/2036,1,OffPeak,A,9']);
-  assert.equal(leap.rows, 2, 'the Feb 29 row is dropped, the others kept');
-  ok('an unreadable date or hour, or a short row, refuses the load; Feb 29 is dropped');
+  await assert.rejects(load(['2/29/2035,1,OffPeak,A,9']), /could not read/, 'a non-leap Feb 29');
+  await assert.rejects(
+    load(['2/29/2036,1,OffPeak,A,9']),
+    /dated outside 2035/,
+    "another year's Feb 29 is out of the Case's range, not dropped",
+  );
+  ok('an unreadable date or hour, a non-leap Feb 29, or a short row, refuses the load');
 }
 
 // Presence, and the leap-year statement ingest must make.
@@ -675,10 +680,39 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
     'every (area, metric) in the sample is present',
   );
   assert.ok(
-    finalized.warnings.some((w) => w.includes('Feb 29')),
-    'a leap-year case must state that Feb 29 was dropped',
+    !finalized.warnings.some((w) => /Feb 29|leap year/.test(w)),
+    'Feb 29 is kept, so a leap year has nothing to state',
   );
-  ok('presence bitmap is full, and the leap-year Feb 29 drop is stated, not silent');
+  ok('presence bitmap is full, and a leap year raises no Feb 29 note');
+}
+
+// Coverage is out of the year's real hours: a non-leap year's Feb 29 is
+// expected-absent, a leap year's is a gap.
+{
+  const FEB_29 = 59 * 24;
+  const covers = (year, fill) => {
+    const accumulator = createAccumulator(run.plan, AREA_COUNT);
+    fill(accumulator.hourSeen);
+    const { warnings } = finalizeCase(
+      accumulator,
+      'cover.csv',
+      run.header.metricNames,
+      year,
+      areas,
+    );
+    return warnings.filter((w) => w.includes('covers'));
+  };
+  const realOnly = (seen) => seen.fill(1).fill(0, FEB_29, FEB_29 + 24);
+  assert.deepEqual(covers(2035, realOnly), [], 'every real hour of 2035 is the whole year');
+  assert.deepEqual(
+    covers(2036, (seen) => seen.fill(1)),
+    [],
+    'every hour of 2036, Feb 29 too',
+  );
+  assert.deepEqual(covers(2036, realOnly), [
+    'cover.csv: covers 8,760 of 8,784 hours; the rest read as no-data.',
+  ]);
+  ok("a non-leap year's Feb 29 is no gap; a leap year missing its Feb 29 is one");
 }
 
 // ---------------------------------------------------------------- calculated columns

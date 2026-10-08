@@ -14,10 +14,17 @@
 // and selects, and the strip is a focusable div: an arrow let through would
 // also reach the section's shortcuts.
 
-import { DAY_NAMES, HOURS_PER_YEAR, MONTH_LENGTHS, MONTH_NAMES } from '../model/calendar';
+import { NO_YEAR } from '../app/boxes';
 import {
-  DAYS_PER_YEAR,
-  MONTH_STARTS,
+  DAY_NAMES,
+  isLeapYear,
+  MONTH_NAMES,
+  mostRealHours,
+  SLOT_MONTH_LENGTHS,
+  SLOT_MONTH_STARTS,
+  YEAR_SLOT_DAYS,
+} from '../model/calendar';
+import {
   addRun,
   dayLabel,
   extendSet,
@@ -35,6 +42,9 @@ import {
   windowFrom,
   type DateSet,
 } from '../model/date-range';
+
+/** Feb 29's day of the slot. */
+const FEB_29 = SLOT_MONTH_STARTS[1] + 28;
 
 export interface DateStrip {
   /** `years` are the loaded Cases' distinct years: weekends are shaded only
@@ -140,9 +150,9 @@ export function createDateStrip(
     });
     names.push(name);
     const row = el('div', 'ds-days', strip);
-    for (let i = 0; i < MONTH_LENGTHS[m]; i++) {
+    for (let i = 0; i < SLOT_MONTH_LENGTHS[m]; i++) {
       const cell = el('div', 'ds-day', row);
-      cell.dataset.day = String(MONTH_STARTS[m] + i);
+      cell.dataset.day = String(SLOT_MONTH_STARTS[m] + i);
       cells.push(cell);
     }
   }
@@ -269,7 +279,7 @@ export function createDateStrip(
       const day = parsed.day;
       input.value = dayLabel(day);
       // Typing makes one run from the set's first or last day.
-      const range = committed ? setBounds(committed) : { start: 0, end: DAYS_PER_YEAR - 1 };
+      const range = committed ? setBounds(committed) : { start: 0, end: YEAR_SLOT_DAYS - 1 };
       if (end) {
         commit([rangeOf(Math.min(range.start, day), day)]);
       } else {
@@ -292,13 +302,22 @@ export function createDateStrip(
       return;
     }
     cells[day].classList.add('ds-hover');
+    // Feb 29 is a day of the strip in every year, but a weekday only in a
+    // leap year.
+    const weekdayIn = (year: number): string | undefined => DAY_NAMES[weekdayOf(year, day)];
     hover.textContent =
       years.length === 0
         ? dayLabel(day)
         : years.length === 1
-          ? `${DAY_NAMES[weekdayOf(years[0], day)]} ${dayLabel(day)}`
+          ? weekdayIn(years[0])
+            ? `${weekdayIn(years[0])} ${dayLabel(day)}`
+            : `${dayLabel(day)} · not a day in ${years[0]}`
           : `${dayLabel(day)} · ` +
-            years.map((year) => `${DAY_NAMES[weekdayOf(year, day)]} in ${year}`).join(', ');
+            years
+              .map((year) =>
+                weekdayIn(year) ? `${weekdayIn(year)} in ${year}` : `none in ${year}`,
+              )
+              .join(', ');
   }
 
   function paint(): void {
@@ -330,14 +349,25 @@ export function createDateStrip(
     prev.disabled = !set || sameSet(stepSet(set, -1), set);
     next.disabled = !set || sameSet(stepSet(set, 1), set);
 
-    const days = set ? setDays(set) : DAYS_PER_YEAR;
+    // Out of the loaded Cases' real hours (`mostRealHours`), with no Case the
+    // non-leap year a yearless series takes. A Feb 29 no loaded year has is
+    // neither a day nor any hours.
+    const spans = (years.length > 0 ? years : [NO_YEAR]).map((firstYear) => ({
+      firstYear,
+      numYears: 1,
+    }));
+    const ofHours = mostRealHours(spans);
+    const phantomFeb29 =
+      set !== null && !spans.some((span) => isLeapYear(span.firstYear)) && hasDay(set, FEB_29);
+    const days = set ? setDays(set) - (phantomFeb29 ? 1 : 0) : YEAR_SLOT_DAYS;
+    const hours = set ? days * 24 : ofHours;
     const bold = document.createElement('b');
     bold.textContent = set
       ? `${days} day${days === 1 ? '' : 's'}${set.length > 1 ? ` in ${set.length} runs` : ''}`
       : 'All dates';
     summary.replaceChildren(
       bold,
-      ` · ${(days * 24).toLocaleString('en-US')} of ${HOURS_PER_YEAR.toLocaleString('en-US')} h`,
+      ` · ${hours.toLocaleString('en-US')} of ${ofHours.toLocaleString('en-US')} h`,
     );
   }
 

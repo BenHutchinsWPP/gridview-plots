@@ -3,7 +3,7 @@
 // The rule every drawn limit hangs off -- a Case's own limits win, then the
 // shared ones, then nothing -- plus the two things that rule is easy to get
 // wrong: what happens to a pinned table when its Case goes away, and how
-// twelve monthly numbers become the 8,760 hours a pane draws.
+// twelve monthly numbers become the 8,784 slot hours a pane draws.
 //
 // Also the unit gate, which is the difference between a dashed line and a
 // wrong number on a shared axis.
@@ -17,7 +17,7 @@ const { createLimitsStore } = await import('../src/limits/store.ts');
 const { limitLinesFor, rangeLimitsOf, summedLimitLines, LIMIT_UNIT } =
   await import('../src/limits/draw.ts');
 const { serializeLimits, deserializeLimits } = await import('../src/limits/envelope.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 const { summedLimits } = await import('../src/tables/interface/limits.ts');
 const { CaseStore, caseForName } = await import('../src/model/case-model.ts');
 
@@ -146,11 +146,11 @@ const drawn = (over) => ({
   color: '#1f77b4',
   unit: LIMIT_UNIT,
   year: YEAR,
-  values: new Float32Array(HOURS_PER_YEAR),
+  values: new Float32Array(YEAR_SLOT_HOURS),
   ...over,
 });
 
-check('twelve months become 8,760 hours as a STEP, with no interpolation', () => {
+check('twelve months become 8,784 slot hours as a STEP, with no interpolation', () => {
   const byMonth = new Float32Array(12);
   for (let m = 0; m < 12; m++) byMonth[m] = 100 + m;
   store.setSharedLimits({
@@ -158,11 +158,19 @@ check('twelve months become 8,760 hours as a STEP, with no interpolation', () =>
     byInterface: new Map([['PATH_A', { max: byMonth }]]),
   });
   const [line] = limitLinesFor(store, drawn());
-  assert.equal(line.values.length, HOURS_PER_YEAR);
+  assert.equal(line.values.length, YEAR_SLOT_HOURS);
   assert.equal(line.values[0], 100, 'hour 0 is January');
   assert.equal(line.values[31 * 24 - 1], 100, 'the last hour of January is still January');
   assert.equal(line.values[31 * 24], 101, 'the first hour of February steps, it does not ramp');
-  assert.equal(line.values[HOURS_PER_YEAR - 1], 111, 'the last hour of the year is December');
+  assert.equal(line.values[YEAR_SLOT_HOURS - 1], 111, 'the last hour of the year is December');
+
+  const leap = rangeLimitsOf({ max: byMonth }, 2036);
+  assert.equal(leap.upper[1416], 101, 'Feb 29 2036 HE 1 is February’s');
+  assert.equal(leap.upper[1440], 102, 'Mar 1 is March’s');
+  const plain = rangeLimitsOf({ max: byMonth }, 2035);
+  assert.ok(Number.isNaN(plain.upper[1416]), 'a phantom Feb 29 has no limit, as it has no value');
+  assert.equal(plain.upper[1415], 101);
+  assert.equal(plain.upper[1440], 102);
 });
 
 check("the limit borrows the series' colour exactly, and names its side", () => {
@@ -178,7 +186,7 @@ check("the limit borrows the series' colour exactly, and names its side", () => 
 
 check('a filtered hour on the series is a filtered hour on the limit', () => {
   store.setSharedLimits(table('shared.csv', 'PATH_A', { max: 100 }));
-  const values = new Float32Array(HOURS_PER_YEAR);
+  const values = new Float32Array(YEAR_SLOT_HOURS);
   values[5] = NaN;
   const [line] = limitLinesFor(store, drawn({ values }));
   assert.ok(Number.isNaN(line.values[5]), 'the dashed line stops where the flow line does');
@@ -195,7 +203,7 @@ check('a month with no limit draws nothing, in the middle of a year that does', 
   const [line] = limitLinesFor(store, drawn());
   assert.equal(line.values[0], 100);
   assert.ok(Number.isNaN(line.values[31 * 24]), 'February is unbounded');
-  assert.equal(line.values[(31 + 28) * 24], 100, 'March is bounded again');
+  assert.equal(line.values[(31 + 29) * 24], 100, 'March is bounded again');
 });
 
 check('a side that is unbounded in EVERY month is not a line at all', () => {
@@ -288,7 +296,7 @@ check("a % of range line reads its Case's own limits over the shared ones", () =
   assert.equal(own.upper[0], 250);
   assert.equal(own.lower, undefined, 'the Case table has no MIN, and does not borrow one');
   const shared = rangeLimitsOf(store.limitFor('case-2', 'PATH_A'), 2035);
-  assert.equal(shared.upper[HOURS_PER_YEAR - 1], 100);
+  assert.equal(shared.upper[YEAR_SLOT_HOURS - 1], 100);
   assert.equal(shared.lower[0], -40);
   assert.deepEqual(rangeLimitsOf(store.limitFor('case-2', 'PATH_B'), 2035), {});
 });
@@ -329,7 +337,7 @@ check('a % of range line draws no limit line: the limit is ±100% by constructio
     label: 'PATH_A',
     color: '#000',
     year: 2035,
-    values: new Float32Array(HOURS_PER_YEAR).fill(50),
+    values: new Float32Array(YEAR_SLOT_HOURS).fill(50),
   };
   assert.equal(limitLinesFor(store, { ...subject, unit: LIMIT_UNIT }).length, 1);
   assert.deepEqual(limitLinesFor(store, { ...subject, unit: '%' }), []);
@@ -352,7 +360,7 @@ check("a boundary's limit lines are its members' limits summed and swapped", () 
     { sign: 1, limits: rangeLimitsOf(store.limitFor('case-1', 'PATH_A'), 2035) },
     { sign: -1, limits: rangeLimitsOf(store.limitFor('case-1', 'PATH_B'), 2035) },
   ]);
-  const values = new Float32Array(HOURS_PER_YEAR).fill(5);
+  const values = new Float32Array(YEAR_SLOT_HOURS).fill(5);
   values[3] = NaN; // a filtered hour
   const lines = summedLimitLines(limits, {
     label: 'Run A · West',
@@ -381,7 +389,7 @@ check('a boundary side no member rates draws no line, and nothing in another uni
     label: 'West',
     color: '#000',
     unit: LIMIT_UNIT,
-    values: new Float32Array(HOURS_PER_YEAR).fill(1),
+    values: new Float32Array(YEAR_SLOT_HOURS).fill(1),
   };
   assert.deepEqual(
     summedLimitLines(limits, subject).map((line) => line.name),

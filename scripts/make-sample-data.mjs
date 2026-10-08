@@ -42,7 +42,7 @@ const NAME_PREFIX = 'SAMPLE';
  * comparing the two output sets is not asking "why do these differ" about a
  * fact that has nothing to do with either generator. */
 const YEAR = 2034;
-/** Leap, for the one file that needs Feb 29 to exist at all. */
+/** Leap, for the files that need a real Feb 29. */
 const LEAP_YEAR = 2036;
 
 function isLeap(year) {
@@ -95,8 +95,8 @@ function touOf(hour) {
   return hour % 2 === 0 ? 'OnPeak' : 'OffPeak';
 }
 
-/** Walk hour-ending 1..24 over a date range. Feb 29 is not special-cased:
- * ingest drops it at read time. */
+/** Walk hour-ending 1..24 over a date range of `year`'s real calendar: Feb 29
+ * in a leap year, as ingest keeps it. */
 function* calendarRange(year, fromMonth, fromDay, toMonth, toDay) {
   let month = fromMonth;
   let day = fromDay;
@@ -108,6 +108,26 @@ function* calendarRange(year, fromMonth, fromDay, toMonth, toDay) {
       month++;
     }
   }
+}
+
+/** `calendarRange` over each year of firstYear..lastYear in turn, the same
+ * month/day range in every year: a multi-year run is one file whose dates
+ * walk on into the next year. */
+function* spanRange(firstYear, lastYear, fromMonth, fromDay, toMonth, toDay) {
+  for (let year = firstYear; year <= lastYear; year++) {
+    for (const [month, day, hour] of calendarRange(year, fromMonth, fromDay, toMonth, toDay)) {
+      yield [year, month, day, hour];
+    }
+  }
+}
+
+/** Fisher-Yates, seeded, in place. */
+function shuffle(items, next) {
+  for (let i = items.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [items[i], items[j]] = [items[j], items[i]];
+  }
+  return items;
 }
 
 /** A CSV cell, quoted (RFC 4180) only when it needs to be -- the one field
@@ -125,6 +145,8 @@ function buildWideText({
   entity,
   quantity,
   year,
+  // A multi-year run when later than `year`; `range` repeats in every year.
+  lastYear = year,
   range,
   names,
   seed,
@@ -140,11 +162,13 @@ function buildWideText({
 }) {
   const [[fromMonth, fromDay], [toMonth, toDay]] = range;
   const lines = [];
+  // Invented multi-year preamble: the title keeps the first year, singular,
+  // and the date line spans the run. Check it against a real export.
   lines.push(`${entity} Hourly '${quantity}' Data for Year ${year}`);
   lines.push('');
   lines.push(
     `(From the first hour of ${fromMonth}/${fromDay}/${year} to the last hour of ` +
-      `${toMonth}/${toDay}/${year}. Column identifier -- ${entity}Name)`,
+      `${toMonth}/${toDay}/${lastYear}. Column identifier -- ${entity}Name)`,
   );
   lines.push('');
   if (ids) lines.push(`,,BusNumber,${ids.join(',')}`);
@@ -156,7 +180,14 @@ function buildWideText({
 
   const next = rng(seed);
   const dataLines = [];
-  for (const [month, day, hour] of calendarRange(year, fromMonth, fromDay, toMonth, toDay)) {
+  for (const [rowYear, month, day, hour] of spanRange(
+    year,
+    lastYear,
+    fromMonth,
+    fromDay,
+    toMonth,
+    toDay,
+  )) {
     const tou =
       touOverride &&
       touOverride.month === month &&
@@ -169,7 +200,7 @@ function buildWideText({
       fields[0] = LARGE_VALUE;
       if (fields.length > 1) fields[1] = NEGATIVE_VALUE;
     }
-    let row = `${month}/${day}/${year},${hour},${tou},${fields.join(',')}`;
+    let row = `${month}/${day}/${rowYear},${hour},${tou},${fields.join(',')}`;
     if (trailingComma) row += ',';
     dataLines.push(row);
   }
@@ -192,24 +223,35 @@ function buildLongText({
   keyValuesFor,
   metrics,
   year,
+  lastYear = year,
   range,
   seed,
+  // Row order carries no meaning, so a reader must not care about this.
+  shuffleRows = false,
   valueFor = (_entityIndex, _metricIndex, next) => formatValue(next),
 }) {
   const [[fromMonth, fromDay], [toMonth, toDay]] = range;
   const header = ['Date', ' Hour', ' TOU', ...keys.map((k) => ` ${k}`), ...metrics].join(',');
-  const lines = [header];
+  const rows = [];
   const next = rng(seed);
-  for (const [month, day, hour] of calendarRange(year, fromMonth, fromDay, toMonth, toDay)) {
+  for (const [rowYear, month, day, hour] of spanRange(
+    year,
+    lastYear,
+    fromMonth,
+    fromDay,
+    toMonth,
+    toDay,
+  )) {
     const tou = touOf(hour);
     for (let e = 0; e < entities; e++) {
       const fields = metrics.map((_, m) => valueFor(e, m, next));
-      lines.push(
-        `${month}/${day}/${year},${hour},${tou},${keyValuesFor(e).join(',')},${fields.join(',')}`,
+      rows.push(
+        `${month}/${day}/${rowYear},${hour},${tou},${keyValuesFor(e).join(',')},${fields.join(',')}`,
       );
     }
   }
-  return lines.join('\r\n') + '\r\n';
+  if (shuffleRows) shuffle(rows, next);
+  return [header, ...rows].join('\r\n') + '\r\n';
 }
 
 // ---------------------------------------------------------------- shape R
@@ -1089,7 +1131,7 @@ export function buildFiles(seed = DEFAULT_SEED) {
     'area-wide-duplicate-row.csv',
   );
 
-  // A leap year, so Feb 29 is present and has something to drop.
+  // A leap year, so Feb 29 is present and ingest keeps it.
   add(
     'area-wide-leapyear.csv',
     buildWideText({
@@ -1107,7 +1149,7 @@ export function buildFiles(seed = DEFAULT_SEED) {
   );
   mark(
     'a leap year, so Feb 29 is present',
-    `area-wide-leapyear.csv is dated ${LEAP_YEAR} and spans Feb 27 - Mar 2, so it carries a Feb 29 row ingest must drop.`,
+    `area-wide-leapyear.csv is dated ${LEAP_YEAR} and spans Feb 27 - Mar 2, so it carries Feb 29 rows ingest must keep.`,
     'area-wide-leapyear.csv',
   );
 
@@ -1135,6 +1177,260 @@ export function buildFiles(seed = DEFAULT_SEED) {
     'a BOM on line 1, header padding, trailing comma padding',
     "area-wide-bom-padded.csv opens with a UTF-8 BOM, pads its first entity column's header with a leading space, and every row ends with a trailing comma.",
     'area-wide-bom-padded.csv',
+  );
+
+  // --- Multi-year runs: one file spanning several contiguous years ---------
+  // A few days per year, Feb 27 - Mar 2, so the leap year's Feb 29 is in the
+  // file and the other years show the day it is absent.
+  const MULTI_FIRST = LEAP_YEAR - 2;
+  const MULTI_LAST = LEAP_YEAR;
+  const multiRange = [
+    [2, 27],
+    [3, 2],
+  ];
+  add(
+    'area-wide-multiyear.csv',
+    buildWideText({
+      entity: 'Area',
+      quantity: 'Load (MWh)',
+      year: MULTI_FIRST,
+      lastYear: MULTI_LAST,
+      range: multiRange,
+      names: AREA_NAMES.slice(0, 3),
+      seed: seed + 25,
+    }),
+    `shape W, area, ${MULTI_FIRST}-${MULTI_LAST} in one file -- Feb 27 - Mar 2 of each year; ` +
+      `the title names ${MULTI_FIRST} and the date line spans the run.`,
+  );
+  add(
+    'bus-long-multiyear.csv',
+    buildLongText({
+      keys: ['BusID', 'BusName', 'Area'],
+      entities: BUS_LONG_ROWS.length,
+      keyValuesFor: (e) => [BUS_LONG_ROWS[e].id, BUS_LONG_ROWS[e].name, BUS_LONG_ROWS[e].area],
+      metrics: BUS_LONG_METRICS,
+      year: MULTI_FIRST,
+      lastYear: MULTI_LAST,
+      range: multiRange,
+      seed: seed + 26,
+      shuffleRows: true,
+    }),
+    `shape L, bus, ${MULTI_FIRST}-${MULTI_LAST} in one file -- Feb 27 - Mar 2 of each year, rows shuffled.`,
+  );
+  mark(
+    'a contiguous multi-year span, one file of each shape',
+    `area-wide-multiyear.csv and bus-long-multiyear.csv each carry rows in every year ` +
+      `${MULTI_FIRST}-${MULTI_LAST} and no other.`,
+    'area-wide-multiyear.csv',
+    'bus-long-multiyear.csv',
+  );
+  mark(
+    'Feb 29 rows in the one leap year of a multi-year span',
+    `area-wide-multiyear.csv and bus-long-multiyear.csv carry Feb 29 rows in ${LEAP_YEAR}, ` +
+      'the only leap year of their span.',
+    'area-wide-multiyear.csv',
+    'bus-long-multiyear.csv',
+  );
+  mark(
+    'rows shuffled across years',
+    'bus-long-multiyear.csv writes its rows in a seeded random order, so years interleave.',
+    'bus-long-multiyear.csv',
+  );
+
+  // Nine years puts the span past hour 65,535: a reader that carried a span
+  // hour in a u16 would fold the last years onto the first.
+  const NINE_FIRST = 2030;
+  const NINE_LAST = NINE_FIRST + 8;
+  add(
+    'area-long-nineyear.csv',
+    buildLongText({
+      keys: ['Name'],
+      entities: 2,
+      keyValuesFor: (e) => [AREA_NAMES[e]],
+      metrics: AREA_METRICS.slice(0, 2),
+      year: NINE_FIRST,
+      lastYear: NINE_LAST,
+      range: [
+        [12, 30],
+        [12, 31],
+      ],
+      seed: seed + 27,
+    }),
+    `shape L, area, ${NINE_FIRST}-${NINE_LAST} in one file -- Dec 30-31 of each year, so the ` +
+      'last rows sit at the end of a span longer than 65,535 hours.',
+  );
+  mark(
+    'a 9-year span, past hour 65,535',
+    `area-long-nineyear.csv carries rows in every year ${NINE_FIRST}-${NINE_LAST}; ` +
+      `its ${NINE_LAST} rows lie past hour 65,535 of the span.`,
+    'area-long-nineyear.csv',
+  );
+
+  // --- Multi-year anomalies: each refused, or merged, by name --------------
+  const isDatedIn = (year) => (line) => new RegExp(`^\\d+/\\d+/${year},`).test(line);
+  const withoutYear = (text, year) =>
+    text
+      .split('\r\n')
+      .filter((line) => !isDatedIn(year)(line))
+      .join('\r\n');
+
+  // The preamble claims the whole run; the rows skip its middle year.
+  const GAP_YEAR = MULTI_FIRST + 1;
+  add(
+    'area-wide-multiyear-gap.csv',
+    withoutYear(
+      buildWideText({
+        entity: 'Area',
+        quantity: 'Load (MWh)',
+        year: MULTI_FIRST,
+        lastYear: MULTI_LAST,
+        range: multiRange,
+        names: AREA_NAMES.slice(0, 3),
+        seed: seed + 28,
+      }),
+      GAP_YEAR,
+    ),
+    `shape W, area, ${MULTI_FIRST} and ${MULTI_LAST} with no ${GAP_YEAR} rows -- the date line ` +
+      'still spans the run.',
+  );
+  mark(
+    'a multi-year span with a gap year',
+    `area-wide-multiyear-gap.csv carries rows in ${MULTI_FIRST} and ${MULTI_LAST} and none in ${GAP_YEAR}.`,
+    'area-wide-multiyear-gap.csv',
+  );
+
+  // Long, so the duplicate is one entity's row and the other entities' rows
+  // for that hour are clean: the refusal must name the one (entity, hour).
+  const duplicateLong = buildLongText({
+    keys: ['BusID', 'BusName', 'Area'],
+    entities: BUS_LONG_ROWS.length,
+    keyValuesFor: (e) => [BUS_LONG_ROWS[e].id, BUS_LONG_ROWS[e].name, BUS_LONG_ROWS[e].area],
+    metrics: BUS_LONG_METRICS,
+    year: MULTI_FIRST,
+    lastYear: MULTI_LAST,
+    range: [
+      [3, 1],
+      [3, 2],
+    ],
+    seed: seed + 29,
+  });
+  add(
+    'bus-long-multiyear-duplicate.csv',
+    duplicateLong + duplicateLong.split('\r\n').find(isDatedIn(MULTI_FIRST + 1)) + '\r\n',
+    `shape L, bus, ${MULTI_FIRST}-${MULTI_LAST}, Mar 1-2 of each year -- the first ` +
+      `${MULTI_FIRST + 1} row is written again at the end, verbatim.`,
+  );
+  mark(
+    'a duplicate (entity, hour) in year 2 of a span',
+    `bus-long-multiyear-duplicate.csv repeats one bus's Mar 1, hour 1, ${MULTI_FIRST + 1} row, ` +
+      'the second year of its span.',
+    'bus-long-multiyear-duplicate.csv',
+  );
+
+  // One entity-hour on Feb 29 of the non-leap middle year, cut from its Feb 28.
+  const badFeb29Year = MULTI_FIRST + 1;
+  const badFeb29Long = buildLongText({
+    keys: ['Name'],
+    entities: 2,
+    keyValuesFor: (e) => [AREA_NAMES[e]],
+    metrics: AREA_METRICS.slice(0, 2),
+    year: MULTI_FIRST,
+    lastYear: MULTI_LAST,
+    range: multiRange,
+    seed: seed + 30,
+  });
+  const feb28Row = badFeb29Long
+    .split('\r\n')
+    .find((line) => line.startsWith(`2/28/${badFeb29Year},`));
+  add(
+    'area-long-multiyear-feb29-nonleap.csv',
+    badFeb29Long + feb28Row.replace(`2/28/${badFeb29Year}`, `2/29/${badFeb29Year}`) + '\r\n',
+    `shape L, area, ${MULTI_FIRST}-${MULTI_LAST}, Feb 27 - Mar 2 of each year -- plus one row ` +
+      `dated 2/29/${badFeb29Year}, a day ${badFeb29Year} does not have.`,
+  );
+  mark(
+    'a Feb 29 row in a non-leap year of a span',
+    `area-long-multiyear-feb29-nonleap.csv carries one row dated 2/29/${badFeb29Year}, ` +
+      `alongside the real Feb 29 rows of ${LEAP_YEAR}.`,
+    'area-long-multiyear-feb29-nonleap.csv',
+  );
+
+  // One study exported in two runs whose year ranges abut.
+  const SPLIT_FIRST = 2030;
+  const yearSplitRange = [
+    [1, 1],
+    [1, 2],
+  ];
+  add(
+    'area-wide-split-years-a.csv',
+    buildWideText({
+      entity: 'Area',
+      quantity: 'Load (MWh)',
+      year: SPLIT_FIRST,
+      lastYear: SPLIT_FIRST + 1,
+      range: yearSplitRange,
+      names: AREA_NAMES.slice(0, 3),
+      seed: seed + 31,
+    }),
+    `split by years, half 1 of 2: ${SPLIT_FIRST}-${SPLIT_FIRST + 1}, Jan 1-2 of each year.`,
+  );
+  add(
+    'area-wide-split-years-b.csv',
+    buildWideText({
+      entity: 'Area',
+      quantity: 'Load (MWh)',
+      year: SPLIT_FIRST + 2,
+      range: yearSplitRange,
+      names: AREA_NAMES.slice(0, 3),
+      seed: seed + 32,
+    }),
+    `split by years, half 2 of 2: ${SPLIT_FIRST + 2}, Jan 1-2, the same areas as -a.csv.`,
+  );
+  mark(
+    'a same-study pair split by years, contiguous',
+    `area-wide-split-years-a.csv (${SPLIT_FIRST}-${SPLIT_FIRST + 1}) and -b.csv ` +
+      `(${SPLIT_FIRST + 2}) share their areas; together they span ${SPLIT_FIRST}-${SPLIT_FIRST + 2} ` +
+      'with no (area, hour) in both.',
+    'area-wide-split-years-a.csv',
+    'area-wide-split-years-b.csv',
+  );
+
+  // One Case whose tables disagree on the run: refused, not trimmed to the
+  // years they share.
+  add(
+    'case-mixedrange-area-wide.csv',
+    buildWideText({
+      entity: 'Area',
+      quantity: 'Load (MWh)',
+      year: MULTI_FIRST,
+      lastYear: MULTI_LAST,
+      range: yearSplitRange,
+      names: AREA_NAMES.slice(0, 2),
+      seed: seed + 33,
+    }),
+    `shape W, area, ${MULTI_FIRST}-${MULTI_LAST}, Jan 1-2 of each year -- the Area half of one Case.`,
+  );
+  add(
+    'case-mixedrange-bus-long.csv',
+    buildLongText({
+      keys: ['BusID', 'BusName', 'Area'],
+      entities: BUS_LONG_ROWS.length,
+      keyValuesFor: (e) => [BUS_LONG_ROWS[e].id, BUS_LONG_ROWS[e].name, BUS_LONG_ROWS[e].area],
+      metrics: BUS_LONG_METRICS,
+      year: MULTI_FIRST,
+      lastYear: MULTI_LAST - 1,
+      range: yearSplitRange,
+      seed: seed + 34,
+    }),
+    `shape L, bus, ${MULTI_FIRST}-${MULTI_LAST - 1}, Jan 1-2 of each year -- the Bus half of ` +
+      'the same Case, one year short.',
+  );
+  mark(
+    'a Case whose Area and Bus ranges differ',
+    `case-mixedrange-area-wide.csv spans ${MULTI_FIRST}-${MULTI_LAST}; ` +
+      `case-mixedrange-bus-long.csv, the same Case, spans ${MULTI_FIRST}-${MULTI_LAST - 1}.`,
+    'case-mixedrange-area-wide.csv',
+    'case-mixedrange-bus-long.csv',
   );
 
   return { files, properties };

@@ -99,6 +99,10 @@ lsof -ti:5199 -sTCP:LISTEN | xargs -r kill
   named data files into one Case. Two per-column Area files cannot share a
   Case (one metric each), so the Area Groups checks use the long exports
   `SAMPLE_CASEA_AreaLong_WithLoad.csv` and `..._NoLoad.csv`.
+- **A span of years:** `SAMPLE_CASEM_InterfaceFlow.csv`, `..._BusLMP.csv`
+  and `..._AreaLong.csv` are one Case, 1/1/2035 to 12/31/2037 with
+  2/29/2036 kept (26,304 hours), levels ×1/×2/×3 by year. A check that
+  loads them must expect what ingest does with a span.
 - **Load… (origin-private storage)** is per browser context: Save, then
   click `#load-btn` in the SAME context. In a context with nothing stored,
   Load… falls back to a file picker (`page.waitForEvent('filechooser')`).

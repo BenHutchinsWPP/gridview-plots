@@ -9,7 +9,7 @@
 //
 //   * the spec: four preamble lines, header on line 5, entity noun
 //     "interface". Numbers plus a word used only in messages.
-//   * `finalize`: turning the shape's `(entity x 8760)` cube into an
+//   * `finalize`: turning the shape's `(entity x 8784)` cube into an
 //     `InterfaceTable`, which is where the quantity, the unit and the source
 //     column list are attached.
 //   * the entry points main.ts and this kind's tests call.

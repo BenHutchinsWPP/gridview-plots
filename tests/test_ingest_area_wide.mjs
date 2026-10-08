@@ -26,9 +26,9 @@ const { AREA_ENTITY, finalizeCase, AREA_WIDE_SPEC } = await import('../src/table
 const { buildSeries } = await import('../src/tables/area/kernels.ts');
 const { setGroupings, setAxis, areasIn } = await import('../src/tables/area/groupings.ts');
 const { serializeAreaTable, deserializeAreaTable } = await import('../src/tables/area/types.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 const NEWLINE = 10;
 const decoder = new TextDecoder();
 
@@ -91,7 +91,7 @@ function loadWideArea(bytes, retained, blockBytes = 32 * 1024) {
     let to = afterNextNewline(bytes, Math.min(start + blockBytes, bytes.length));
     if (to < 0) to = bytes.length;
     if (to <= from) continue;
-    blitBlock(accumulator, parseBytes(parser, layout, bytes, from, to, plan.activePlanes, year));
+    blitBlock(accumulator, parseBytes(parser, layout, bytes, from, to, plan.activePlanes, year, 1));
   }
   return finalizeCase(accumulator, 'wide case', year, title);
 }
@@ -178,7 +178,7 @@ assert.ok(
 ok('a wide Area export loads into an AreaTable with the correct area axis');
 
 const reference = referenceAreaCube(decoder.decode(wide), AREAS);
-assert.equal(table.cube.length, reference.length, 'the cube is (areas x 1 metric x 8760)');
+assert.equal(table.cube.length, reference.length, 'the cube is (areas x 1 metric x 8784)');
 let compared = 0;
 for (let i = 0; i < reference.length; i++) {
   const expected = reference[i];
@@ -267,7 +267,7 @@ ok('an intensive wide export falls back to weight 1, plots the plain mean, and s
 
 // ---------------------------------------------------------------- 7. round trip
 
-// A LONG Area table on the same axis: several metrics, the same 8,760 hours.
+// A LONG Area table on the same axis: several metrics, the same 8,784 slot hours.
 const longMetrics = [EXTENSIVE, 'Generation (MWh)'];
 const longCube = new Float32Array(AREAS.length * longMetrics.length * HOURS);
 for (let i = 0; i < longCube.length; i++) longCube[i] = i % 977;

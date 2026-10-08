@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import './test_loader.mjs';
 
 globalThis.devicePixelRatio = 1;
-const { timeTicks, timeSplits, timeAxisValues } = await import('../src/ui/chart-format.ts');
+const { hourLabel, timeTicks, timeSplits, timeAxisValues } =
+  await import('../src/ui/chart-format.ts');
 
 let checks = 0;
 function ok(label) {
@@ -25,9 +26,9 @@ const WINDOWS = [
   {
     name: 'a full year',
     min: -0.5,
-    max: 8759.5,
+    max: 8783.5,
     width: 900,
-    splits: [0, 744, 1416, 2160, 2880, 3624, 4344, 5088, 5832, 6552, 7296, 8016],
+    splits: [0, 744, 1440, 2184, 2904, 3648, 4368, 5112, 5856, 6576, 7320, 8040],
     labels: MONTHS,
   },
   {
@@ -55,26 +56,26 @@ const WINDOWS = [
   },
   {
     name: 'a week',
-    min: 2000,
-    max: 2168,
+    min: 2024,
+    max: 2192,
     width: 900,
-    splits: [2016, 2040, 2064, 2088, 2112, 2136, 2160],
+    splits: [2040, 2064, 2088, 2112, 2136, 2160, 2184],
     labels: ['Mar 26', 'Mar 27', 'Mar 28', 'Mar 29', 'Mar 30', 'Mar 31', 'Apr 1'],
   },
   {
     name: 'a day on a narrow plot',
-    min: 3000,
-    max: 3024,
+    min: 3024,
+    max: 3048,
     width: 300,
-    splits: [3000, 3006, 3012, 3018, 3024],
+    splits: [3024, 3030, 3036, 3042, 3048],
     labels: ['May 6 HE 1', 'May 6 HE 7', 'May 6 HE 13', 'May 6 HE 19', 'May 7 HE 1'],
   },
   {
     name: 'a day on a wide plot',
-    min: 3000,
-    max: 3024,
+    min: 3024,
+    max: 3048,
     width: 900,
-    splits: [3000, 3002, 3004, 3006, 3008, 3010, 3012, 3014, 3016, 3018, 3020, 3022, 3024],
+    splits: [3024, 3026, 3028, 3030, 3032, 3034, 3036, 3038, 3040, 3042, 3044, 3046, 3048],
     labels: [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]
       .map((he) => `May 6 HE ${he}`)
       .concat('May 7 HE 1'),
@@ -95,6 +96,15 @@ for (const w of WINDOWS) {
   assert.deepEqual(timeAxisValues(self, splits), ticks.labels, `${w.name}: the values hook agrees`);
 }
 ok('the uPlot splits and values hooks give the pure function’s ticks for every window');
+
+// The axis is the leap-calendar slot in every year: Feb 29 is hours 1416-1439
+// whether or not the Case's year has one.
+assert.equal(hourLabel(1415), 'Feb 28 · HE 24');
+assert.equal(hourLabel(1416), 'Feb 29 · HE 1');
+assert.equal(hourLabel(1440), 'Mar 1 · HE 1');
+assert.equal(hourLabel(8783), 'Dec 31 · HE 24');
+assert.deepEqual(timeTicks(1392, 1464, 900).labels, ['Feb 28', 'Feb 29', 'Mar 1', 'Mar 2']);
+ok('an hour label and a day tick name Feb 29, and Mar 1 after it');
 
 // The pane measures in CSS pixels: a 2x screen reports a bbox twice as wide
 // and must not get twice the ticks.

@@ -340,7 +340,7 @@ const AXIS = ['SYN-P01', 'SYN-P02', 'SYN-P03'];
 // its MIN bounds the group from above as −MIN, its MAX from below as −MAX.
 {
   const { summedLimits } = await import('../src/tables/interface/limits.ts');
-  const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+  const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
   const f = (sign, upper, lower) => ({
     sign,
     limits: {
@@ -366,7 +366,7 @@ const AXIS = ['SYN-P01', 'SYN-P02', 'SYN-P03'];
   ok('the swap is signed arithmetic: a positive MIN reversed stays signed');
 
   // Hourly sides: one member unlimited in hour 1 makes that hour NaN only.
-  const monthly = new Float32Array(HOURS_PER_YEAR).fill(80);
+  const monthly = new Float32Array(YEAR_SLOT_HOURS).fill(80);
   monthly[1] = NaN;
   const gap = summedLimits([f(1, monthly, -20), f(1, 20, -5)]);
   assert.equal(gap.upper[0], 100);

@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
 
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS, realHours } = await import('../src/model/calendar.ts');
 const {
   PREVIEW_COLOR,
   createSeriesBuffers,
@@ -36,7 +36,9 @@ const { INTERFACE_GROUP_BY, clearInterfaceGroups, setInterfaceMembership } =
 const { attachLookup, clearLookups } = await import('../src/lookups/store.ts');
 const { buildLookup, parseLookupCsv } = await import('../src/lookups/parse.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
+/** What a 2035 fixture keeps: the slot less its phantom Feb 29. */
+const REAL_HOURS = realHours(2035, 1);
 let checks = 0;
 function ok(label) {
   checks++;
@@ -159,7 +161,7 @@ function draw(data, subject, { filters = NO_FILTERS, spec = {}, opts = {} } = {}
 
   assert.equal(entry.unit, 'MWh', "the unit comes from the file's own title quantity");
   assert.equal(entry.quantity, 'Generation (MWh)');
-  assert.equal(entry.n, HOURS, 'with no filters every hour is kept');
+  assert.equal(entry.n, REAL_HOURS, 'with no filters every hour is kept');
   assert.equal(entry.values[0], 1000, 'the stored plane IS the series in this build');
   assert.equal(entry.values[HOURS - 1], 1000 + HOURS - 1);
   assert.equal(entry.stats.min, 1000);
@@ -271,7 +273,7 @@ function makeGenList(rows) {
     fill: (i, h) => (i + 1) * 10,
   });
   const solarGroup = draw(solarCase, { groupBy: 'FuelType', value: 'Solar' });
-  assert.equal(solarGroup.n, HOURS);
+  assert.equal(solarGroup.n, REAL_HOURS);
   // G1 PV is 10, G2 PV is 20 -> sum is 30
   assert.equal(solarGroup.values[0], 30);
   assert.equal(solarGroup.stats.mean, 30);
@@ -427,7 +429,7 @@ function drawBus(data, subject, { filters = NO_FILTERS, spec = {} } = {}) {
   const data = makeBusCase();
   const entry = drawBus(data, { entity: 10002 });
   assert.equal(entry.unit, '$/MWh', "the unit comes from the file's own title quantity");
-  assert.equal(entry.n, HOURS);
+  assert.equal(entry.n, REAL_HOURS);
   assert.equal(entry.values[0], 100, 'the id picked the SECOND plane, not the first');
   ok('a bus subject is resolved through the id, and the id is the axis');
 
@@ -602,7 +604,7 @@ function drawArea(
   const entry = drawArea(data, { entity: 'AREA_AV' });
   assert.equal(entry.unit, 'MWh', 'the unit comes from aggregation rules');
   assert.equal(entry.quantity, 'Load (MWh)');
-  assert.equal(entry.n, HOURS);
+  assert.equal(entry.n, REAL_HOURS);
   assert.equal(entry.values[0], 0);
   assert.equal(entry.values[HOURS - 1], HOURS - 1);
   assert.equal(entry.stats.min, 0);
@@ -633,7 +635,7 @@ function drawArea(
   setGroupings('Name,Grouping\nAREA_AV,Northwest\nAREA_NV,Northwest');
   const data = makeAreaCase({ fill: (a, m, h) => (a + 1) * 10 });
   const entry = drawArea(data, { groupBy: 'grouping', value: 'Northwest' });
-  assert.equal(entry.n, HOURS);
+  assert.equal(entry.n, REAL_HOURS);
   // AREA_AV is 10, AREA_NV is 20 -> sum is 30 for extensive metric
   assert.equal(entry.values[0], 30);
   ok('a grouped subject resolves through groupings for Area');
@@ -728,7 +730,7 @@ function drawInterface(data, subject, { filters = NO_FILTERS, spec = {}, opts = 
   const entry = drawInterface(data, { entity: 'P01' });
   assert.equal(entry.unit, 'MW');
   assert.equal(entry.quantity, 'Power Flow (MW)');
-  assert.equal(entry.n, HOURS);
+  assert.equal(entry.n, REAL_HOURS);
   assert.equal(entry.values[0], 1000);
   assert.equal(entry.values[HOURS - 1], 1000 + HOURS - 1);
   assert.equal(entry.stats.min, 1000);
@@ -766,10 +768,10 @@ function drawInterface(data, subject, { filters = NO_FILTERS, spec = {}, opts = 
 
 {
   // % of range for Interface: each hour over its own MONTH's limit, handed in
-  // as numbers (`options.rangeOf`). 2035 hours: January 0-743, February
-  // 744-1415, March from 1416.
+  // as numbers (`options.rangeOf`). Slot hours: January 0-743, February
+  // 744-1439 (2035's Feb 29, 1416-1439, phantom), March from 1440.
   const FEB = 744;
-  const MAR = 1416;
+  const MAR = 1440;
   const data = makeInterfaceCase({
     fill: (_i, h) => (h === 0 ? -500 : h === 1 ? 2500 : 1000),
   });

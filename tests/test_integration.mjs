@@ -27,7 +27,7 @@ const { restoreBundle, readBundleFile } = await import('../src/storage/store.ts'
 const { buildManifest, BUNDLE_VERSION } = await import('../src/storage/envelope.ts');
 const { createSectionState } = await import('../src/ui/section-state.ts');
 const { allAreas } = await import('../src/tables/area/groupings.ts');
-const { HOURS_PER_YEAR, TOU_LABELS } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS, TOU_LABELS } = await import('../src/model/calendar.ts');
 
 const areaHeader = await import('../src/tables/long/header.ts');
 const areaBlock = await import('../src/tables/long/block.ts');
@@ -37,7 +37,7 @@ const ifaceHeader = await import('../src/tables/interface/header.ts');
 const ifaceBlock = await import('../src/tables/interface/block.ts');
 const ifacePool = await import('../src/tables/interface/pool.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 const NEWLINE = 10;
 const YEAR = 2036;
 
@@ -227,6 +227,7 @@ for (const [from, to] of areaRanges) {
       areaColumnPlan.sourceMetricCount,
       scan.rows,
       areaPlan.year,
+      1,
     ),
   );
 }
@@ -265,6 +266,7 @@ function ingestInterface(bytes, plan) {
         to,
         columnPlan.activePlanes,
         plan.year,
+        1,
       ),
     );
   }
@@ -650,7 +652,27 @@ await check('each section reads its own kind: one going empty does not clear the
 //
 // A legacy .gvap built from the same ingested Area table in v1's manifest
 // shape, read through `readBundleFile`: magic dispatch, migration and cube
-// slicing on real bytes.
+// slicing on real bytes. v1 held 8,760 hours per plane, Feb 29 dropped, so
+// the fixture cuts it out and the restore must put a blank one back.
+
+const FEB_29 = 59 * 24;
+/** `from` with Feb 29 cut out of each of its `planes` (as v1 saved it), or,
+ * with `fill`, blanked in place (as a restore puts it back). */
+function feb29(from, planes, fill) {
+  const out = fill === undefined ? new from.constructor(planes * (HOURS - 24)) : from.slice();
+  for (let plane = 0; plane < planes; plane++) {
+    const at = plane * HOURS;
+    if (fill !== undefined) {
+      out.fill(fill, at + FEB_29, at + FEB_29 + 24);
+      continue;
+    }
+    out.set(from.subarray(at, at + FEB_29), plane * (HOURS - 24));
+    out.set(from.subarray(at + FEB_29 + 24, at + HOURS), plane * (HOURS - 24) + FEB_29);
+  }
+  return out;
+}
+const legacyPlanes = areaTable.presence.length;
+const legacyCube = feb29(areaTable.cube, legacyPlanes);
 
 const legacyManifest = {
   version: 1,
@@ -663,20 +685,20 @@ const legacyManifest = {
       sourceColumns: areaTable.sourceColumns,
       areas: areaTable.areas,
       presence: Buffer.from(areaTable.presence).toString('base64'),
-      tou: Buffer.from(areaTable.tou).toString('base64'),
-      cubeBytes: areaTable.cube.byteLength,
+      tou: Buffer.from(feb29(areaTable.tou, 1)).toString('base64'),
+      cubeBytes: legacyCube.byteLength,
     },
   ],
 };
 const legacyFile = new File(
-  [bundleBytes('GVAP', legacyManifest, [bytesOf(areaTable.cube)])],
+  [bundleBytes('GVAP', legacyManifest, [bytesOf(legacyCube)])],
   'old-study.gvap',
 );
 const legacyLoaded = await readBundleFile(legacyFile);
 
 await check('a legacy GVAP file still migrates and loads, bitmaps and mapping intact', () => {
   assert.deepEqual(legacyLoaded.warnings, [
-    'Migrated a version-1 (Area-only) bundle to version 3 as it loaded. The original was left ' +
+    'Migrated a version-1 (Area-only) bundle to version 4 as it loaded. The original was left ' +
       'untouched — save again to keep this study in the current format.',
   ]);
   assert.equal(legacyLoaded.restoredCases.length, 1);
@@ -688,9 +710,11 @@ await check('a legacy GVAP file still migrates and loads, bitmaps and mapping in
   assert.ok(table, 'and it lands in the Area slot, with no variant');
   assert.equal(table.key.variant, undefined);
 
-  assert.ok(bytesOf(table.data.cube).equals(bytesOf(areaTable.cube)), 'cube bytes');
+  const cube = feb29(areaTable.cube, legacyPlanes, NaN);
+  assert.ok(bytesOf(table.data.cube).equals(bytesOf(cube)), 'cube bytes, Feb 29 NaN');
   assert.ok(bytesOf(table.data.presence).equals(bytesOf(areaTable.presence)), 'presence bitmap');
-  assert.ok(bytesOf(table.data.tou).equals(bytesOf(areaTable.tou)), 'TOU array');
+  const tou = feb29(areaTable.tou, 1, 0xff);
+  assert.ok(bytesOf(table.data.tou).equals(bytesOf(tou)), 'TOU array, Feb 29 0xff');
   assert.deepEqual(table.data.areas, areaTable.areas, 'the saved axis, not the global one');
   assert.equal(table.data.presence[0], 0, 'the absent planes are still absent after migration');
 

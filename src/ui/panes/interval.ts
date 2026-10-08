@@ -4,15 +4,15 @@
 // (`src/series/interval.ts`), every period drawn over one shared axis and
 // coloured from the earliest period to the latest, so a drift through the
 // year reads as a change of colour. Hand-drawn, because uPlot would need a
-// series per period and a year of days is 365 of them.
+// series per period and a year of days is 366 of them.
 //
 // One series, as the heatmap: the pane names which of the drawn lines it
 // took. `periodColour` is the one colour rule the pane and its print figure
 // share. A clicked period stays picked while it is still drawn.
 
 import type { CaseSeries, PaneInterval } from '../charts';
-import { DAY_NAMES, MONTH_NAMES } from '../../model/calendar';
-import { DAYS_PER_YEAR, weekdayOf } from '../../model/date-range';
+import { DAY_NAMES, MONTH_NAMES, YEAR_SLOT_DAYS } from '../../model/calendar';
+import { weekdayOf } from '../../model/date-range';
 import { NO_YEAR } from '../../app/boxes';
 import {
   axisHours,
@@ -49,7 +49,7 @@ interface IntervalGeometry {
   periods: Period[];
   span: number;
   summary: ReturnType<typeof periodSummary>;
-  /** The series' own weekdays, 0 = Monday. */
+  /** The series' own weekdays, 0 = Monday, -1 for a phantom Feb 29. */
   weekday: (day: number) => number;
   low: number;
   high: number;
@@ -577,7 +577,7 @@ export function createIntervalAdapter(host: PaneHost): PaneAdapter {
           interval: {
             ...drawn.options,
             picked: drawn.picked,
-            weekdays: Array.from({ length: DAYS_PER_YEAR }, (_, day) => drawn.weekday(day)),
+            weekdays: Array.from({ length: YEAR_SLOT_DAYS }, (_, day) => drawn.weekday(day)),
           },
         });
       },

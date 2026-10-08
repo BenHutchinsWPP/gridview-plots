@@ -20,7 +20,7 @@ const { readCasePlan, ingestWithWorkers } = await import('../src/tables/interfac
 const { instantiateParser, parseBytes } = await import('../src/tables/wide/block.ts');
 const { readWholeRows } = await import('../src/tables/wide/worker.ts');
 const { normalizeCell, parseNumber } = await import('../src/lookups/parse.ts');
-const { HOURS_PER_YEAR, buildCalendar, getMonth } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS, buildCalendar, getMonth } = await import('../src/model/calendar.ts');
 const { fileBlob } = await import('./file-blob.mjs');
 
 /** A limit this far past the flow's own extreme, on its own side, counts as
@@ -112,7 +112,8 @@ function inProcessWorker(parser) {
           from,
           to,
           message.activePlanes,
-          message.year,
+          message.firstYear,
+          message.numYears,
         );
         reply({ kind: 'done', blockId: message.blockId, caseIndex: message.caseIndex, ...payload });
       } catch (error) {
@@ -122,8 +123,8 @@ function inProcessWorker(parser) {
   };
 }
 
-/** The flow file as a drop would load it: Feb 29 dropped, a repeated hour
- * refused, a blank cell absent. Then per interface and month, its extremes. */
+/** The flow file as a drop would load it: on the leap-calendar slot (a
+ * leap year's Feb 29 kept), a repeated hour refused, a blank cell absent. Then per interface and month, its extremes. */
 async function flowExtremes(file, plan) {
   const wasm = readFileSync(new URL('../parser/wide/block.wasm', import.meta.url));
   const parser = await instantiateParser(new WebAssembly.Module(wasm));
@@ -144,8 +145,8 @@ async function flowExtremes(file, plan) {
       max: new Float64Array(12).fill(-Infinity),
       min: new Float64Array(12).fill(Infinity),
     };
-    const plane = table.cube.subarray(i * HOURS_PER_YEAR, (i + 1) * HOURS_PER_YEAR);
-    for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+    const plane = table.cube.subarray(i * YEAR_SLOT_HOURS, (i + 1) * YEAR_SLOT_HOURS);
+    for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
       const value = plane[hour];
       if (Number.isNaN(value)) continue;
       const month = getMonth(calendar[hour]) - 1;

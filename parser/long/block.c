@@ -9,7 +9,7 @@
 //    its own instance (no SharedArrayBuffer on GitHub Pages), so case-sized
 //    buffers would multiply by the pool.
 // 2. ROW ORDER DOES NOT MATTER. Output is a row list, each row carrying its
-//    own (area, hour); the main thread scatters it.
+//    own (area, year, hour); the main thread scatters it.
 // 3. BLOCKS ARE INDEPENDENT. Placement comes from each row's own fields,
 //    never a row counter.
 // 4. SILENCE IS THE ENEMY. Every failure seen here is counted and reported,
@@ -21,7 +21,7 @@
 
 // Bumped on any change to the exported surface or slab layout, so a stale
 // committed binary is an error at instantiate, not a wrong number.
-#define ABI_VERSION 8u
+#define ABI_VERSION 9u
 
 // ---------------------------------------------------------------- dimensions
 //
@@ -37,7 +37,7 @@
 #endif
 
 // One block's values, row index, row TOU, areaSeen and column plan. A row
-// with all its fields costs 4 B per retained metric plus 5 B of placement,
+// with all its fields costs 4 B per retained metric plus 6 B of placement,
 // and holds at least one delimiter per field, so the arena needs at most 4x a
 // block of whole rows (tests/test_long_refusals.mjs holds BLOCK_TARGET_BYTES
 // to that). Short rows reserve cells they have no bytes for; a block of them
@@ -63,14 +63,18 @@ static unsigned char arena[ARENA_BYTES] __attribute__((aligned(16)));
 static unsigned areaHash[AREA_TABLE];
 static unsigned areaIdx[AREA_TABLE];
 
-#define HOURS_PER_YEAR 8760u
+// Years one parse or scan can place: rowYear is a u8 offset from firstYear.
+#define MAX_YEARS 256u
 
 // Arena regions, re-pointed by configure().
 static int*            planeOf;   // [sourceMetrics] source metric -> output plane, or -1
 static float*          values;    // [maxRows * numPlanes], row-major
 static unsigned short* rowArea;   // [maxRows] cube area index of each emitted row
-static unsigned short* rowHour;   // [maxRows] hour-of-year of each emitted row
+// [maxRows] hour of each emitted row within its year's 8,784-hour leap slot,
+// 0..8783. Never an index across years: a u16 would wrap 7.46 years in.
+static unsigned short* rowHour;
 static unsigned char*  rowTou;    // [maxRows] TOU of each emitted row, 0 = OffPeak, 1 = OnPeak
+static unsigned char*  rowYear;   // [maxRows] year of each emitted row, as an offset from firstYear
 static unsigned char*  areaSeen;  // [numAreas], 1 = at least one row in this block
 
 static unsigned g_numAreas, g_numPlanes, g_maxRows, g_sourceMetrics;
@@ -80,7 +84,7 @@ static unsigned g_numAreas, g_numPlanes, g_maxRows, g_sourceMetrics;
 // are per KIND and arrive as NUMBERS.
 static unsigned g_keyCols = 4u, g_entityCol = 3u;
 static unsigned g_rows, g_emitted, g_unknownArea, g_badRow, g_overflow;
-static unsigned g_yearMismatch, g_badId, g_badTou, g_badCell, g_ragged;
+static unsigned g_outOfRange, g_badId, g_badTou, g_badCell, g_ragged;
 
 __attribute__((export_name("abi_version")))       unsigned       abi_version(void)       { return ABI_VERSION; }
 __attribute__((export_name("inbuf_ptr")))         unsigned char* inbuf_ptr(void)         { return inbuf; }
@@ -91,15 +95,16 @@ __attribute__((export_name("values_ptr")))        float*          values_ptr(voi
 __attribute__((export_name("row_area_ptr")))      unsigned short* row_area_ptr(void)      { return rowArea; }
 __attribute__((export_name("row_hour_ptr")))      unsigned short* row_hour_ptr(void)      { return rowHour; }
 __attribute__((export_name("row_tou_ptr")))       unsigned char*  row_tou_ptr(void)       { return rowTou; }
+__attribute__((export_name("row_year_ptr")))      unsigned char*  row_year_ptr(void)      { return rowYear; }
 __attribute__((export_name("area_seen_ptr")))     unsigned char*  area_seen_ptr(void)     { return areaSeen; }
 __attribute__((export_name("last_rows")))         unsigned        last_rows(void)         { return g_rows; }
 __attribute__((export_name("last_emitted")))      unsigned        last_emitted(void)      { return g_emitted; }
 __attribute__((export_name("last_unknown_area"))) unsigned        last_unknown_area(void) { return g_unknownArea; }
 __attribute__((export_name("last_bad_row")))      unsigned        last_bad_row(void)      { return g_badRow; }
 __attribute__((export_name("last_overflow")))     unsigned        last_overflow(void)     { return g_overflow; }
-// Rows in a year other than the Case's: a day-of-year ignores the year, so a
-// second year would fold onto the same hours.
-__attribute__((export_name("last_year_mismatch"))) unsigned       last_year_mismatch(void){ return g_yearMismatch; }
+// Rows dated outside the Case's years: placing one would need a year the
+// cube has no slot for.
+__attribute__((export_name("last_out_of_range"))) unsigned        last_out_of_range(void) { return g_outOfRange; }
 // Rows whose identity is blank or quoted. This reader splits on every comma,
 // so a quoted field is not read as one.
 __attribute__((export_name("last_bad_id")))       unsigned        last_bad_id(void)       { return g_badId; }
@@ -123,7 +128,7 @@ unsigned configure(unsigned numAreas, unsigned numPlanes, unsigned maxRows, unsi
   // 64-bit: rows * planes overflows 32 bits before the arena check.
   unsigned long long cells = (unsigned long long)maxRows * numPlanes;
   unsigned long long need = (unsigned long long)sourceMetrics * 4ull + cells * 4ull +
-                            (unsigned long long)maxRows * 5ull + (unsigned long long)numAreas;
+                            (unsigned long long)maxRows * 6ull + (unsigned long long)numAreas;
   if (need > (unsigned long long)ARENA_BYTES) return 0u;
 
   // Every region size is a multiple of its element width, so each starts
@@ -134,6 +139,7 @@ unsigned configure(unsigned numAreas, unsigned numPlanes, unsigned maxRows, unsi
   rowArea  = (unsigned short*)(arena + off);  off += maxRows * 2u;
   rowHour  = (unsigned short*)(arena + off);  off += maxRows * 2u;
   rowTou   = arena + off;                     off += maxRows;
+  rowYear  = arena + off;                     off += maxRows;
   areaSeen = arena + off;
 
   g_numAreas      = numAreas;
@@ -220,11 +226,28 @@ static unsigned nameOff[MAX_NAMES];
 static unsigned nameLen[MAX_NAMES];
 static unsigned g_names, g_scanRows, g_scanOverflow;
 
+// Rows per year, so JS can refuse a gap before it allocates a cube. Indexed
+// relative to the scan's first dated year, which may sit anywhere in the span
+// (row order means nothing), so the window reaches MAX_YEARS - 1 either side
+// of it and any span of MAX_YEARS that contains it fits.
+#define YEAR_WINDOW (2u * MAX_YEARS)
+static unsigned yearRows[YEAR_WINDOW];
+static unsigned g_yearBase, g_yearLo, g_yearHi, g_yearOverflow;
+
 __attribute__((export_name("axis_names")))     unsigned  axis_names(void)     { return g_names; }
 __attribute__((export_name("axis_off_ptr")))   unsigned* axis_off_ptr(void)   { return nameOff; }
 __attribute__((export_name("axis_len_ptr")))   unsigned* axis_len_ptr(void)   { return nameLen; }
 __attribute__((export_name("axis_rows")))      unsigned  axis_rows(void)      { return g_scanRows; }
 __attribute__((export_name("axis_overflow")))  unsigned  axis_overflow(void)  { return g_scanOverflow; }
+// The years the last scan's dated rows span: `scan_years()` counts from
+// `scan_min_year()`, and `scan_year_rows_ptr()[k]` is the rows dated in year
+// min + k. 0 years when no row carried a readable date; those rows are
+// refused by parse_block.
+__attribute__((export_name("scan_min_year")))      unsigned  scan_min_year(void)  { return g_yearBase + g_yearLo - (MAX_YEARS - 1u); }
+__attribute__((export_name("scan_years")))         unsigned  scan_years(void)     { return g_yearHi >= g_yearLo ? g_yearHi - g_yearLo + 1u : 0u; }
+__attribute__((export_name("scan_year_rows_ptr"))) unsigned* scan_year_rows_ptr(void) { return yearRows + g_yearLo; }
+// Dated rows outside a MAX_YEARS span, which no rowYear offset could carry.
+__attribute__((export_name("scan_year_overflow"))) unsigned  scan_year_overflow(void) { return g_yearOverflow; }
 
 static inline unsigned find_byte(const unsigned char* b, unsigned i, unsigned end, unsigned char target) {
   const v128_t v = wasm_i8x16_splat((char)target);
@@ -270,17 +293,34 @@ static inline void name_insert(const unsigned char* b, unsigned s, unsigned e) {
   g_scanOverflow++;
 }
 
+/** Count one row's Date toward its year. An unreadable date is left to
+ * parse_block, which refuses it with the reason. */
+static inline void year_count(const unsigned char* b, unsigned s, unsigned e) {
+  if (e > s && b[e - 1u] == '\r') e--;
+  unsigned year;
+  if (date_to_day(b + s, b + e, &year) == NO_DAY) return;
+  if (g_yearHi < g_yearLo) { g_yearBase = year; g_yearLo = g_yearHi = MAX_YEARS - 1u; }
+  // Unsigned: a year more than MAX_YEARS - 1 before the base wraps high.
+  unsigned k = year - g_yearBase + (MAX_YEARS - 1u);
+  if (k >= YEAR_WINDOW) { g_yearOverflow++; return; }
+  yearRows[k]++;
+  if (k < g_yearLo) g_yearLo = k;
+  if (k > g_yearHi) g_yearHi = k;
+}
+
 /**
- * Read every row's identity and nothing else: fills the distinct-name table
- * and counts non-blank rows, the exact `maxRows` for a parse of these bytes.
- * Date and Hour are not read; row order carries no meaning, and duplicates
- * are caught by blitBlock.
+ * Read every row's identity and its Date's year, and nothing else: fills the
+ * distinct-name table, counts non-blank rows (the exact `maxRows` for a parse
+ * of these bytes) and counts rows per year. Hour is not read; row order
+ * carries no meaning, and duplicates are caught by blitBlock.
  */
 __attribute__((export_name("scan_axis")))
 unsigned scan_axis(unsigned len) {
   const unsigned char* b = inbuf;
   g_names = 0; g_scanRows = 0; g_scanOverflow = 0;
   for (unsigned i = 0; i < NAME_TABLE; i++) nameSlot[i] = INVALID;
+  for (unsigned i = 0; i < YEAR_WINDOW; i++) yearRows[i] = 0;
+  g_yearBase = 0; g_yearLo = 1u; g_yearHi = 0u; g_yearOverflow = 0;
 
   unsigned i = 0;
 
@@ -295,6 +335,7 @@ unsigned scan_axis(unsigned len) {
     unsigned reached = 1u;
     for (unsigned k = 0; k < g_entityCol; k++) {
       unsigned c = find_byte(b, s, rowEnd, ',');
+      if (k == 0u) year_count(b, i, c);
       if (c >= rowEnd) { reached = 0u; break; }
       s = c + 1u;
     }
@@ -311,30 +352,42 @@ unsigned scan_axis(unsigned len) {
     // Everything past the identity is skipped WHOLE; that is why this is cheap.
     i = rowEnd + 1u;
   }
+  // A window wider than MAX_YEARS: the years past the first MAX_YEARS from
+  // the earliest are overflow, so the span reported always fits a rowYear.
+  if (g_yearHi >= g_yearLo && g_yearHi - g_yearLo >= MAX_YEARS) {
+    for (unsigned k = g_yearLo + MAX_YEARS; k <= g_yearHi; k++) {
+      g_yearOverflow += yearRows[k];
+      yearRows[k] = 0;
+    }
+    g_yearHi = g_yearLo + MAX_YEARS - 1u;
+  }
   return g_scanRows;
 }
 
 /**
  * Parse a block of WHOLE rows (`len` bytes from a row boundary, ending after
  * a '\n') into a ROW LIST: values[row * numPlanes + plane], placement in
- * rowArea[row] / rowHour[row] / rowTou[row]. `year` is the Case's; every row
- * is checked against it. Columns: Date, Hour, TOU at 0-2, identity at
+ * rowArea[row] / rowYear[row] / rowHour[row] / rowTou[row]. The Case spans
+ * `numYears` years from `firstYear`; a row dated outside them is counted, and
+ * rowYear is the offset into them. Columns: Date, Hour, TOU at 0-2, identity at
  * `g_entityCol`, other key columns skipped, then source metric
  * `col - g_keyCols` routed through planeOf. Metrics were matched by trimmed
  * header name on the JS side.
  */
 __attribute__((export_name("parse_block")))
-unsigned parse_block(unsigned len, unsigned year) {
+unsigned parse_block(unsigned len, unsigned firstYear, unsigned numYears) {
   const unsigned char* b = inbuf;
   unsigned col = 0u, fs = 0u;
-  unsigned rowDay = NO_DAY, rowYear = 0u, rowHourOfDay = 0u, touCode = NO_TOU;
+  unsigned rowDay = NO_DAY, dateYear = 0u, rowHourOfDay = 0u, touCode = NO_TOU;
   unsigned area = NO_AREA, slot = INVALID, rowBase = 0u;
   const unsigned rowFields = g_keyCols + g_sourceMetrics;
+  // rowYear is a u8: years past the first MAX_YEARS are out of range.
+  if (numYears > MAX_YEARS) numYears = MAX_YEARS;
   // A local, so read_value's counter stays in a register.
   unsigned badCell = 0u;
 
   g_rows = 0u; g_emitted = 0u; g_unknownArea = 0u; g_badRow = 0u; g_overflow = 0u;
-  g_yearMismatch = 0u; g_badId = 0u; g_badTou = 0u; g_ragged = 0u;
+  g_outOfRange = 0u; g_badId = 0u; g_badTou = 0u; g_ragged = 0u;
 
   // Unwritten cells must read as absent (NaN), never a stale float or zero.
   // Done here so no caller can skip it.
@@ -347,14 +400,13 @@ unsigned parse_block(unsigned len, unsigned year) {
   }
   for (unsigned k = 0; k < g_numAreas; k++) areaSeen[k] = 0;
 
-  // Each row is placed or counted against exactly one refusal, in this
-  // order. Feb 29 comes first: it is dropped whatever else is wrong with it.
+  // Each row is placed or counted against exactly one refusal, in this order.
   #define FIELD(END)                                                            \
     {                                                                           \
       unsigned e = (END);                                                       \
       if (e > fs && b[e - 1] == '\r') e--;                                      \
       if (col == 0u) {                                                          \
-        rowDay = date_to_day(b + fs, b + e, &rowYear);                          \
+        rowDay = date_to_day(b + fs, b + e, &dateYear);                         \
       } else if (col == 1u) {                                                   \
         rowHourOfDay = read_hour(b + fs, b + e);                                \
       } else if (col == 2u) {                                                   \
@@ -366,17 +418,15 @@ unsigned parse_block(unsigned len, unsigned year) {
         const unsigned char* ns = b + fs;                                       \
         const unsigned char* ne = b + e;                                        \
         trim_field(&ns, &ne);                                                   \
-        unsigned h = (rowDay < FEB29 && rowHourOfDay >= 1u &&                   \
+        unsigned h = (rowDay != NO_DAY && rowHourOfDay >= 1u &&                 \
                       rowHourOfDay <= 24u) ? rowDay * 24u + (rowHourOfDay - 1u) \
                                            : INVALID;                           \
         slot = INVALID;                                                         \
         area = NO_AREA;                                                         \
-        if (rowDay == FEB29) {                                                  \
-          /* dropped on purpose */                                              \
-        } else if (h == INVALID) {                                              \
+        if (h == INVALID) {                                                     \
           g_badRow++;                                                           \
-        } else if (rowYear != year) {                                           \
-          g_yearMismatch++;                                                     \
+        } else if (dateYear - firstYear >= numYears) { /* wraps below first */  \
+          g_outOfRange++;                                                       \
         } else if (ne == ns || *ns == '"' || ne[-1] == '"') {                   \
           g_badId++;                                                            \
         } else if ((area = area_lookup(fnv1a(ns, ne))) >= g_numAreas) {         \
@@ -394,6 +444,7 @@ unsigned parse_block(unsigned len, unsigned year) {
                load on every one of the file's ~19M value cells. */              \
             rowBase = slot * g_numPlanes;                                       \
             rowArea[slot] = (unsigned short)area;                               \
+            rowYear[slot] = (unsigned char)(dateYear - firstYear);              \
             rowHour[slot] = (unsigned short)h;                                  \
             rowTou[slot] = (unsigned char)touCode;                              \
           } else g_overflow++;                                                  \

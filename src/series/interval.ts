@@ -13,8 +13,8 @@
 // The month axis is 31 days long. A shorter month stops early rather than
 // being stretched, which would put its 15th somewhere other than July's.
 
-import { DAY_NAMES, MONTH_NAMES } from '../model/calendar';
-import { DAYS_PER_YEAR, MONTH_STARTS, dayLabel, monthOfDay } from '../model/date-range';
+import { DAY_NAMES, MONTH_NAMES, SLOT_MONTH_STARTS, YEAR_SLOT_DAYS } from '../model/calendar';
+import { dayLabel, monthOfDay } from '../model/date-range';
 
 export type IntervalLength = 'day' | 'week' | 'month';
 
@@ -35,9 +35,10 @@ export function axisHours(length: IntervalLength): number {
 }
 
 /**
- * Cut `values` (8,760 hours, NaN where not kept) into periods. `weekday`
- * gives a day's weekday in the series' own year, 0 = Monday .. 6 = Sunday. A
- * period with no kept hour is left out.
+ * Cut `values` (one 8,784-hour slot, NaN where not kept) into periods.
+ * `weekday` gives a day's weekday in the series' own year, 0 = Monday .. 6 =
+ * Sunday, or -1 for a phantom Feb 29, which no period holds. A period with no
+ * kept hour is left out.
  */
 export function cutPeriods(
   values: ArrayLike<number>,
@@ -62,29 +63,32 @@ export function cutPeriods(
   };
 
   if (length === 'day') {
-    for (let d = 0; d < DAYS_PER_YEAR; d++) {
+    for (let d = 0; d < YEAR_SLOT_DAYS; d++) {
+      if (weekday(d) < 0) continue;
       add(`${DAY_NAMES[weekday(d)]} ${dayLabel(d)}`, d, [d], () => 0);
     }
   } else if (length === 'week') {
-    // By each day's own weekday, never by counting days in sevens: a leap
-    // year's calendar drops Feb 29, so from Mar 1 day numbers and weekdays
-    // part by one.
+    // By each day's own weekday, never by counting days in sevens: a
+    // non-leap year's slot holds a phantom Feb 29, so from Mar 1 day numbers
+    // and weekdays part by one.
     let days: number[] = [];
     const flush = () => {
       if (days.length > 0) add(`week of ${dayLabel(days[0])}`, days[0], days, weekday);
       days = [];
     };
-    for (let d = 0; d < DAYS_PER_YEAR; d++) {
+    for (let d = 0; d < YEAR_SLOT_DAYS; d++) {
+      if (weekday(d) < 0) continue;
       if (days.length > 0 && weekday(d) <= weekday(days[days.length - 1])) flush();
       days.push(d);
     }
     flush();
   } else {
     for (let m = 0; m < 12; m++) {
-      const end = m === 11 ? DAYS_PER_YEAR : MONTH_STARTS[m + 1];
+      const start = SLOT_MONTH_STARTS[m];
+      const end = m === 11 ? YEAR_SLOT_DAYS : SLOT_MONTH_STARTS[m + 1];
       const days: number[] = [];
-      for (let d = MONTH_STARTS[m]; d < end; d++) days.push(d);
-      add(MONTH_NAMES[m], MONTH_STARTS[m], days, (d) => d - MONTH_STARTS[m]);
+      for (let d = start; d < end; d++) if (weekday(d) >= 0) days.push(d);
+      add(MONTH_NAMES[m], start, days, (d) => d - start);
     }
   }
   return periods;

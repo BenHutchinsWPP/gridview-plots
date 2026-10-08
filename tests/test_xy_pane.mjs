@@ -65,7 +65,7 @@ assert.ok(
     'hour-axis helpers the line panes share would all need a branch to host it',
 );
 
-const HOURS = 8760;
+const { YEAR_SLOT_HOURS: HOURS } = await import('../src/model/calendar.ts');
 const seriesOf = (name, unit, color, at, extra = {}) => {
   const values = new Float32Array(HOURS).fill(NaN);
   at(values);

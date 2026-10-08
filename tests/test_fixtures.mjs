@@ -53,10 +53,12 @@ function rng(seed) {
   };
 }
 
-/** Non-leap month lengths. Feb 29 is never emitted even in a leap year --
- * ingest drops it, so a fixture that contained it would be testing a row
- * the app is defined to throw away. */
-const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+/** Days in `month` (1-12) of `year`'s real calendar: a leap year's Feb 29 is
+ * a day like any other, and a file that skipped it would have a gap. */
+export const daysInMonth = (year, month) => new Date(Date.UTC(year, month, 0)).getUTCDate();
+
+/** Days in `year`'s real calendar. */
+const daysInYear = (year) => (daysInMonth(year, 2) === 29 ? 366 : 365);
 
 function headerLine(metrics) {
   // The real header carries stray leading spaces on three key columns and on
@@ -94,7 +96,7 @@ function* rows({ year, days, hours, seed }) {
         yield fields.join(',');
       }
     }
-    if (++day > MONTH_LENGTHS[month - 1]) {
+    if (++day > daysInMonth(year, month)) {
       day = 1;
       month++;
     }
@@ -109,10 +111,10 @@ export function exportCsv({ year = 2036, days = 1, hours = 2, seed = 12345 } = {
 }
 
 /** Stream a full-size export (~190 MB) incrementally rather than as one
- * string. */
+ * string. A whole year of `year` by default. */
 export async function writeExportCsv(
   path,
-  { year = 2036, days = 365, hours = 24, seed = 12345 } = {},
+  { year = 2036, days = daysInYear(year), hours = 24, seed = 12345 } = {},
 ) {
   const { createWriteStream } = await import('node:fs');
   const { once } = await import('node:events');

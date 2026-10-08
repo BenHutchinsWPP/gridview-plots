@@ -35,7 +35,7 @@ function check(label, fn) {
   console.log(`ok - ${label}`);
 }
 
-const HOURS = 8760;
+const { YEAR_SLOT_HOURS: HOURS } = await import('../src/model/calendar.ts');
 /** A drawn series with everything any adapter reads. */
 function seriesOf(name, color, at = (hour) => hour % 100, extra = {}) {
   const values = Float32Array.from({ length: HOURS }, (_, hour) => at(hour));

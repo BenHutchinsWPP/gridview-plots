@@ -1,7 +1,7 @@
 // src/tables/area/axis.ts
 //
 // The Area axis math, lifted out of main.ts unchanged. Both functions
-// are pure -- they depend on nothing but HOURS_PER_YEAR and the table handed
+// are pure -- they depend on nothing but YEAR_SLOT_HOURS and the table handed
 // in -- which is what makes them testable in plain Node with no Worker, no
 // fetch and no DOM (tests/test_axis.mjs).
 //
@@ -12,7 +12,7 @@
 // and getting it wrong is silent: a cube whose planes moved but whose values
 // did not is a chart of plausible, wrong numbers.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../model/calendar';
 import type { AreaTable } from './types';
 
 /** Two axes are the same axis only if they agree on ORDER as well as
@@ -39,7 +39,7 @@ export function reindexCase(data: AreaTable, axis: readonly string[]): AreaTable
   if (sameAxis(data.areas, axis)) return data;
 
   const numMetrics = data.metrics.length;
-  const cube = new Float32Array(axis.length * numMetrics * HOURS_PER_YEAR);
+  const cube = new Float32Array(axis.length * numMetrics * YEAR_SLOT_HOURS);
   cube.fill(NaN);
   const presence = new Uint8Array(axis.length * numMetrics);
   const destByArea = new Map<string, number>();
@@ -49,9 +49,9 @@ export function reindexCase(data: AreaTable, axis: readonly string[]): AreaTable
     const nextArea = destByArea.get(data.areas[oldArea]);
     if (nextArea === undefined) continue;
     for (let metric = 0; metric < numMetrics; metric++) {
-      const oldPlane = (oldArea * numMetrics + metric) * HOURS_PER_YEAR;
-      const nextPlane = (nextArea * numMetrics + metric) * HOURS_PER_YEAR;
-      cube.set(data.cube.subarray(oldPlane, oldPlane + HOURS_PER_YEAR), nextPlane);
+      const oldPlane = (oldArea * numMetrics + metric) * YEAR_SLOT_HOURS;
+      const nextPlane = (nextArea * numMetrics + metric) * YEAR_SLOT_HOURS;
+      cube.set(data.cube.subarray(oldPlane, oldPlane + YEAR_SLOT_HOURS), nextPlane);
       presence[nextArea * numMetrics + metric] = data.presence[oldArea * numMetrics + metric];
     }
   }

@@ -9,10 +9,10 @@
 // so a column's identity is the `Int32` bus number; the name is a label that
 // need not be unique.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import type { HoursPresent, TouCodes } from '../../model/types';
 
-/** One wide Bus export: `cube[bus * 8760 + hour]`, `bus` indexing `buses`. */
+/** One wide Bus export: `cube[bus * 8784 + hour]`, `bus` indexing `buses`. */
 export interface BusTable {
   cube: Float32Array;
   /** The cube's bus axis: BusNumber ids in cube-index order. The IDENTITY. */
@@ -52,6 +52,8 @@ export function serializeBusTable(table: BusTable): {
   return {
     fields: {
       year: table.year,
+      firstYear: table.year,
+      numYears: 1,
       // A plain number array, not the Int32Array: `storage.ts` base64s
       // `Uint8Array` values and JSON-encodes everything else, so an Int32Array
       // would go out as an object with numeric keys and come back as one.
@@ -70,6 +72,7 @@ export function serializeBusTable(table: BusTable): {
 export function deserializeBusTable(fields: Record<string, unknown>, cube: ArrayBuffer): BusTable {
   const entry = fields as {
     year: number;
+    numYears?: number;
     buses: number[];
     names: string[];
     sourceColumns: number[];
@@ -78,12 +81,13 @@ export function deserializeBusTable(fields: Record<string, unknown>, cube: Array
     tou: TouCodes;
     hoursPresent?: HoursPresent;
   };
-  const values = new Float32Array(cube);
-  const expected = entry.buses.length * HOURS_PER_YEAR;
+  const slot = savedHoursOnSlot(entry, new Float32Array(cube), entry.buses.length);
+  const values = slot.cube;
+  const expected = entry.buses.length * YEAR_SLOT_HOURS;
   if (values.length !== expected) {
     throw new Error(
       `saved Bus cube is ${values.length} values, expected ${expected} ` +
-        `(${entry.buses.length} buses × ${HOURS_PER_YEAR} h)`,
+        `(${entry.buses.length} buses × ${YEAR_SLOT_HOURS} h)`,
     );
   }
   if (entry.presence.length !== entry.buses.length) {
@@ -103,8 +107,8 @@ export function deserializeBusTable(fields: Record<string, unknown>, cube: Array
     buses: Int32Array.from(entry.buses),
     names: entry.names.slice(),
     presence: entry.presence,
-    tou: entry.tou,
-    hoursPresent: entry.hoursPresent,
+    tou: slot.tou,
+    hoursPresent: slot.hoursPresent,
     sourceColumns: entry.sourceColumns.slice(),
     year: entry.year,
     quantity: entry.quantity,

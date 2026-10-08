@@ -10,7 +10,7 @@
 //   3. **The axis is the ID, not the name.** Names may repeat; ids resolve
 //      through a Map built once per table, never `indexOf` or a name lookup.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../model/calendar';
 import { applyMask, createScratch, isAllZero, quantiles, sortAsc, stats } from '../../kernels';
 import { busLabel } from './rules';
 import type { BusTable } from './types';
@@ -39,9 +39,9 @@ export function hasData(data: BusTable, busIdx: number): boolean {
   return data.presence[busIdx] === 1;
 }
 
-/** Where a bus's 8,760-point plane starts in the cube. */
+/** Where a bus's 8,784-point plane starts in the cube. */
 export function planeStart(busIdx: number): number {
-  return busIdx * HOURS_PER_YEAR;
+  return busIdx * YEAR_SLOT_HOURS;
 }
 
 /**
@@ -72,6 +72,6 @@ export function buildSeries(
   }
 
   const start = planeStart(busIdx);
-  out.set(data.cube.subarray(start, start + HOURS_PER_YEAR));
+  out.set(data.cube.subarray(start, start + YEAR_SLOT_HOURS));
   return { values: out, warnings: [] };
 }

@@ -18,9 +18,9 @@ const {
   rankedStats,
   stats,
 } = await import('../src/kernels.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 let checks = 0;
 function ok(label) {
   checks++;
@@ -59,7 +59,7 @@ function oracle(cube, start, mask) {
   const cube = makeCube(entities, (e, h) => Math.sin(h / 97) * (e + 1) * 10 + e);
   const mask = allHours();
   const starts = Int32Array.from({ length: entities }, (_, e) => e * HOURS);
-  const result = rankedStats(cube, starts, mask);
+  const result = rankedStats(cube, starts, HOURS, mask);
 
   assert.equal(result.length, entities * RANKED_FIELDS);
   for (let e = 0; e < entities; e++) {
@@ -78,7 +78,7 @@ function oracle(cube, start, mask) {
   // One plane of 0,1,2,...,8759 — mean, min, max and the quartiles are all
   // known without running the code under test.
   const cube = makeCube(1, (_e, h) => h);
-  const result = rankedStats(cube, Int32Array.of(0), allHours());
+  const result = rankedStats(cube, Int32Array.of(0), HOURS, allHours());
   const row = rankedRow(result, 0);
   assert.equal(row.n, HOURS);
   assert.equal(row.min, 0);
@@ -95,7 +95,7 @@ function oracle(cube, start, mask) {
   const cube = makeCube(1, (_e, h) => h);
   const mask = new Uint8Array(HOURS);
   for (let h = 0; h < 24; h++) mask[h] = 1; // the first day only
-  const row = rankedRow(rankedStats(cube, Int32Array.of(0), mask), 0);
+  const row = rankedRow(rankedStats(cube, Int32Array.of(0), HOURS, mask), 0);
   assert.equal(row.n, 24);
   assert.equal(row.min, 0);
   assert.equal(row.max, 23);
@@ -107,7 +107,7 @@ function oracle(cube, start, mask) {
 {
   const cube = makeCube(3, (e, h) => e * 100 + (h % 50), [1]);
   const starts = Int32Array.of(0, -1, 2 * HOURS);
-  const result = rankedStats(cube, starts, allHours());
+  const result = rankedStats(cube, starts, HOURS, allHours());
   const blank = rankedRow(result, 1);
   assert.equal(blank.n, 0);
   for (const field of ['mean', 'min', 'max', 'sd', 'p25', 'p75', 'sum']) {
@@ -122,7 +122,7 @@ function oracle(cube, start, mask) {
 // --- 5. An all-NaN plane the caller did pass in is also blank ---------------
 {
   const cube = makeCube(2, (e, h) => e + h, [0]);
-  const result = rankedStats(cube, Int32Array.of(0, HOURS), allHours());
+  const result = rankedStats(cube, Int32Array.of(0, HOURS), HOURS, allHours());
   assert.equal(rankedRow(result, 0).n, 0);
   assert.ok(Number.isNaN(rankedRow(result, 0).mean));
   assert.equal(rankedRow(result, 1).n, HOURS);
@@ -134,7 +134,7 @@ function oracle(cube, start, mask) {
   const entities = 10;
   const cube = makeCube(entities, (e, _h) => e);
   const scoped = Int32Array.of(7 * HOURS, 2 * HOURS);
-  const result = rankedStats(cube, scoped, allHours());
+  const result = rankedStats(cube, scoped, HOURS, allHours());
   assert.equal(result.length, 2 * RANKED_FIELDS);
   assert.equal(rankedRow(result, 0).mean, 7);
   assert.equal(rankedRow(result, 1).mean, 2);
@@ -148,9 +148,9 @@ function oracle(cube, start, mask) {
   const mask = allHours();
   const scratch = createScratch();
   const out = new Float64Array(4 * RANKED_FIELDS);
-  const shared = rankedStats(cube, starts, mask, scratch, out);
+  const shared = rankedStats(cube, starts, HOURS, mask, scratch, out);
   assert.equal(shared, out, 'the supplied output buffer is the one returned');
-  const fresh = rankedStats(cube, starts, mask);
+  const fresh = rankedStats(cube, starts, HOURS, mask);
   assert.deepEqual(Array.from(shared), Array.from(fresh));
   ok('a reused scratch and output buffer give the same numbers as fresh ones');
 }
@@ -158,7 +158,7 @@ function oracle(cube, start, mask) {
 // --- 8. Field slots are what the table reads ------------------------------
 {
   const cube = makeCube(1, (_e, h) => h);
-  const result = rankedStats(cube, Int32Array.of(0), allHours());
+  const result = rankedStats(cube, Int32Array.of(0), HOURS, allHours());
   const row = rankedRow(result, 0);
   assert.equal(result[RANKED.n], row.n);
   assert.equal(result[RANKED.max], row.max);
@@ -176,7 +176,7 @@ function oracle(cube, start, mask) {
   const plane = new Float32Array(HOURS);
   for (let h = 0; h < HOURS; h++) plane[h] = Math.round((next() - 0.3) * 10000) / 8;
   const scratch = createScratch();
-  rankedStats(plane, Int32Array.of(0), allHours(), scratch);
+  rankedStats(plane, Int32Array.of(0), HOURS, allHours(), scratch);
   let ascending = true;
   for (let i = 1; i < HOURS && ascending; i++) ascending = scratch[i - 1] <= scratch[i];
   assert.equal(ascending, false, 'the ranking sorted a whole row to read two quartiles');
@@ -199,7 +199,7 @@ function oracle(cube, start, mask) {
     for (const n of sizes) {
       const mask = new Uint8Array(HOURS);
       mask.fill(1, 0, n);
-      const row = rankedRow(rankedStats(cube, Int32Array.of(0), mask), 0);
+      const row = rankedRow(rankedStats(cube, Int32Array.of(0), HOURS, mask), 0);
       const gathered = createScratch();
       const expected = quantiles(gathered, applyMask(cube, mask, gathered));
       assert.ok(row.p25 === expected.p25, `${name}, n=${n}: p25 ${row.p25} vs ${expected.p25}`);
@@ -222,24 +222,24 @@ function oracle(cube, start, mask) {
   const mask = allHours();
   const memo = { byCube: new WeakMap() };
 
-  const first = rankedStats(cube, starts, mask, createScratch(), undefined, memo);
+  const first = rankedStats(cube, starts, HOURS, mask, createScratch(), undefined, memo);
   const firstMean = rankedRow(first, 0).mean;
   first[RANKED.mean] = 12345; // a caller rewriting its result must not reach the memo
   cube.fill(1000, 0, HOURS);
 
-  const again = rankedStats(cube, starts, mask, createScratch(), undefined, memo);
+  const again = rankedStats(cube, starts, HOURS, mask, createScratch(), undefined, memo);
   assert.equal(rankedRow(again, 0).mean, firstMean, 'same cube, mask and starts: the kept answer');
 
   const narrower = new Uint8Array(mask);
   narrower[0] = 0;
-  const recomputed = rankedStats(cube, starts, narrower, createScratch(), undefined, memo);
+  const recomputed = rankedStats(cube, starts, HOURS, narrower, createScratch(), undefined, memo);
   assert.equal(rankedRow(recomputed, 0).mean, 1000, 'a different mask is a different question');
 
-  const moved = rankedStats(cube, Int32Array.of(0), mask, createScratch(), undefined, memo);
+  const moved = rankedStats(cube, Int32Array.of(0), HOURS, mask, createScratch(), undefined, memo);
   assert.equal(rankedRow(moved, 0).mean, 1000, 'different plane starts are a different question');
 
   const copy = cube.slice();
-  const fresh = rankedStats(copy, starts, mask, createScratch(), undefined, memo);
+  const fresh = rankedStats(copy, starts, HOURS, mask, createScratch(), undefined, memo);
   assert.equal(rankedRow(fresh, 0).mean, 1000, "another cube never reads this one's answers");
   ok('a kept ranking is reused only for the same cube, mask and plane starts');
 

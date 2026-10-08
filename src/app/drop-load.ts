@@ -26,13 +26,13 @@ import type { LimitTable } from '../limits/types';
 import { parseLookupCsv, type LookupRows } from '../lookups/parse';
 import { schemaFor } from '../lookups/schema';
 import { VARIANT_OF } from '../lookups/types';
-import { HOURS_PER_YEAR } from '../model/calendar';
+import { realHours, realHoursSeen, YEAR_SLOT_HOURS } from '../model/calendar';
 import { byCaseName, caseForName, caseLabel, type Case, type TableKind } from '../model/case-model';
 import type { GroupingsMappingChoice } from '../ui/groupings-mapping';
 import type { ImportDecision } from '../ui/import-dialog';
 import { outcomeNotes, type Drop, type IngestOutcome } from './batch';
 import { routeDrop, splitPlans, type RoutedFile } from './drop-route';
-import type { ExistingCase, ImportFile, LimitPlan } from './import-plan';
+import type { ExistingCase, ImportFile, LimitPlan, SlotCoverage } from './import-plan';
 
 /** The notes channels a drop writes. `session` is cleared by a drop that runs
  * and written by one that is refused; the four kinds are the drop's account. */
@@ -111,24 +111,29 @@ function errorText(error: unknown): string {
 }
 
 /**
- * How many of the year's hours each of a Case's occupied slots covers, for
- * the Import Dialog's replace warning. Reads `hoursPresent` structurally, so a
- * new kind gets the warning by carrying the field. `null` means unknown (an
- * older bundle), and the dialog then says nothing about coverage.
+ * How many of its year's real hours each of a Case's occupied slots covers,
+ * for the Import Dialog's replace warning. Reads `hoursPresent` and `year`
+ * structurally, so a new kind gets the warning by carrying the fields. `null`
+ * means unknown (an older bundle), and the dialog then says nothing about
+ * coverage.
  */
 export function hoursCoveredBySlot(entry: {
   tables: Map<string, { data: unknown }>;
-}): Record<string, number | null> {
-  const out: Record<string, number | null> = {};
+}): Record<string, SlotCoverage | null> {
+  const out: Record<string, SlotCoverage | null> = {};
   for (const [slot, table] of entry.tables) {
-    const hours = (table.data as { hoursPresent?: Uint8Array } | null)?.hoursPresent;
-    if (!(hours instanceof Uint8Array) || hours.length !== HOURS_PER_YEAR) {
+    const data = table.data as { hoursPresent?: Uint8Array; year?: number } | null;
+    const hours = data?.hoursPresent;
+    const year = data?.year;
+    if (
+      !(hours instanceof Uint8Array) ||
+      hours.length !== YEAR_SLOT_HOURS ||
+      typeof year !== 'number'
+    ) {
       out[slot] = null;
       continue;
     }
-    let covered = 0;
-    for (let h = 0; h < HOURS_PER_YEAR; h++) covered += hours[h] ? 1 : 0;
-    out[slot] = covered;
+    out[slot] = { covers: realHoursSeen(hours, year, 1), of: realHours(year, 1) };
   }
   return out;
 }

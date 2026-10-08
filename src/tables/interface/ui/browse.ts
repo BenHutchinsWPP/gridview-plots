@@ -13,7 +13,7 @@
 // A boundary divides by its members' limits summed in its directions
 // (`../limits.ts`).
 
-import { HOURS_PER_YEAR } from '../../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../../model/calendar';
 import { applyMask, createScratch, quantiles, stats, type RankMemo } from '../../../kernels';
 import { reduceSignedMembers } from '../../../lookups/reduce';
 import { rankScopedRows } from '../../../ui/browse-planes';
@@ -117,7 +117,7 @@ export function buildInterfaceTab(input: InterfaceBrowseInput): BrowseTab {
     axisIndexOf: (row) => refs[row].axisIndex,
     planesOf: (data) => ({
       presence: data.presence,
-      planeStart: (axisIndex) => axisIndex * HOURS_PER_YEAR,
+      planeStart: (axisIndex) => axisIndex * YEAR_SLOT_HOURS,
     }),
     scratch: input.scratch ?? createScratch(),
     memo: input.memo,

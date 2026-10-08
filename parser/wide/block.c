@@ -20,8 +20,8 @@
 // 2. BLOCK INDEPENDENCE. Each row's hour comes from its own Date and Hour,
 //    never a row counter, so blocks parse in any order.
 // 3. ONE ROW = ONE HOUR, so no hour spans two blocks.
-// 4. ROW ORDER DOES NOT MATTER. Output is a row list with each row's hour in
-//    rowHour[r]; the main thread scatters it.
+// 4. ROW ORDER DOES NOT MATTER. Output is a row list with each row's year in
+//    rowYear[r] and hour in rowHour[r]; the main thread scatters it.
 //
 // Build: ./build.sh
 
@@ -48,7 +48,7 @@
 #define BLOCK_BYTES     (12u * 1024u * 1024u)
 #endif
 
-// One block's values, row hours and row TOU codes: about 2.7x what an 8 MiB
+// One block's values, row hours, years and TOU codes: about 2.7x what an 8 MiB
 // block needs at any width. A layout that does not fit makes configure()
 // fail, which JS turns into an error rather than a truncated parse.
 #ifndef ARENA_BYTES
@@ -56,6 +56,8 @@
 #endif
 
 #define KEY_COLS        3           // Date, Hour, TOU
+// Years one parse can place: rowYear is a u8 offset from firstYear.
+#define MAX_YEARS       256u
 
 // A bad -D fails at compile time, not as a wrong number in a browser.
 _Static_assert(BLOCK_BYTES >= 1024u * 1024u,
@@ -65,7 +67,7 @@ _Static_assert(ARENA_BYTES >= 1024u * 1024u,
 
 // Bumped on any change to the exported surface or the slab's meaning, so a
 // stale committed binary fails at instantiate rather than misparsing.
-#define ABI_VERSION     4u
+#define ABI_VERSION     5u
 
 static unsigned char inbuf[BLOCK_BYTES];
 static unsigned char arena[ARENA_BYTES] __attribute__((aligned(16)));
@@ -74,8 +76,11 @@ static unsigned char arena[ARENA_BYTES] __attribute__((aligned(16)));
 // slab[m * g_maxRows + r] is PLANE-major, so one entity's block of values is a
 // contiguous copy on the JS side.
 static float*          slab;
-// Where each emitted row lands: hour of the year, 0..8759.
+// Where each emitted row lands: hour within its year's 8,784-hour leap slot,
+// 0..8783, and that year as an offset from firstYear. The hour never spans
+// years: a u16 would wrap 7.46 years in.
 static unsigned short* rowHour;
+static unsigned char*  rowYear;
 // Per-row TOU code, 0 = OffPeak, 1 = OnPeak. TOU is FILE DATA, never
 // recomputed from the calendar (the real rule varies by tariff and holidays);
 // read here only so the bytes are scanned once.
@@ -85,7 +90,7 @@ static unsigned char*  rowTou;
 // unconfigured parse_block a no-op rather than a write through null.
 static unsigned g_metrics, g_maxRows;
 
-static unsigned g_rows, g_overflow, g_wideField, g_badRow, g_feb29, g_yearMismatch;
+static unsigned g_rows, g_overflow, g_wideField, g_badRow, g_outOfRange;
 static unsigned g_badTou, g_badCell;
 
 __attribute__((export_name("inbuf_ptr")))     unsigned char* inbuf_ptr(void)    { return inbuf; }
@@ -94,6 +99,7 @@ __attribute__((export_name("arena_bytes")))   unsigned       arena_bytes(void)  
 __attribute__((export_name("slab_ptr")))      float*         slab_ptr(void)     { return slab; }
 __attribute__((export_name("row_hour_ptr")))  unsigned short* row_hour_ptr(void){ return rowHour; }
 __attribute__((export_name("row_tou_ptr")))   unsigned char* row_tou_ptr(void)  { return rowTou; }
+__attribute__((export_name("row_year_ptr")))  unsigned char* row_year_ptr(void) { return rowYear; }
 // The layout currently configured (0 before the first configure()).
 __attribute__((export_name("slab_rows")))     unsigned       slab_rows(void)    { return g_maxRows; }
 __attribute__((export_name("slab_metrics")))  unsigned       slab_metrics(void) { return g_metrics; }
@@ -103,15 +109,12 @@ __attribute__((export_name("last_rows")))     unsigned       last_rows(void)    
 // shrinks them if it does; a backstop, not a normal outcome.
 __attribute__((export_name("last_overflow")))   unsigned     last_overflow(void){ return g_overflow; }
 // Fields past the configured width, and rows whose Date/Hour did not resolve.
-// Both would be silent data loss if unreported. Feb 29 is counted apart,
-// because dropping it is intended.
+// Both would be silent data loss if unreported.
 __attribute__((export_name("last_wide_field"))) unsigned     last_wide_field(void){ return g_wideField; }
 __attribute__((export_name("last_bad_row")))    unsigned     last_bad_row(void)  { return g_badRow; }
-__attribute__((export_name("last_feb29")))      unsigned     last_feb29(void)    { return g_feb29; }
-// Rows whose year differs from the file's first data row. A day-of-year ignores
-// the year, so without this a two-year file would fold onto the same 8,760
-// hours. Counted here, refused by JS.
-__attribute__((export_name("last_year_mismatch"))) unsigned  last_year_mismatch(void){ return g_yearMismatch; }
+// Rows dated outside the Case's years: placing one would need a year the cube
+// has no slot for. Counted here, refused by JS.
+__attribute__((export_name("last_out_of_range"))) unsigned   last_out_of_range(void){ return g_outOfRange; }
 // Rows whose TOU is neither OnPeak nor OffPeak, and value cells that are
 // neither blank nor a number. Counted as in the long reader, so a cell reads
 // the same in either shape.
@@ -127,19 +130,20 @@ __attribute__((export_name("last_bad_cell")))   unsigned     last_bad_cell(void)
 __attribute__((export_name("configure")))
 unsigned configure(unsigned numMetrics, unsigned maxRows) {
   g_metrics = 0u; g_maxRows = 0u;
-  slab = 0; rowHour = 0; rowTou = 0;
+  slab = 0; rowHour = 0; rowYear = 0; rowTou = 0;
   if (numMetrics == 0u || maxRows == 0u) return 0u;
 
   // 64-bit: metrics * rows overflows 32 bits before the arena check could
   // catch it.
   unsigned long long cells = (unsigned long long)numMetrics * maxRows;
-  unsigned long long need = cells * 4ull + (unsigned long long)maxRows * 3ull;
+  unsigned long long need = cells * 4ull + (unsigned long long)maxRows * 4ull;
   if (need > (unsigned long long)ARENA_BYTES) return 0u;
 
   // The slab is whole floats, so rowHour starts 4-aligned (it needs 2).
   unsigned off = 0u;
   slab    = (float*)(arena + off);           off += (unsigned)cells * 4u;
   rowHour = (unsigned short*)(arena + off);  off += maxRows * 2u;
+  rowYear = arena + off;                     off += maxRows;
   rowTou  = arena + off;
 
   g_metrics = numMetrics;
@@ -165,12 +169,13 @@ void slab_fill_nan(unsigned rows) {
 }
 
 // Parse a block of WHOLE rows (`len` bytes from a row boundary, ending after
-// a '\n'). `year` is the case's year from JS; every row is checked against it.
-// Rows are emitted in byte order with rowHour[row] giving their hour. Source
+// a '\n'). The Case spans `numYears` years from `firstYear`; a row dated
+// outside them is counted. Rows are emitted in byte order with rowYear[row]
+// and rowHour[row] giving their place. Source
 // column `c` writes plane `c - KEY_COLS`; JS maps planes to the cube by
 // trimmed header name.
 __attribute__((export_name("parse_block")))
-unsigned parse_block(unsigned len, unsigned year) {
+unsigned parse_block(unsigned len, unsigned firstYear, unsigned numYears) {
   // Hoisted out of the per-field macro, where a global reload would be paid
   // millions of times.
   const unsigned maxRows = g_maxRows;
@@ -178,14 +183,16 @@ unsigned parse_block(unsigned len, unsigned year) {
   // Unconfigured: writing would go through address 0, which in wasm is real
   // memory and would corrupt the data segment silently.
   if (maxRows == 0u) return 0u;
+  // rowYear is a u8: years past the first MAX_YEARS are out of range.
+  if (numYears > MAX_YEARS) numYears = MAX_YEARS;
 
   const unsigned char* b = inbuf;
   unsigned col = 0, fs = 0;
-  unsigned rowDay = NO_DAY, rowYear = 0;
+  unsigned rowDay = NO_DAY, dateYear = 0;
   // Slot this row will occupy, or NO_DAY while the row is being rejected.
   unsigned slot = NO_DAY;
-  g_rows = 0; g_overflow = 0; g_wideField = 0; g_badRow = 0; g_feb29 = 0;
-  g_yearMismatch = 0; g_badTou = 0;
+  g_rows = 0; g_overflow = 0; g_wideField = 0; g_badRow = 0;
+  g_outOfRange = 0; g_badTou = 0;
   // A local, so read_value's counter stays in a register.
   unsigned badCell = 0;
 
@@ -194,20 +201,19 @@ unsigned parse_block(unsigned len, unsigned year) {
       unsigned e = (END);                                                       \
       if (e > fs && b[e - 1] == '\r') e--;                                      \
       if (col == 0) {                                                           \
-        rowDay = date_to_day(b + fs, b + e, &rowYear);                          \
+        rowDay = date_to_day(b + fs, b + e, &dateYear);                         \
       } else if (col == 1) {                                                    \
         unsigned hourOfDay = read_hour(b + fs, b + e);                          \
         slot = NO_DAY;                                                          \
-        if (rowDay == FEB29) {                                                  \
-          g_feb29++;                     /* dropped on purpose */          \
-        } else if (rowDay == NO_DAY || hourOfDay < 1 || hourOfDay > 24) {       \
+        if (rowDay == NO_DAY || hourOfDay < 1 || hourOfDay > 24) {              \
           g_badRow++;                    /* unreadable Date or Hour */          \
-        } else if (rowYear != year) {                                           \
-          g_yearMismatch++;              /* a second year in one case */        \
+        } else if (dateYear - firstYear >= numYears) {                          \
+          g_outOfRange++;                /* unsigned: wraps below firstYear */  \
         } else if (g_rows >= maxRows) {                                         \
           g_overflow++;                  /* more rows than the layout holds */  \
         } else {                                                                \
           slot = g_rows++;                                                      \
+          rowYear[slot] = (unsigned char)(dateYear - firstYear);                \
           rowHour[slot] = (unsigned short)(rowDay * 24u + (hourOfDay - 1u));    \
           rowTou[slot] = 0;                                                     \
         }                                                                       \

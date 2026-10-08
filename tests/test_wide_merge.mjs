@@ -31,7 +31,7 @@ const { instantiateParser, parseBytes } = await import('../src/tables/wide/block
 const { createAccumulator, blitBlock, finalizeWide, layoutFor, readCasePlan, unionHeader } =
   await import('../src/tables/wide/pool.ts');
 const { checkMergeGroup } = await import('../src/tables/wide/merge.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
 let checks = 0;
 function ok(label) {
@@ -84,6 +84,7 @@ function merge(members) {
         member.bytes.length,
         plans[i].activePlanes,
         2035,
+        1,
       ),
       plans[i],
     );
@@ -104,17 +105,17 @@ const JUL = half(`${KEYS},P02,P01`, [
   '7/1/2035,2,OnPeak,601.5,501.5',
 ]);
 
-/** Hour 0 of July 1st in a non-leap year: 181 days in. */
-const JUL1 = 181 * 24;
+/** Hour 0 of July 1st: slot day 182 in every year (the slot keeps Feb 29). */
+const JUL1 = 182 * 24;
 
 // ------------------------------------------------ two halves become one year
 {
   const { data } = merge([JAN, JUL]);
   assert.deepEqual([...data.entities], RETAINED);
   assert.equal(data.cube[0], 10.5);
-  assert.equal(data.cube[HOURS_PER_YEAR], 20.5);
+  assert.equal(data.cube[YEAR_SLOT_HOURS], 20.5);
   assert.equal(data.cube[JUL1], 500.5, "P01's July came from the reversed half's P01 column");
-  assert.equal(data.cube[HOURS_PER_YEAR + JUL1], 600.5);
+  assert.equal(data.cube[YEAR_SLOT_HOURS + JUL1], 600.5);
   assert.equal(data.cube[JUL1 + 1], 501.5);
   ok('two halves fill one cube, each member read at its OWN column order');
 }
@@ -125,10 +126,10 @@ const JUL1 = 181 * 24;
   const backward = merge([JUL, JAN]).data;
   assert.deepEqual([...backward.entities], [...forward.entities]);
   forward.entities.forEach((entity, index) => {
-    const from = index * HOURS_PER_YEAR;
+    const from = index * YEAR_SLOT_HOURS;
     assert.deepEqual(
-      [...backward.cube.slice(from, from + HOURS_PER_YEAR)],
-      [...forward.cube.slice(from, from + HOURS_PER_YEAR)],
+      [...backward.cube.slice(from, from + YEAR_SLOT_HOURS)],
+      [...forward.cube.slice(from, from + YEAR_SLOT_HOURS)],
       `${entity}'s year changed with the drop order`,
     );
   });
@@ -219,6 +220,23 @@ const JUL1 = 181 * 24;
   assert.deepEqual(union.entityNames, ['P01', 'P02', 'P03']);
   union.entityNames.forEach((name, i) => assert.equal(union.raw[i + KEY_COLS].trim(), name));
   ok('the union header keeps raw aligned to entityNames, so a bus keeps its own name');
+}
+
+// -------------------------------------------- coverage is of real hours
+{
+  const FEB_29 = 59 * 24;
+  const covers = (year, fill) => {
+    const accumulator = createAccumulator(buildColumnPlan(JAN.header, RETAINED));
+    fill(accumulator.hourSeen);
+    const { warnings } = finalizeWide(accumulator, 'year.csv', year, JAN.title, SPEC);
+    return warnings.filter((w) => w.includes('covers'));
+  };
+  const realOnly = (seen) => seen.fill(1).fill(0, FEB_29, FEB_29 + 24);
+  assert.deepEqual(covers(2035, realOnly), [], "a non-leap year's Feb 29 is expected-absent");
+  assert.deepEqual(covers(2036, realOnly), [
+    'year.csv: covers 8,760 of 8,784 hours; the rest read as no-data.',
+  ]);
+  ok("coverage counts real hours: a non-leap Feb 29 is no gap, a leap year's missing one is");
 }
 
 console.log(`\n${checks} checks passed.`);

@@ -7,7 +7,7 @@
 // Kept free of DOM and chart imports so it loads under Node and is tested as
 // behaviour (tests/test_status_sentence.mjs).
 
-import { DAY_NAMES, HOURS_PER_YEAR, SEASON_NAMES, TOU_LABELS } from '../model/calendar';
+import { DAY_NAMES, SEASON_NAMES, TOU_LABELS } from '../model/calendar';
 import { setLabel } from '../model/date-range';
 import type { Filters } from '../model/types';
 
@@ -50,13 +50,15 @@ export interface StatusView {
   readonly cases: readonly unknown[];
 }
 
-export function statusSentence(view: StatusView, keptHours: number): string {
+/** `keptHours` of `ofHours`: the caller's count and the real hours it was
+ * counted out of, never the slot's length. */
+export function statusSentence(view: StatusView, keptHours: number, ofHours: number): string {
   const { filters } = view;
   const hours = Array.from({ length: 24 }, (_, i) => i + 1);
   const days = Array.from({ length: 7 }, (_, i) => i);
 
   const parts = [
-    `${keptHours.toLocaleString()} of ${HOURS_PER_YEAR.toLocaleString()} h`,
+    `${keptHours.toLocaleString()} of ${ofHours.toLocaleString()} h`,
     filters.dates === null ? 'all dates' : setLabel(filters.dates, 4),
     summarise(filters.daysOfWeek, days, (d) => DAY_NAMES[d], 'all days'),
   ];

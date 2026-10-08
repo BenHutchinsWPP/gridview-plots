@@ -1,14 +1,14 @@
 // src/tables/long/pool.ts
 //
 // The LONG shape's reader: worker pool, file dispatch and cube assembly for an
-// `entity x metric x 8760` cube. It knows only numbers (key-column count,
-// entity column, slab width); what a kind decides lives in its own `long.ts`
+// `entity x metric x 8784` cube, one leap-calendar year slot. It knows only
+// numbers (key-column count, entity column, slab width); what a kind decides lives in its own `long.ts`
 // (`src/tables/area/long.ts` is the worked example).
 //
 // The unit of work is a BYTE RANGE, so one file uses every core. The cube is
 // pre-filled with NaN so "never written" reads as no data, never as zeros.
 
-import { HOURS_PER_YEAR, TOU_LABELS } from '../../model/calendar';
+import { YEAR_SLOT_HOURS, TOU_LABELS } from '../../model/calendar';
 import {
   dispatch,
   hasSimd,
@@ -228,22 +228,22 @@ async function useLayout(workers: Worker[], layout: KeyLayout): Promise<void> {
 }
 
 /**
- * The one allocation a long ingest makes: up to `entities x metrics x 8760`
+ * The one allocation a long ingest makes: up to `entities x metrics x 8784`
  * floats (1.65 GB for a full 8-metric bus study). No size cap, because a fixed
  * cap would refuse files that fit on a bigger device. The caller catches the
  * `RangeError` and refuses with the arithmetic, naming the metrics to untick.
  */
 export function createAccumulator(plan: ColumnPlan, entityCount: number): CaseAccumulator {
-  const cube = new Float32Array(entityCount * plan.metrics.length * HOURS_PER_YEAR);
+  const cube = new Float32Array(entityCount * plan.metrics.length * YEAR_SLOT_HOURS);
   cube.fill(NaN);
   return {
     plan,
     entityCount,
     cube,
-    tou: new Uint8Array(HOURS_PER_YEAR).fill(0xff),
+    tou: new Uint8Array(YEAR_SLOT_HOURS).fill(0xff),
     entitySeen: new Uint8Array(entityCount),
-    hourSeen: new Uint8Array(HOURS_PER_YEAR),
-    covered: new Uint8Array(Math.ceil((entityCount * HOURS_PER_YEAR) / 8)),
+    hourSeen: new Uint8Array(YEAR_SLOT_HOURS),
+    covered: new Uint8Array(Math.ceil((entityCount * YEAR_SLOT_HOURS) / 8)),
   };
 }
 
@@ -261,7 +261,7 @@ export function blitBlock(
   // The block's OWN file's plan. It differs from the accumulator's only in a
   // merge group, where files with different column orders fill one cube.
   const plan = columnPlan;
-  const { rows, planes, values, rowEntity, rowHour, rowTou } = block;
+  const { rows, planes, values, rowEntity, rowYear, rowHour, rowTou } = block;
   const { tou, hourSeen } = accumulator;
 
   for (let area = 0; area < entityCount; area++) {
@@ -274,7 +274,7 @@ export function blitBlock(
   const numMetrics = plan.metrics.length;
   const offsets = new Int32Array(planes);
   for (let p = 0; p < planes; p++) {
-    offsets[p] = plan.slabPlan[plan.activePlanes[p]] * HOURS_PER_YEAR;
+    offsets[p] = plan.slabPlan[plan.activePlanes[p]] * YEAR_SLOT_HOURS;
   }
 
   // Counting sort by area. O(rows), one pass to count and one to place.
@@ -298,10 +298,15 @@ export function blitBlock(
     const r = order[i];
     const area = rowEntity[r];
     const hour = rowHour[r];
+    // Every Case is dispatched as one year, so a row in any other was
+    // refused by the parser; the cube has no place for one.
+    if (rowYear[r] !== 0) {
+      throw new Error(`A row was placed in year offset ${rowYear[r]} of a one-year Case.`);
+    }
 
     // A cell written twice is two rows for one (entity, hour): refuse rather
     // than keep whichever worker finished last.
-    const bit = area * HOURS_PER_YEAR + hour;
+    const bit = area * YEAR_SLOT_HOURS + hour;
     const byte = bit >> 3;
     const mask = 1 << (bit & 7);
     if (covered[byte] & mask) {
@@ -329,7 +334,7 @@ export function blitBlock(
     hourSeen[hour] = 1;
 
     const src = r * planes;
-    let out = area * numMetrics * HOURS_PER_YEAR + hour;
+    let out = area * numMetrics * YEAR_SLOT_HOURS + hour;
     if (stepped) {
       out += offsets[0];
       for (let p = 0; p < planes; p++) {
@@ -356,11 +361,14 @@ function rangesFor(plan: CasePlan): { start: number; end: number; skipPartialFir
   return out;
 }
 
+/** `firstYear` is the merge GROUP's, never this file's own: every member's
+ * rows place against the one span the group's cube holds. */
 function blocksFor(
   plan: CasePlan,
   caseIndex: number,
   activePlanes: Int32Array,
   entityCount: number,
+  firstYear: number,
   nextId: () => number,
 ): BlockMessage[] {
   const ranges = rangesFor(plan);
@@ -380,7 +388,8 @@ function blocksFor(
     entityCount,
     sourceMetricCount: plan.header.metricNames.length,
     maxRows: plan.rowsPerBlock[i],
-    year: plan.year,
+    firstYear,
+    numYears: 1,
   }));
 }
 
@@ -553,7 +562,17 @@ export async function ingest<T>(
   plans.forEach((plan, index) => {
     // A file with no cube gets no blocks: parsing it would fill nothing.
     if (accumulators[groupOf[index]] === null) return;
-    jobs.push(...blocksFor(plan, index, columnPlans[index].activePlanes, areas.length, () => id++));
+    const firstYear = groups[groupOf[index]].repPlan.year;
+    jobs.push(
+      ...blocksFor(
+        plan,
+        index,
+        columnPlans[index].activePlanes,
+        areas.length,
+        firstYear,
+        () => id++,
+      ),
+    );
   });
 
   // ONE axis load and ONE dispatch for the whole batch: a dispatch per file
@@ -654,10 +673,10 @@ function groupsOf(plans: CasePlan[], groupOf: number[], metrics?: string[]): Mer
 /** An oversized cube's refusal, naming entities (fixed) and metrics (the
  * user's lever) separately. */
 function allocationRefusal(file: string, entityCount: number, metricCount: number): string {
-  const bytes = entityCount * metricCount * HOURS_PER_YEAR * 4;
+  const bytes = entityCount * metricCount * YEAR_SLOT_HOURS * 4;
   return (
     `${file}: could not allocate this file's cube -- ${entityCount.toLocaleString()} entities x ` +
-    `${metricCount} retained metric${metricCount === 1 ? '' : 's'} x ${HOURS_PER_YEAR} hours x ` +
+    `${metricCount} retained metric${metricCount === 1 ? '' : 's'} x ${YEAR_SLOT_HOURS} hours x ` +
     `4 B = ${(bytes / (1024 * 1024)).toFixed(0)} MB in one array, which this browser refused. ` +
     `Nothing was loaded from it; drop it again keeping fewer metrics. The other files in this ` +
     `drop are unaffected.`

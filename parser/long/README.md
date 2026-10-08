@@ -25,9 +25,9 @@ the exports or arena layout change.
   rows assumes the first hour lists every area once. On a shuffled export
   that returns a partial axis and says nothing.
 - **Row order carries no meaning.** `parse_block` emits a row list with each
-  row's own `(area, hour)`, and the main thread scatters it into the cube.
-  That costs about 10% of ingest compared with copying contiguous hour runs,
-  and it buys correct loads of sorted or shuffled exports. Do not add an
+  row's own `(area, year, hour)`, and the main thread scatters it into the
+  cube. That costs about 10% of ingest compared with copying contiguous hour
+  runs, and it buys correct loads of sorted or shuffled exports. Do not add an
   ordering counter: a live one invites refusing files this parser reads
   correctly.
 - **Duplicates are refused.** `blitBlock` keeps one bit per (area, hour) and

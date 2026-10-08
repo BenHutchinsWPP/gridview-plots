@@ -9,6 +9,8 @@
 // copied, the preview left out, the limits box read) must not drift apart
 // across seven adapters.
 
+import { NO_YEAR } from '../../app/boxes';
+import { mostRealHours } from '../../model/calendar';
 import type { DateSet } from '../../model/date-range';
 import type { FigureCapture, FigurePane } from '../../figure/build';
 import type { CaseSeries, ChartsInput, DrawnLimit } from '../charts';
@@ -166,12 +168,21 @@ export function figureShot(
           summed: limit.summed,
         }))
     : [];
+  // The footnote's denominator, from the lines the figure draws: a refused
+  // line or the preview is in no count.
+  const years = spec.ordered
+    .filter((s, n) => lines[n].values !== null && !s.dashed)
+    .map((s) => input.yearOf?.(s) ?? NO_YEAR);
+  const realHours = mostRealHours(
+    (years.length > 0 ? years : [NO_YEAR]).map((firstYear) => ({ firstYear, numYears: 1 })),
+  );
   return {
     capture: {
       pane: spec.pane,
       lines,
       xWindow: spec.xWindow,
       limits,
+      realHours,
       boxes: spec.boxes,
       xy: spec.xy,
       interval: spec.interval,

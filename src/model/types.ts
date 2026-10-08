@@ -8,7 +8,7 @@ import type { DateSet } from './date-range';
 /** Hour filters over the calendar; `null` means no constraint, a fast path
  * in `buildMask`. */
 export interface Filters {
-  readonly dates: DateSet | null; // runs of days of the year, both ends kept
+  readonly dates: DateSet | null; // runs of slot days 0..365 (leap calendar), both ends kept
   readonly hoursOfDay: Set<number> | null; // 1-24, hour-ending (HE)
   readonly daysOfWeek: Set<number> | null; // 0-6, 0 = Monday .. 6 = Sunday
   readonly seasons: Set<string> | null; // 'Winter' | 'Spring' | 'Summer' | 'Fall'
@@ -27,7 +27,7 @@ export type PaneView = 'grid' | 1 | 2 | 3 | 4;
  */
 export type HoursPresent = Uint8Array;
 
-/** Per-hour TOU code (8,760, indexing TOU_LABELS), read from the file, never
+/** Per-hour TOU code (one per slot hour, indexing TOU_LABELS), read from the file, never
  * derived: tariff calendars are the utility's. */
 export type TouCodes = Uint8Array;
 

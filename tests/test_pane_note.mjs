@@ -46,7 +46,7 @@ const section = ['src/ui/section.ts', 'src/ui/filter-rail.ts', 'src/ui/pane-focu
   .join('\n');
 const html = read('index.html');
 
-const HOURS = 8760;
+const { YEAR_SLOT_HOURS: HOURS } = await import('../src/model/calendar.ts');
 /** A drawn series with everything any adapter reads. */
 function seriesOf(name, color, extra = {}) {
   const values = Float32Array.from({ length: HOURS }, (_, hour) => hour % 100);

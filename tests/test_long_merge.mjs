@@ -18,7 +18,7 @@ const { instantiateParser, parseBytes } = await import('../src/tables/long/block
 const { createAccumulator, blitBlock, readCasePlan } = await import('../src/tables/long/pool.ts');
 const { checkMergeGroup, unionMetricNames } = await import('../src/tables/long/merge.ts');
 const { finalizeBusLong } = await import('../src/tables/bus/long.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
 let checks = 0;
 function ok(label) {
@@ -63,6 +63,7 @@ function merge(members) {
         plan.sourceMetricCount,
         member.rows,
         2035,
+        1,
       ),
       plan,
     );
@@ -90,8 +91,8 @@ const JUL = half(`${KEYS},Load (MW),LMP ($/MWh)`, [
   '07/01/2035,2,OnPeak,40002,PINEHOLLOW,LoadArea2,600.5,88.5',
 ]);
 
-/** Hour 0 of July 1st in a non-leap year: 181 days in. */
-const JUL1 = 181 * 24;
+/** Hour 0 of July 1st: slot day 182 in every year (the slot keeps Feb 29). */
+const JUL1 = 182 * 24;
 
 // ------------------------------------------------ two halves become one year
 {
@@ -105,18 +106,18 @@ const JUL1 = 181 * 24;
   // July, from the second -- on the right plane despite its reversed columns.
   assert.equal(lmp.cube[JUL1], 77.5);
   assert.equal(load.cube[JUL1], 500.5);
-  assert.equal(lmp.cube[HOURS_PER_YEAR + JUL1 + 1], 88.5);
-  assert.equal(load.cube[HOURS_PER_YEAR + JUL1 + 1], 600.5);
+  assert.equal(lmp.cube[YEAR_SLOT_HOURS + JUL1 + 1], 88.5);
+  assert.equal(load.cube[YEAR_SLOT_HOURS + JUL1 + 1], 600.5);
   ok('two halves fill one cube, each member read at its OWN column order');
 
   // The coverage record rides on the TABLE, not just the
   // accumulator: it is what a later drop into this slot is gated on, and it
   // has to survive finalize and the bundle to be worth anything.
   let covered = 0;
-  for (let h = 0; h < HOURS_PER_YEAR; h++) covered += accumulator.hourSeen[h];
+  for (let h = 0; h < YEAR_SLOT_HOURS; h++) covered += accumulator.hourSeen[h];
   assert.equal(covered, 4, "the merged table covers both halves' hours, not one half's");
   for (const table of tables) {
-    assert.equal(table.hoursPresent.length, HOURS_PER_YEAR);
+    assert.equal(table.hoursPresent.length, YEAR_SLOT_HOURS);
     assert.equal(
       table.hoursPresent.reduce((n, h) => n + h, 0),
       4,
@@ -140,10 +141,10 @@ const JUL1 = 181 * 24;
     const b = backward.data.find((t) => t.quantity === quantity);
     assert.deepEqual([...b.buses], [...a.buses]);
     for (let entity = 0; entity < a.buses.length; entity++) {
-      const from = entity * HOURS_PER_YEAR;
+      const from = entity * YEAR_SLOT_HOURS;
       assert.deepEqual(
-        [...b.cube.slice(from, from + HOURS_PER_YEAR)],
-        [...a.cube.slice(from, from + HOURS_PER_YEAR)],
+        [...b.cube.slice(from, from + YEAR_SLOT_HOURS)],
+        [...a.cube.slice(from, from + YEAR_SLOT_HOURS)],
         `bus ${a.buses[entity]}'s ${quantity} changed with the drop order`,
       );
     }

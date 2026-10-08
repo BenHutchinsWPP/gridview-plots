@@ -500,6 +500,35 @@ ok('every code symbol named in the docs still exists', () => {
   );
 });
 
+// Check 8 matches a name as a substring of the code, so a removed name that
+// lives on inside a longer one (`MONTH_LENGTHS` in `SLOT_MONTH_LENGTHS`) or as
+// a script's local passes it. No calendar constant describes a non-leap
+// year, so a site still indexing one fails `tsc`; prose naming one teaches
+// it anyway.
+ok('no doc or comment names a removed calendar constant', () => {
+  const REMOVED = /\b(?:HOURS_PER_YEAR|DAYS_PER_YEAR|DAYS_IN_YEAR|MONTH_LENGTHS)\b/;
+  const DOCS = ['AGENTS.md', 'README.md', 'parser/long/README.md', 'parser/wide/README.md'];
+  const offenders = [];
+  for (const f of FILES) {
+    if (f === 'tests/test_rot_guards.mjs') continue;
+    const doc = DOCS.includes(f);
+    read(f)
+      .split('\n')
+      .forEach((line, i) => {
+        if ((doc || isProse(f, line)) && REMOVED.test(line)) {
+          offenders.push(`${f}:${i + 1}: ${line.trim()}`);
+        }
+      });
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'these name a calendar constant the code no longer has; the year is the ' +
+      '8,784-hour slot (`YEAR_SLOT_HOURS`) and its count is `realHours`:\n  ' +
+      offenders.join('\n  '),
+  );
+});
+
 // ------------------------------ 8b. symbols named in a HEADER that are gone
 //
 // The same check for source headers, which route tasks to modules. It cannot

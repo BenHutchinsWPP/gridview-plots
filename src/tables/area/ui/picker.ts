@@ -9,7 +9,7 @@
 //   * Selection narrows the cube's metric axis itself, so the live readout is
 //     the real allocation, not an estimate.
 
-import { HOURS_PER_YEAR } from '../../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../../model/calendar';
 import { confirmLargeAllocation } from '../../../ui/confirm-allocation';
 import {
   CALCULATED_GROUP,
@@ -33,7 +33,7 @@ export function showPicker(
 ): Promise<string[] | null> {
   // Skip the dialog, keep the confirmation; declining loads nothing.
   if (everything) {
-    const perMetric = caseCount * HOURS_PER_YEAR * entityCount * BYTES_PER_VALUE;
+    const perMetric = caseCount * YEAR_SLOT_HOURS * entityCount * BYTES_PER_VALUE;
     return confirmLargeAllocation(union.length * perMetric, `all ${union.length} columns`).then(
       (ok) => (ok ? union : null),
     );
@@ -226,7 +226,7 @@ export function showPicker(
 
       const missing = requiredInputs([...chosen]).filter((weight) => !chosen.has(weight));
       // Exactly what ingest allocates: retained x cases x hours x areas x 4.
-      const perMetric = caseCount * HOURS_PER_YEAR * entityCount * BYTES_PER_VALUE;
+      const perMetric = caseCount * YEAR_SLOT_HOURS * entityCount * BYTES_PER_VALUE;
       const bytes = chosen.size * perMetric;
       // What "keep everything" costs, stated; past `LARGE_ALLOCATION_BYTES` it
       // also needs confirmation.

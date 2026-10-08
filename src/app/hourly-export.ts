@@ -21,7 +21,7 @@ import { pinnedConstraint, rowSubject, type CaseNames } from '../ui/browse-model
 import type { CaseSeries } from '../ui/charts';
 import { RANGE_LABEL } from '../series/range';
 import type { SeriesFacets } from '../series/label';
-import { HOURS_PER_YEAR } from '../model/calendar';
+import { YEAR_SLOT_HOURS, isLeapYear } from '../model/calendar';
 import {
   WIDE_MAX_SERIES,
   hourlyFileBound,
@@ -50,6 +50,8 @@ export interface HourlyExportHost {
   resolve(ref: BrowseRowRef): CaseSeries | null;
   /** A Case's label (`caseLabel`), for a row whose table is gone. */
   caseLabel(caseId: string): string;
+  /** A Case's year: long writes Feb 29's rows only for a leap year. */
+  yearOfCase(caseId: string): number;
   /** Case names, for a frozen filter chosen in another Case. */
   readonly caseNames: CaseNames;
   /** The busy line: input is refused while it is set. */
@@ -82,14 +84,17 @@ export async function exportHourly(
   const entries: HourlyEntry[] = [];
   for (let start = 0; start < refs.length; start += CHUNK) {
     for (const ref of refs.slice(start, start + CHUNK))
-      entries.push(entryOf(ref, host.resolve(ref), host.caseLabel, host.caseNames));
+      entries.push({
+        ...entryOf(ref, host.resolve(ref), host.caseLabel, host.caseNames),
+        leap: isLeapYear(host.yearOfCase(ref.caseId)),
+      });
     host.progress(`Resolving series ${entries.length.toLocaleString()} of ${total}…`);
     await host.nextFrame();
   }
 
   const names = hourlyNames(entries);
   const header = hourlyHeader(layout, request.descriptor, entries, names, request.notes);
-  const bound = hourlyFileBound(layout, utf8Bytes(header), names);
+  const bound = hourlyFileBound(layout, utf8Bytes(header), names, entries);
   const what = `${total} hourly series (${layout})`;
   if (!(await host.confirm(hourlyPeakBytes(layout, bound, refs.length), what))) return null;
   host.progress(`Writing ${what}…`);
@@ -101,7 +106,7 @@ export async function exportHourly(
     for (let start = 0; start < refs.length; start += CHUNK) {
       const end = Math.min(refs.length, start + CHUNK);
       for (let i = start; i < end; i++) {
-        parts.push(longRows(names[i], valuesOf(host.resolve(refs[i])), ratio[i]));
+        parts.push(longRows(names[i], valuesOf(host.resolve(refs[i])), ratio[i], entries[i].leap));
       }
       host.progress(`Writing series ${end.toLocaleString()} of ${total}…`);
       await host.nextFrame();
@@ -117,10 +122,10 @@ export async function exportHourly(
     host.progress(`Reading series ${columns.length.toLocaleString()} of ${total}…`);
     await host.nextFrame();
   }
-  for (let from = 0; from < HOURS_PER_YEAR; from += HOUR_CHUNK) {
-    const to = Math.min(HOURS_PER_YEAR, from + HOUR_CHUNK);
+  for (let from = 0; from < YEAR_SLOT_HOURS; from += HOUR_CHUNK) {
+    const to = Math.min(YEAR_SLOT_HOURS, from + HOUR_CHUNK);
     parts.push(wideRows(columns, ratio, from, to));
-    host.progress(`Writing hour ${to.toLocaleString()} of ${HOURS_PER_YEAR.toLocaleString()}…`);
+    host.progress(`Writing hour ${to.toLocaleString()} of ${YEAR_SLOT_HOURS.toLocaleString()}…`);
     await host.nextFrame();
   }
   return parts;
@@ -138,7 +143,7 @@ function entryOf(
   series: CaseSeries | null,
   caseLabelOf: (caseId: string) => string,
   caseNames: CaseNames,
-): HourlyEntry {
+): Omit<HourlyEntry, 'leap'> {
   const ratio = ref.perUnit === true;
   if (series?.facets) {
     return {

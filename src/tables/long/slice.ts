@@ -9,7 +9,7 @@
 // `src/tables/<kind>/long.ts`. Nothing here names a kind, reads a rule or
 // looks at an axis value.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { realHours, realHoursSeen, YEAR_SLOT_HOURS } from '../../model/calendar';
 import type { CaseAccumulator } from './kind';
 
 /** Cut out of the accumulator's cube. */
@@ -17,7 +17,7 @@ export interface MetricPlane {
   /** The metric's canonical column name -- the quantity, and the slot variant
    * for the kinds keyed on one. */
   quantity: string;
-  /** `cube[entity * 8760 + hour]`, the shape a one-quantity table wants. */
+  /** `cube[entity * 8784 + slotHour]`, the shape a one-quantity table wants. */
   cube: Float32Array;
   /** One byte per entity, the same bitmap the wide reader produces. */
   presence: Uint8Array;
@@ -26,10 +26,10 @@ export interface MetricPlane {
 /**
  * Slice every RETAINED-and-present metric out of a finished accumulator.
  *
- * The reader's layout is `(entity * numMetrics + metric) * 8760 + hour`, so one
- * metric's plane is a strided copy -- and the result is what the wide reader
- * would have produced from the same numbers, which is the point: downstream
- * cannot tell which shape a table was read from.
+ * The reader's layout is `(entity * numMetrics + metric) * 8784 + slotHour`,
+ * so one metric's plane is a strided copy -- and the result is what the wide
+ * reader would have produced from the same numbers, which is the point:
+ * downstream cannot tell which shape a table was read from.
  *
  * A metric the picker retained but this file does not carry is skipped rather
  * than emitted as an all-NaN table: a table nothing wrote is a slot that would
@@ -41,11 +41,11 @@ export function planesByMetric(accumulator: CaseAccumulator, entityCount: number
   const out: MetricPlane[] = [];
   for (let metric = 0; metric < numMetrics; metric++) {
     if (!plan.presence[metric]) continue;
-    const values = new Float32Array(entityCount * HOURS_PER_YEAR);
+    const values = new Float32Array(entityCount * YEAR_SLOT_HOURS);
     const presence = new Uint8Array(entityCount);
     for (let entity = 0; entity < entityCount; entity++) {
-      const from = (entity * numMetrics + metric) * HOURS_PER_YEAR;
-      values.set(cube.subarray(from, from + HOURS_PER_YEAR), entity * HOURS_PER_YEAR);
+      const from = (entity * numMetrics + metric) * YEAR_SLOT_HOURS;
+      values.set(cube.subarray(from, from + YEAR_SLOT_HOURS), entity * YEAR_SLOT_HOURS);
       presence[entity] = entitySeen[entity] ? 1 : 0;
     }
     out.push({ quantity: plan.metrics[metric], cube: values, presence });
@@ -55,7 +55,7 @@ export function planesByMetric(accumulator: CaseAccumulator, entityCount: number
 
 /**
  * What one long-shape file earned the user a note about: retained columns it
- * does not carry, hours it does not cover, and the dropped Feb 29.
+ * does not carry and real hours it does not cover.
  *
  * Said ONCE per file, not once per table -- one file becomes many tables here,
  * and the same sentence repeated eight times reads as eight problems.
@@ -74,17 +74,13 @@ export function coverageWarnings(
         `(${absent.slice(0, 3).join(', ')}${absent.length > 3 ? ', …' : ''}).`,
     );
   }
-  let covered = 0;
-  for (let h = 0; h < HOURS_PER_YEAR; h++) covered += accumulator.hourSeen[h];
-  if (covered < HOURS_PER_YEAR) {
+  const covered = realHoursSeen(accumulator.hourSeen, year, 1);
+  const real = realHours(year, 1);
+  if (covered < real) {
     warnings.push(
-      `${label}: covers ${covered.toLocaleString()} of ${HOURS_PER_YEAR.toLocaleString()} ` +
+      `${label}: covers ${covered.toLocaleString()} of ${real.toLocaleString()} ` +
         `hours; the rest read as no-data.`,
     );
-  }
-  // A leap year is stated rather than silent.
-  if ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) {
-    warnings.push(`${label}: ${year} is a leap year — Feb 29 was dropped at ingest.`);
   }
   return warnings;
 }

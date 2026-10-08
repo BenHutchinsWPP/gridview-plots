@@ -5,7 +5,7 @@
 // same in the app and the report. Lines are cropped to the window here, not
 // by `clipPath`, and thinned to what a 300 dpi column can show.
 
-import { HOURS_PER_YEAR } from '../model/calendar';
+import { YEAR_SLOT_HOURS } from '../model/calendar';
 import { TIME_LABEL_ROOM, timeTicks } from '../ui/chart-format';
 import { circle, polyline } from './svg';
 import { thinLine } from './thin';
@@ -19,7 +19,7 @@ export const COLUMNS_PER_PT = 300 / 72;
 
 /** The whole hours inside a window, clamped to the year. */
 export function hoursIn(window: readonly [number, number]): [number, number] {
-  return [Math.max(0, Math.ceil(window[0])), Math.min(HOURS_PER_YEAR - 1, Math.floor(window[1]))];
+  return [Math.max(0, Math.ceil(window[0])), Math.min(YEAR_SLOT_HOURS - 1, Math.floor(window[1]))];
 }
 
 export const TIME_PANE: PaneRenderer = {

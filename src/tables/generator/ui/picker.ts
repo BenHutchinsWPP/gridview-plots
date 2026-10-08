@@ -8,7 +8,7 @@
 // inverted: **nothing is selected by default**.
 //
 // A full-width generator case is a ~170 MB contiguous `Float32Array` (4,900
-// units x 8,760 h x 4 B). Interface's "keep everything, the picker's job is
+// units x 8,784 h x 4 B). Interface's "keep everything, the picker's job is
 // keeping 167 paths out of the drawer" reasoning does not survive an axis
 // twenty times wider, so the Enter key must not be able to produce that
 // allocation. The "Keep everything" button can, which is why it names the

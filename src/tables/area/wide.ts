@@ -3,7 +3,7 @@
 // The Area kind's adapter onto the WIDE shape reader. A single-metric Area
 // export is shape W (areas across the columns); multi-metric ones are shape L
 // (`long.ts`). Both finalize into the same `AreaTable`: at one metric the
-// cube index `(area * numMetrics + metric) * 8760 + hour` is exactly the wide
+// cube index `(area * numMetrics + metric) * 8784 + hour` is exactly the wide
 // cube's, so the wide cube is adopted, not copied. Nothing here teaches
 // `src/tables/wide/` anything about areas.
 

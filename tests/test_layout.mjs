@@ -33,6 +33,7 @@ installFakeDom();
 const { createBrowseDetent } = await import('../src/ui/browse-detent.ts');
 const { createStackedAdapter } = await import('../src/ui/panes/line.ts');
 const { createChrome, createSectionHost } = await import('../src/ui/shell.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const css = readFileSync(join(root, 'src/styles.css'), 'utf8');
@@ -260,7 +261,7 @@ const stackedLine = (name, color, value) => ({
   name,
   color,
   unit: 'MW',
-  values: new Float32Array(8760).fill(value),
+  values: new Float32Array(YEAR_SLOT_HOURS).fill(value),
   warnings: [],
 });
 const STACK = [

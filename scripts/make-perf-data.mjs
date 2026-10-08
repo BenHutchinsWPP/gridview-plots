@@ -10,6 +10,7 @@
 //   node scripts/make-perf-data.mjs --rung wide-512  # one named rung
 //   node scripts/make-perf-data.mjs --ladder --yes   # the whole ladder, ~2 GB
 //   node scripts/make-perf-data.mjs --drop --yes     # the worst-drop fixture, ~3 GB
+//   node scripts/make-perf-data.mjs --span --yes     # the 10-year rungs, ~7 GB
 //   node scripts/make-perf-data.mjs --seed 7 --out /tmp/x
 //
 // --ladder WIPES the output directory, so write the drop after it. The
@@ -37,11 +38,23 @@ export const DEFAULT_SEED = 20260904;
  * deleted. */
 const NAME_PREFIX = 'SAMPLE';
 
-/** Non-leap. Every rung is exactly 8,760 hours, so no rung's cost is inflated
- * by Feb 29 rows the parsers drop anyway. */
+/** Non-leap, and every one-year rung is exactly 8,760 hours, so no ladder
+ * rung's cost is inflated by Feb 29 rows. A span rung starts here and keeps
+ * Feb 29 in its leap years, as a multi-year Case does at load. */
 const YEAR = 2034;
 const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const HOURS_PER_YEAR = 8760;
+
+const isLeap = (year) => (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+
+/** The real hours a rung's years hold: 8,784 in a leap year. */
+export function spanHours(rung) {
+  let hours = 0;
+  for (let year = YEAR; year < YEAR + (rung.years ?? 1); year++) {
+    hours += isLeap(year) ? 8784 : HOURS_PER_YEAR;
+  }
+  return hours;
+}
 
 /** Formatting buffer. Rows are written into this and flushed; it is never
  * grown per row and no row set is ever accumulated. Must exceed the longest
@@ -192,8 +205,41 @@ export const DROPS = [
   },
 ];
 
-/** Every rung this script can write, ladder and drop alike. */
-export const ALL_RUNGS = [...RUNGS, ...DROP_RUNGS];
+/** Years in a span rung. Ten is the longest run the multi-year Case is
+ * sized for, and 2034..2043 holds two leap years. */
+export const SPAN_YEARS = 10;
+
+/**
+ * Span rungs: one GridView run of SPAN_YEARS contiguous years in ONE file, at
+ * the ladder's widths, so a 10-year Case is measured where the ladder
+ * measures one year. Written by `--span`, not `--ladder`: the bus-width rung
+ * alone is several gigabytes. The multi-year preamble is invented (see
+ * scripts/make-sample-data.mjs) and must be checked against a real export.
+ */
+export const SPAN_RUNGS = [
+  wide(215, 'Interface', 'the control width over a 10-year span: span cost without width cost', {
+    name: `wide-215-${SPAN_YEARS}y`,
+    years: SPAN_YEARS,
+  }),
+  wide(5900, 'Bus', 'the real bus width over a 10-year span: the largest cube one quantity makes', {
+    name: `wide-5900-${SPAN_YEARS}y`,
+    years: SPAN_YEARS,
+  }),
+  {
+    name: `long-200-${SPAN_YEARS}y`,
+    shape: 'long',
+    entities: 200,
+    metrics: 6,
+    kind: 'Area',
+    quantity: null,
+    hashed: false,
+    years: SPAN_YEARS,
+    proves: 'the row-dominated shape over a 10-year span: ~17.6M rows crossing nine New Years',
+  },
+];
+
+/** Every rung this script can write: ladder, drop and span. */
+export const ALL_RUNGS = [...RUNGS, ...DROP_RUNGS, ...SPAN_RUNGS];
 
 export const CONTROL_RUNG = 'wide-215';
 
@@ -213,11 +259,11 @@ export function projectBytes(rung) {
   if (rung.shape === 'long') {
     // One row per (entity, hour), and each row repeats the entity name.
     const row = KEY_COLUMN_BYTES + NAME_WIDTH + 1 + rung.metrics * MEAN_VALUE_BYTES;
-    return Math.round(200 + rung.entities * HOURS_PER_YEAR * row);
+    return Math.round(200 + rung.entities * spanHours(rung) * row);
   }
   const header = rung.entities * (NAME_WIDTH + 1) + 20;
   const row = KEY_COLUMN_BYTES + rung.entities * MEAN_VALUE_BYTES;
-  return Math.round(300 + header + HOURS_PER_YEAR * row);
+  return Math.round(300 + header + spanHours(rung) * row);
 }
 
 // ---------------------------------------------------------------- primitives
@@ -271,14 +317,21 @@ function formatValue(next) {
   return `${(next() * 9).toFixed(6)}E-0${1 + Math.floor(next() * 3)}`;
 }
 
-/** Walk the 8,760 hours of a non-leap year as (month, day, hour-ending). */
-function* calendar() {
-  for (let month = 1; month <= 12; month++) {
-    for (let day = 1; day <= MONTH_LENGTHS[month - 1]; day++) {
-      for (let hour = 1; hour <= 24; hour++) yield [month, day, hour];
+/** Walk every real hour of `years` years from YEAR, Feb 29 included, as
+ * (year, month, day, hour-ending). */
+function* calendar(years) {
+  for (let year = YEAR; year < YEAR + years; year++) {
+    for (let month = 1; month <= 12; month++) {
+      const days = MONTH_LENGTHS[month - 1] + (month === 2 && isLeap(year) ? 1 : 0);
+      for (let day = 1; day <= days; day++) {
+        for (let hour = 1; hour <= 24; hour++) yield [year, month, day, hour];
+      }
     }
   }
 }
+
+/** The last year a rung's rows reach. */
+const lastYearOf = (rung) => YEAR + (rung.years ?? 1) - 1;
 
 // ---------------------------------------------------------------- the writer
 
@@ -376,7 +429,9 @@ class ChunkSink {
 }
 
 /**
- * Shape W: one metric, entity per column, 8,760 rows, header on line 5. Key
+ * Shape W: one metric, entity per column, one row per hour, header on line 5.
+ * A span keeps the title's first year, singular, and its date line runs to
+ * the last. Key
  * columns carry the real exports' stray leading spaces, CRLF throughout. The
  * generated-file marker sits on preamble line 2, which nothing reads.
  */
@@ -389,7 +444,7 @@ async function writeWide(sink, rung, seed) {
       `seed ${seed}. Not a real export.\r\n`,
   );
   await sink.push(
-    `(From the first hour of 1/1/${YEAR} to the last hour of 12/31/${YEAR}. ` +
+    `(From the first hour of 1/1/${YEAR} to the last hour of 12/31/${lastYearOf(rung)}. ` +
       `Column identifier -- ${rung.kind} Name)\r\n`,
   );
   await sink.push('\r\n');
@@ -403,11 +458,11 @@ async function writeWide(sink, rung, seed) {
 
   const next = rng(seed);
   let rows = 0;
-  for (const [month, day, hour] of calendar()) {
+  for (const [year, month, day, hour] of calendar(rung.years ?? 1)) {
     const fields = new Array(rung.entities);
     for (let e = 0; e < rung.entities; e++) fields[e] = formatValue(next);
     await sink.push(
-      `${month}/${day}/${YEAR},${hour},${hour % 2 === 0 ? 'OnPeak' : 'OffPeak'},` +
+      `${month}/${day}/${year},${hour},${hour % 2 === 0 ? 'OnPeak' : 'OffPeak'},` +
         `${fields.join(',')}\r\n`,
     );
     rows++;
@@ -428,11 +483,11 @@ async function writeLong(sink, rung, seed) {
 
   const next = rng(seed);
   let rows = 0;
-  for (const [month, day, hour] of calendar()) {
+  for (const [year, month, day, hour] of calendar(rung.years ?? 1)) {
     // Entity-inner, hour-outer: one hour's rows are adjacent, which is the
     // order a real export arrives in. Row order carries no meaning to the
     // parser, but a benchmark should measure the ordinary case.
-    const prefix = `${month}/${day}/${YEAR},${hour},${hour % 2 === 0 ? 'OnPeak' : 'OffPeak'},`;
+    const prefix = `${month}/${day}/${year},${hour},${hour % 2 === 0 ? 'OnPeak' : 'OffPeak'},`;
     for (let e = 0; e < rung.entities; e++) {
       const fields = new Array(rung.metrics);
       for (let m = 0; m < rung.metrics; m++) fields[m] = formatValue(next);
@@ -481,6 +536,8 @@ export async function generateRung(rung, { out, seed }) {
     kind: rung.kind.toLowerCase(),
     entities: rung.entities,
     metrics: rung.metrics,
+    firstYear: YEAR,
+    lastYear: lastYearOf(rung),
     rows,
     bytes,
     headerBytes,
@@ -550,6 +607,7 @@ function parseArgs(argv) {
     rungs: null,
     ladder: false,
     drop: false,
+    span: false,
     yes: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -559,13 +617,17 @@ function parseArgs(argv) {
     else if (flag === '--rung') args.rungs = (args.rungs ?? []).concat(argv[++i].split(','));
     else if (flag === '--ladder') args.ladder = true;
     else if (flag === '--drop') args.drop = true;
+    else if (flag === '--span') args.span = true;
     else if (flag === '--yes') args.yes = true;
     else throw new Error(`Unknown argument ${flag}`);
   }
   if (!Number.isInteger(args.seed)) throw new Error('--seed must be an integer');
-  const chosen = [args.ladder && '--ladder', args.drop && '--drop', args.rungs && '--rung'].filter(
-    Boolean,
-  );
+  const chosen = [
+    args.ladder && '--ladder',
+    args.drop && '--drop',
+    args.span && '--span',
+    args.rungs && '--rung',
+  ].filter(Boolean);
   if (chosen.length > 1) throw new Error(`${chosen.join(' and ')} are mutually exclusive`);
   return args;
 }
@@ -576,6 +638,7 @@ function parseArgs(argv) {
 function selectRungs(args) {
   if (args.ladder) return RUNGS;
   if (args.drop) return DROP_RUNGS;
+  if (args.span) return SPAN_RUNGS;
   const names = args.rungs ?? [CONTROL_RUNG];
   return names.map((name) => {
     const rung = ALL_RUNGS.find((candidate) => candidate.name === name);
@@ -598,7 +661,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   console.log(`${rungs.length} rung(s) -> ${args.out}, seed ${args.seed}`);
   for (const rung of rungs) {
     console.log(
-      `  ${rung.name.padEnd(11)} ${String(rung.entities).padStart(5)} entities  ` +
+      `  ${rung.name.padEnd(13)} ${String(rung.entities).padStart(5)} entities  ` +
         `~${mb(projectBytes(rung)).padStart(8)}   ${rung.proves}`,
     );
   }
@@ -622,7 +685,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     wipe: args.ladder,
     onRung: (entry) =>
       console.log(
-        `  wrote ${entry.name.padEnd(11)} ${String(entry.rows).padStart(8)} rows  ` +
+        `  wrote ${entry.name.padEnd(13)} ${String(entry.rows).padStart(8)} rows  ` +
           `${mb(entry.bytes).padStart(8)}`,
       ),
   });

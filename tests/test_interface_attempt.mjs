@@ -33,7 +33,7 @@ const BUDGET = {
   abi: 3,
 };
 const { OVERFLOW_MARKER } = await import('../src/tables/interface/block.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
 let checks = 0;
 function ok(label) {
@@ -46,8 +46,8 @@ function ok(label) {
 // Two synthetic files, a full year each, so the block cut yields several
 // jobs per file.
 const NAMES = interfaceNames(NAMES_PER_FILE);
-const FILE_A = new File([exportCsv({ names: NAMES, days: 365, hours: 24, seed: 1 })], 'case_a.csv');
-const FILE_B = new File([exportCsv({ names: NAMES, days: 365, hours: 24, seed: 2 })], 'case_b.csv');
+const FILE_A = new File([exportCsv({ names: NAMES, days: 366, hours: 24, seed: 1 })], 'case_a.csv');
+const FILE_B = new File([exportCsv({ names: NAMES, days: 366, hours: 24, seed: 2 })], 'case_b.csv');
 
 const PLANS = [await readCasePlan(FILE_A), await readCasePlan(FILE_B)];
 const RETAINED = unionOf(PLANS);
@@ -128,9 +128,9 @@ function scriptedPool({ workerCount = 2, fail = () => null } = {}) {
       caseIndex: job.caseIndex,
       rows: 1,
       data,
-      rowHour: Uint16Array.from([seq % HOURS_PER_YEAR]),
+      rowYear: Uint8Array.from([0]),
+      rowHour: Uint16Array.from([seq % YEAR_SLOT_HOURS]),
       rowTou: Uint8Array.from([0]),
-      feb29: 0,
     };
   };
   const workers = Array.from({ length: workerCount }, () => makeStubWorker(script));
@@ -212,18 +212,18 @@ const OVERFLOW_MESSAGE = `${OVERFLOW_MARKER}: 3 row(s) past the 4096-row block s
   for (const table of result.cases) {
     for (let plane = 0; plane < 2; plane++) {
       assert.equal(
-        table.cube[plane * HOURS_PER_YEAR + 0],
+        table.cube[plane * YEAR_SLOT_HOURS + 0],
         2000 + 0 * 10 + plane,
         "hour 0 carries the RETRY's value, not the aborted attempt's",
       );
       assert.equal(
-        table.cube[plane * HOURS_PER_YEAR + 1],
+        table.cube[plane * YEAR_SLOT_HOURS + 1],
         2000 + 1 * 10 + plane,
         "hour 1 carries the RETRY's value",
       );
     }
     // An hour no job claimed is still NaN, not a plausible zero.
-    assert.ok(Number.isNaN(table.cube[HOURS_PER_YEAR - 1]), 'unwritten hours stay NaN');
+    assert.ok(Number.isNaN(table.cube[YEAR_SLOT_HOURS - 1]), 'unwritten hours stay NaN');
   }
   ok(
     'an overflow while retryable aborts the attempt and the retry re-runs, smaller, from EMPTY accumulators',

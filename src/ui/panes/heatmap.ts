@@ -1,14 +1,20 @@
 // src/ui/panes/heatmap.ts
 //
-// The 24x365 diurnal heatmap chart type, hand-drawn because uPlot draws 1D
-// ascending x-axes, not a matrix. Day of year across, hour of day up.
+// The 24x366 diurnal heatmap chart type, hand-drawn because uPlot draws 1D
+// ascending x-axes, not a matrix. Day of the leap-calendar slot across, hour
+// of day up; a non-leap year's Feb 29 column is blank, as missing data is.
 // Diverging palette when values span zero (flows, storage), sequential
 // (viridis) when non-negative. One series: the pane names which of the drawn
 // lines it painted. The scale and colour rules are exported for the print
 // figure, so the two cannot paint one series differently.
 
 import type { CaseSeries } from '../charts';
-import { MONTH_NAMES, MONTH_LENGTHS } from '../../model/calendar';
+import {
+  MONTH_NAMES,
+  SLOT_MONTH_LENGTHS,
+  SLOT_MONTH_STARTS,
+  YEAR_SLOT_DAYS,
+} from '../../model/calendar';
 import { clip, formatNumber, hourLabel } from '../chart-format';
 import { figureShot, pinnedOf, type PaneAdapter, type PaneFrame, type PaneHost } from './adapter';
 
@@ -118,7 +124,6 @@ const MARGIN_BOTTOM = 36;
 const MARGIN_RIGHT = 78;
 
 const HOURS_IN_DAY = 24;
-const DAYS_IN_YEAR = 365;
 
 export function createHeatmapAdapter(host: PaneHost): PaneAdapter {
   const { body, canvas, tip } = host;
@@ -160,10 +165,10 @@ export function createHeatmapAdapter(host: PaneHost): PaneAdapter {
       return;
     }
 
-    // X is Day of Year (0..364, Jan 1 to Dec 31)
+    // X is the slot's day (0..365, Jan 1 to Dec 31, Feb 29 = 59)
     const d = Math.max(
       0,
-      Math.min(DAYS_IN_YEAR - 1, Math.floor(((px - marginLeft) / plotWidth) * DAYS_IN_YEAR)),
+      Math.min(YEAR_SLOT_DAYS - 1, Math.floor(((px - marginLeft) / plotWidth) * YEAR_SLOT_DAYS)),
     );
     // Y is Hour of Day (Hour 24 at top, Hour 1 at bottom)
     const r = Math.max(
@@ -266,10 +271,10 @@ export function createHeatmapAdapter(host: PaneHost): PaneAdapter {
 
     const [low, high] = heatmapEnds(scale);
 
-    // Precalculate day X positions (365 days across plotWidth)
-    const dayX: number[] = new Array(DAYS_IN_YEAR + 1);
-    for (let d = 0; d <= DAYS_IN_YEAR; d++) {
-      dayX[d] = marginLeft + Math.round((d * plotWidth) / DAYS_IN_YEAR);
+    // Precalculate day X positions (366 days across plotWidth)
+    const dayX: number[] = new Array(YEAR_SLOT_DAYS + 1);
+    for (let d = 0; d <= YEAR_SLOT_DAYS; d++) {
+      dayX[d] = marginLeft + Math.round((d * plotWidth) / YEAR_SLOT_DAYS);
     }
 
     // Precalculate hour Y positions (24 hours across plotHeight, Hour 24 at top, Hour 1 at bottom)
@@ -278,8 +283,8 @@ export function createHeatmapAdapter(host: PaneHost): PaneAdapter {
       hourY[r] = marginTop + Math.round((r * plotHeight) / HOURS_IN_DAY);
     }
 
-    // Render 8,760 cells (X = day 0..364, Y = row 0..23 for hours 24..1)
-    for (let d = 0; d < DAYS_IN_YEAR; d++) {
+    // Render 8,784 cells (X = day 0..365, Y = row 0..23 for hours 24..1)
+    for (let d = 0; d < YEAR_SLOT_DAYS; d++) {
       const x0 = dayX[d];
       const cellW = Math.max(1, dayX[d + 1] - x0);
       const dayOffset = d * HOURS_IN_DAY;
@@ -304,14 +309,12 @@ export function createHeatmapAdapter(host: PaneHost): PaneAdapter {
     context.textAlign = 'center';
     context.textBaseline = 'top';
 
-    let dayAccum = 0;
     for (let m = 0; m < 12; m++) {
-      const startDay = dayAccum;
-      const mLen = MONTH_LENGTHS[m];
-      dayAccum += mLen;
+      const startDay = SLOT_MONTH_STARTS[m];
+      const mLen = SLOT_MONTH_LENGTHS[m];
 
       const xStart = dayX[startDay];
-      const xMid = Math.round(marginLeft + ((startDay + mLen / 2) * plotWidth) / DAYS_IN_YEAR);
+      const xMid = Math.round(marginLeft + ((startDay + mLen / 2) * plotWidth) / YEAR_SLOT_DAYS);
 
       // Boundary divider tick on bottom
       if (m > 0) {

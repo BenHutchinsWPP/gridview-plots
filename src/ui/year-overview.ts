@@ -12,21 +12,18 @@
 // A drag moves the dates as it goes, like the rail's strip, at most once a
 // frame: each change re-renders every pane and the browse drawer.
 
-import { MONTH_LENGTHS, MONTH_NAMES } from '../model/calendar';
 import {
-  DAYS_PER_YEAR,
-  MONTH_STARTS,
-  rangeOf,
-  replaceRun,
-  sameSet,
-  type DateRange,
-  type DateSet,
-} from '../model/date-range';
+  MONTH_NAMES,
+  SLOT_MONTH_LENGTHS,
+  SLOT_MONTH_STARTS,
+  YEAR_SLOT_DAYS,
+} from '../model/calendar';
+import { rangeOf, replaceRun, sameSet, type DateRange, type DateSet } from '../model/date-range';
 
 export interface OverviewLine {
   color: string;
   unit: string;
-  /** 8,760 values, NaN where filtered out or missing. */
+  /** 8,784 values (the year slot), NaN where filtered out or missing. */
   values: Float32Array;
 }
 
@@ -59,10 +56,10 @@ function svgEl(name: string, attrs: Record<string, string | number>, parent: Ele
 /** Each day's mean, min and max over its kept hours; NaN for a day with
  * none. */
 function daily(values: Float32Array): { mean: Float32Array; min: Float32Array; max: Float32Array } {
-  const mean = new Float32Array(DAYS_PER_YEAR);
-  const min = new Float32Array(DAYS_PER_YEAR);
-  const max = new Float32Array(DAYS_PER_YEAR);
-  for (let d = 0; d < DAYS_PER_YEAR; d++) {
+  const mean = new Float32Array(YEAR_SLOT_DAYS);
+  const min = new Float32Array(YEAR_SLOT_DAYS);
+  const max = new Float32Array(YEAR_SLOT_DAYS);
+  for (let d = 0; d < YEAR_SLOT_DAYS; d++) {
     let lo = Infinity;
     let hi = -Infinity;
     let sum = 0;
@@ -86,7 +83,7 @@ function daily(values: Float32Array): { mean: Float32Array; min: Float32Array; m
 function trace(ys: Float32Array, x: (d: number) => number, y: (v: number) => number): string {
   let path = '';
   let pen = false;
-  for (let d = 0; d < DAYS_PER_YEAR; d++) {
+  for (let d = 0; d < YEAR_SLOT_DAYS; d++) {
     if (Number.isNaN(ys[d])) {
       pen = false;
       continue;
@@ -119,11 +116,11 @@ export function createYearOverview(
 
   const width = (): number => Math.max(1, Math.floor(host.clientWidth));
   const plotWidth = (): number => (plot.width > 0 ? plot.width : width() - plot.left);
-  const x = (d: number): number => plot.left + (d / DAYS_PER_YEAR) * plotWidth();
+  const x = (d: number): number => plot.left + (d / YEAR_SLOT_DAYS) * plotWidth();
   const dayAt = (px: number): number =>
     Math.max(
       0,
-      Math.min(DAYS_PER_YEAR - 1, Math.floor(((px - plot.left) / plotWidth()) * DAYS_PER_YEAR)),
+      Math.min(YEAR_SLOT_DAYS - 1, Math.floor(((px - plot.left) / plotWidth()) * YEAR_SLOT_DAYS)),
     );
 
   function paint(): void {
@@ -138,13 +135,19 @@ export function createYearOverview(
     for (let m = 0; m < 12; m++) {
       svgEl(
         'line',
-        { x1: x(MONTH_STARTS[m]), x2: x(MONTH_STARTS[m]), y1: TOP, y2: bottom, stroke: '#f0f0f0' },
+        {
+          x1: x(SLOT_MONTH_STARTS[m]),
+          x2: x(SLOT_MONTH_STARTS[m]),
+          y1: TOP,
+          y2: bottom,
+          stroke: '#f0f0f0',
+        },
         svg,
       );
       const label = svgEl(
         'text',
         {
-          x: x(MONTH_STARTS[m] + MONTH_LENGTHS[m] / 2),
+          x: x(SLOT_MONTH_STARTS[m] + SLOT_MONTH_LENGTHS[m] / 2),
           y: HEIGHT - 3,
           'text-anchor': 'middle',
           'font-size': 10,
@@ -161,7 +164,7 @@ export function createYearOverview(
     lines.forEach((line, i) => {
       const scale = scales.get(line.unit) ?? { lo: Infinity, hi: -Infinity };
       const [lows, highs] = band ? [stats[i].min, stats[i].max] : [stats[i].mean, stats[i].mean];
-      for (let d = 0; d < DAYS_PER_YEAR; d++) {
+      for (let d = 0; d < YEAR_SLOT_DAYS; d++) {
         if (!Number.isNaN(lows[d])) scale.lo = Math.min(scale.lo, lows[d]);
         if (!Number.isNaN(highs[d])) scale.hi = Math.max(scale.hi, highs[d]);
       }
@@ -177,8 +180,8 @@ export function createYearOverview(
         // Each run of kept days as its own closed band.
         const runs: string[] = [];
         let start = -1;
-        for (let d = 0; d <= DAYS_PER_YEAR; d++) {
-          const kept = d < DAYS_PER_YEAR && !Number.isNaN(stats[i].max[d]);
+        for (let d = 0; d <= YEAR_SLOT_DAYS; d++) {
+          const kept = d < YEAR_SLOT_DAYS && !Number.isNaN(stats[i].max[d]);
           if (kept && start < 0) start = d;
           if (!kept && start >= 0) {
             let path = '';
@@ -304,7 +307,7 @@ export function createYearOverview(
     let next: DateRange;
     if (mode === 'move') {
       const len = range.end - range.start;
-      const start = Math.max(0, Math.min(DAYS_PER_YEAR - 1 - len, range.start + day - from));
+      const start = Math.max(0, Math.min(YEAR_SLOT_DAYS - 1 - len, range.start + day - from));
       next = { start, end: start + len };
     } else if (mode === 'left') {
       next = rangeOf(Math.min(day, range.end), range.end);

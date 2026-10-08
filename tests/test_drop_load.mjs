@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
 
-const { createDropLoad } = await import('../src/app/drop-load.ts');
+const { createDropLoad, hoursCoveredBySlot } = await import('../src/app/drop-load.ts');
 const { createInventory } = await import('../src/inventory/store.ts');
 const { classify } = await import('../src/detect.ts');
 
@@ -458,6 +458,29 @@ await check('the sequence reaches app state only through its host', async () => 
   assert.match(main, /const dropLoad = createDropLoad\(\{/);
   assert.match(main, /downloadRunning: \(\) => exportInFlight,/);
   assert.equal(main.split('void dropLoad.load(files)').length - 1, 3, 'drop, Add and Load');
+});
+
+await check('a slot counts its real hours, against its own year, for the replace warning', () => {
+  const SLOT = 8784;
+  const FEB29 = 59 * 24;
+  // Every real hour of a non-leap year: its phantom Feb 29 is never a gap.
+  const nonLeap = new Uint8Array(SLOT).fill(1);
+  nonLeap.fill(0, FEB29, FEB29 + 24);
+  // A leap year missing its real Feb 29.
+  const leap = new Uint8Array(SLOT).fill(1);
+  leap.fill(0, FEB29, FEB29 + 24);
+  const coverage = hoursCoveredBySlot({
+    tables: new Map([
+      ['a', { data: { hoursPresent: nonLeap, year: 2035 } }],
+      ['b', { data: { hoursPresent: leap, year: 2036 } }],
+      ['c', { data: { hoursPresent: new Uint8Array(8760).fill(1), year: 2035 } }],
+      ['d', { data: { hoursPresent: nonLeap } }],
+    ]),
+  });
+  assert.deepEqual(coverage.a, { covers: 8760, of: 8760 });
+  assert.deepEqual(coverage.b, { covers: 8760, of: 8784 });
+  assert.equal(coverage.c, null, 'not a slot: unknown');
+  assert.equal(coverage.d, null, 'no year: unknown');
 });
 
 console.log(`\n${passed} drop-load checks passed.`);

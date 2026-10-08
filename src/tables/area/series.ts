@@ -17,7 +17,7 @@
 //   * **Weighted mean pooled value.** If `buildSeries` returns weights, the
 //     pooled weighted mean across the kept hours is computed and attached.
 
-import { HOURS_PER_YEAR, buildCalendar, buildMask } from '../../model/calendar';
+import { YEAR_SLOT_HOURS, buildCalendar, buildMask } from '../../model/calendar';
 import {
   CASE_GROUP_BY,
   refusedSeries,
@@ -82,7 +82,7 @@ export function resolveAreaSeries(
   // Caller-owned or buffer-attached weights buffer for weighted mean
   const weightsOut =
     (buffers as { weights?: Float32Array }).weights ??
-    ((buffers as { weights?: Float32Array }).weights = new Float32Array(HOURS_PER_YEAR));
+    ((buffers as { weights?: Float32Array }).weights = new Float32Array(YEAR_SLOT_HOURS));
 
   const built = buildSeries(data, metric, areas, buffers.series, weightsOut, options.tableLabel);
   if (built.values === null) {
@@ -95,7 +95,7 @@ export function resolveAreaSeries(
     ? rangeLabel(normalizeToRange(built.values, {}, PERCENT, buffers.mask))
     : undefined;
 
-  for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
     buffers.display[hour] = buffers.mask[hour] === 1 ? built.values[hour] : NaN;
   }
 

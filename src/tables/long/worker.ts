@@ -70,8 +70,10 @@ export interface BlockMessage extends RangeMessage {
   sourceMetricCount: number;
   /** Rows this byte range holds, from the axis scan over the same bytes. */
   maxRows: number;
-  /** The Case's year, from its file's first data row. */
-  year: number;
+  /** The Case's years: `numYears` from `firstYear`. In a merge group these
+   * are the GROUP's, so every member's rows place against one span. */
+  firstYear: number;
+  numYears: number;
 }
 
 export type WorkerRequest = InitMessage | AxisMessage | LayoutMessage | ScanMessage | BlockMessage;
@@ -185,7 +187,8 @@ if (typeof self !== 'undefined')
         message.entityCount,
         message.sourceMetricCount,
         message.maxRows,
-        message.year,
+        message.firstYear,
+        message.numYears,
       );
       const result: BlockResult = {
         kind: 'done',
@@ -196,6 +199,7 @@ if (typeof self !== 'undefined')
       (self as unknown as Worker).postMessage(result, [
         result.values.buffer,
         result.rowEntity.buffer,
+        result.rowYear.buffer,
         result.rowHour.buffer,
         result.rowTou.buffer,
         result.entitySeen.buffer,

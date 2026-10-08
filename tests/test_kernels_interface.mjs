@@ -14,7 +14,7 @@ import './test_loader.mjs';
 
 const { applyMask, buildSeries, createScratch, hasData, isAllZero, quantiles, sortAsc, stats } =
   await import('../src/tables/interface/kernels.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 const {
   combinesAcrossInterfaces,
   interfaceGroups,
@@ -34,7 +34,7 @@ const rulesData = (
   await import('../data/interface/quantity-rules.json', { with: { type: 'json' } })
 ).default;
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 let checks = 0;
 function ok(label) {
   checks++;
@@ -147,7 +147,7 @@ function makeCase({
 
   // The shape naive f32 accumulation gets wrong: a large mean and a small
   // spread. Welford in f64 must land on the f64 reference.
-  const n = 8760;
+  const n = YEAR_SLOT_HOURS;
   const wide = new Float32Array(n);
   for (let i = 0; i < n; i++) wide[i] = 1e6 + (i % 7) - 3;
   const measured = stats(wide, n);

@@ -14,7 +14,7 @@
 //   * Block size comes from the file's own row length and width, so a block
 //     never holds more rows than the slab the parser was configured with.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { realHours, realHoursSeen, YEAR_SLOT_HOURS } from '../../model/calendar';
 import {
   dispatch,
   hasSimd,
@@ -316,19 +316,17 @@ export interface CaseAccumulator {
    * no per-entity bit is needed. A merge group shares it, so two files
    * covering the same hour are refused like two rows of one file. */
   covered: Uint8Array;
-  feb29: number;
 }
 
 export function createAccumulator(plan: ColumnPlan): CaseAccumulator {
-  const cube = new Float32Array(plan.entities.length * HOURS_PER_YEAR);
+  const cube = new Float32Array(plan.entities.length * YEAR_SLOT_HOURS);
   cube.fill(NaN);
   return {
     plan,
     cube,
-    tou: new Uint8Array(HOURS_PER_YEAR).fill(0xff),
-    hourSeen: new Uint8Array(HOURS_PER_YEAR),
-    covered: new Uint8Array(Math.ceil(HOURS_PER_YEAR / 8)),
-    feb29: 0,
+    tou: new Uint8Array(YEAR_SLOT_HOURS).fill(0xff),
+    hourSeen: new Uint8Array(YEAR_SLOT_HOURS),
+    covered: new Uint8Array(Math.ceil(YEAR_SLOT_HOURS / 8)),
   };
 }
 
@@ -346,13 +344,16 @@ export function blitBlock(
   // The block's OWN file's plan. It differs from the group's only in a merge
   // group, where files with different columns fill one cube.
   const plan = columnPlan;
-  const { rows, data, rowHour, rowTou } = block;
-  accumulator.feb29 += block.feb29;
+  const { rows, data, rowYear, rowHour, rowTou } = block;
   if (rows === 0) return;
 
   // Claim each hour before writing: two rows for one hour would otherwise keep
   // whichever worker finished last.
   for (let r = 0; r < rows; r++) {
+    // One year per Case, as in src/tables/long/pool.ts's blitBlock.
+    if (rowYear[r] !== 0) {
+      throw new Error(`A row was placed in year offset ${rowYear[r]} of a one-year Case.`);
+    }
     const hour = rowHour[r];
     const byte = hour >> 3;
     const mask = 1 << (hour & 7);
@@ -370,7 +371,7 @@ export function blitBlock(
   }
 
   for (let p = 0; p < plan.activePlanes.length; p++) {
-    const base = plan.slabPlan[plan.activePlanes[p]] * HOURS_PER_YEAR;
+    const base = plan.slabPlan[plan.activePlanes[p]] * YEAR_SLOT_HOURS;
     const src = p * rows;
     for (let r = 0; r < rows; r++) cube[base + rowHour[r]] = data[src + r];
   }
@@ -386,7 +387,7 @@ export interface WideCase {
   entities: string[];
   /** One byte per entity: 1 = this file's header carried it. */
   presence: Uint8Array;
-  /** Per-hour TOU code, length 8760, read from the file. */
+  /** Per-hour TOU code, one per slot hour, read from the file. */
   tou: Uint8Array;
   /** One byte per hour: 1 = some row covered it (unioned across a merge
    * group). */
@@ -397,7 +398,7 @@ export interface WideCase {
 
 /**
  * Close one accumulator and report what the SHAPE can see going wrong:
- * missing columns, uncovered hours, dropped Feb 29 rows, a title that
+ * missing columns, uncovered hours, a title that
  * disagrees with the rows. Warnings about meaning belong to the kind's own
  * finalizer.
  */
@@ -418,20 +419,12 @@ export function finalizeWide(
         `(${absent.slice(0, 3).join(', ')}${absent.length > 3 ? ', …' : ''}).`,
     );
   }
-  let covered = 0;
-  for (let h = 0; h < HOURS_PER_YEAR; h++) covered += accumulator.hourSeen[h];
-  if (covered < HOURS_PER_YEAR) {
+  const covered = realHoursSeen(accumulator.hourSeen, year, 1);
+  const real = realHours(year, 1);
+  if (covered < real) {
     warnings.push(
-      `${name}: covers ${covered.toLocaleString()} of ${HOURS_PER_YEAR.toLocaleString()} hours; ` +
+      `${name}: covers ${covered.toLocaleString()} of ${real.toLocaleString()} hours; ` +
         `the rest read as no-data.`,
-    );
-  }
-  // A leap year is stated rather than silent.
-  if (accumulator.feb29 > 0) {
-    warnings.push(
-      `${name}: ${year} is a leap year — ${accumulator.feb29.toLocaleString()} Feb 29 row(s) ` +
-        `were dropped at ingest so every case is exactly ${HOURS_PER_YEAR.toLocaleString()} ` +
-        `hours.`,
     );
   }
   if (title.quantity === '') {
@@ -462,6 +455,7 @@ export function finalizeWide(
 
 // ---------------------------------------------------------------- ingest
 
+/** `firstYear` is the merge GROUP's (see src/tables/long/pool.ts). */
 function blocksFor(
   plan: CasePlan,
   caseIndex: number,
@@ -469,6 +463,7 @@ function blocksFor(
   nextId: () => number,
   shrink: number,
   layout: SlabLayout,
+  firstYear: number,
 ): BlockMessage[] {
   // A wider export has longer rows AND a shorter slab, so the bound comes from
   // this file's rows and layout. `bytesPerRow` is the shortest sampled row, so
@@ -490,7 +485,8 @@ function blocksFor(
       skipPartialFirstRow: start !== plan.dataStart,
       activePlanes,
       layout,
-      year: plan.year,
+      firstYear,
+      numYears: 1,
     });
   }
   return jobs;
@@ -607,6 +603,7 @@ export async function ingestWithWorkers<T>(
           () => id++,
           shrink,
           layouts[index],
+          groups[groupOf[index]].repPlan.year,
         ),
       );
     });
@@ -768,5 +765,5 @@ export function unionHeader(members: readonly CasePlan[]): HeaderInfo {
 
 /** Bytes one case's cube occupies: exactly what `createAccumulator` allocates. */
 export function cubeBytesFor(entityCount: number): number {
-  return entityCount * HOURS_PER_YEAR * Float32Array.BYTES_PER_ELEMENT;
+  return entityCount * YEAR_SLOT_HOURS * Float32Array.BYTES_PER_ELEMENT;
 }

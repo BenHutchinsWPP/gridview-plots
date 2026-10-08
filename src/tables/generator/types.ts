@@ -10,7 +10,7 @@
 // combine -- generation by fuel type, by area -- but every such grouping is a
 // join against the GeneratorList lookup, done in `ui/browse.ts`, not here.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import type { HoursPresent, TouCodes } from '../../model/types';
 
 /**
@@ -21,7 +21,7 @@ import type { HoursPresent, TouCodes } from '../../model/types';
 /**
  * One wide Generator export. `cube` is indexed
  *
- *   cube[generator * 8760 + hour]
+ *   cube[generator * 8784 + hour]
  *
  * -- one metric (the title's quantity) for every generator the file lists,
  * exactly as an Interface table is one quantity per interface. Case identity
@@ -67,6 +67,8 @@ export function serializeGeneratorTable(table: GeneratorTable): {
   return {
     fields: {
       year: table.year,
+      firstYear: table.year,
+      numYears: 1,
       generators: table.generators,
       sourceColumns: table.sourceColumns,
       quantity: table.quantity,
@@ -84,6 +86,7 @@ export function deserializeGeneratorTable(
 ): GeneratorTable {
   const entry = fields as {
     year: number;
+    numYears?: number;
     generators: string[];
     sourceColumns: string[];
     quantity: string;
@@ -91,12 +94,13 @@ export function deserializeGeneratorTable(
     tou: TouCodes;
     hoursPresent?: HoursPresent;
   };
-  const values = new Float32Array(cube);
-  const expected = entry.generators.length * HOURS_PER_YEAR;
+  const slot = savedHoursOnSlot(entry, new Float32Array(cube), entry.generators.length);
+  const values = slot.cube;
+  const expected = entry.generators.length * YEAR_SLOT_HOURS;
   if (values.length !== expected) {
     throw new Error(
       `saved Generator cube is ${values.length} values, expected ${expected} ` +
-        `(${entry.generators.length} generators × ${HOURS_PER_YEAR} h)`,
+        `(${entry.generators.length} generators × ${YEAR_SLOT_HOURS} h)`,
     );
   }
   if (entry.presence.length !== entry.generators.length) {
@@ -109,8 +113,8 @@ export function deserializeGeneratorTable(
     cube: values,
     generators: entry.generators.slice(),
     presence: entry.presence,
-    tou: entry.tou,
-    hoursPresent: entry.hoursPresent,
+    tou: slot.tou,
+    hoursPresent: slot.hoursPresent,
     sourceColumns: entry.sourceColumns.slice(),
     year: entry.year,
     quantity: entry.quantity,

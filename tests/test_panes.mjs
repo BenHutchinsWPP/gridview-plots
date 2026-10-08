@@ -10,7 +10,8 @@
 //   (d) the pane shows the surface its type draws on and hides the others;
 //   (e) the header shows exactly the controls the type names;
 //   (f) banners and the header note are cleared on every render;
-//   (g) the Figure offer and capture are the type's;
+//   (g) the Figure offer and capture are the type's, and a capture counts
+//       out of the real hours of the Cases its drawn lines came from;
 //   (h) the size a renderer paints at is the pane's box, with only a 1px
 //       floor for a hidden pane.
 
@@ -20,6 +21,7 @@ import { installFakeDom, paneElements, frameOf } from './test_fixtures_dom.mjs';
 
 installFakeDom();
 const { createPane } = await import('../src/ui/panes/pane.ts');
+const { figureShot } = await import('../src/ui/panes/adapter.ts');
 const { createHeatmapAdapter } = await import('../src/ui/panes/heatmap.ts');
 const { emptyPaneText } = await import('../src/ui/chart-format.ts');
 
@@ -100,7 +102,7 @@ const SERIES = {
   name: 'SAMPLE line',
   color: '#1f77b4',
   unit: 'MW',
-  values: new Float32Array(8760),
+  values: new Float32Array(8784),
   warnings: [],
 };
 const drawn = frameOf([SERIES]);
@@ -268,6 +270,22 @@ check('(g) the Figure offer and capture are the type’s', () => {
   pane.render(drawn);
   assert.equal(pane.figureOffered(), true);
   assert.deepEqual(pane.figure().capture, { pane: 'box' });
+});
+
+check('(g) a capture’s hours are the most real hours of the Cases it draws', () => {
+  const host = { controls: { limits: { checked: false } } };
+  const of = (lines) =>
+    figureShot(
+      host,
+      { yearOf: (series) => series.year },
+      { pane: 'time', ordered: lines, xWindow: [0, 1] },
+    ).capture.realHours;
+  const year = (y, over = {}) => ({ ...SERIES, spec: { caseId: String(y) }, year: y, ...over });
+  assert.equal(of([year(2031)]), 8760, 'a non-leap Case: 8,760, not the slot');
+  assert.equal(of([year(2032)]), 8784, 'a leap Case');
+  assert.equal(of([year(2031), year(2032)]), 8784, 'the most any drawn Case has');
+  assert.equal(of([year(2031), year(2032, { values: null })]), 8760, 'a refused line counts none');
+  assert.equal(of([year(2031), year(2032, { dashed: true })]), 8760, 'nor does the preview');
 });
 
 check('(h) a renderer paints at the pane’s own box, floored at 1px only', () => {

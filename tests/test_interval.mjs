@@ -38,17 +38,24 @@ function check(label, fn) {
 }
 
 /** Every hour's value is its own index, so a cell names the hour it came from. */
-const indexes = () => Float32Array.from({ length: 8760 }, (_, h) => h);
+// Finite even on a phantom Feb 29, so a period holding one would show.
+const indexes = () => Float32Array.from({ length: 8784 }, (_, h) => h);
 const in2035 = (day) => weekdayOf(2035, day); // Jan 1 2035 is a Monday
+const in2036 = (day) => weekdayOf(2036, day); // Jan 1 2036 is a Tuesday, a leap year
 const in2045 = (day) => weekdayOf(2045, day); // Jan 1 2045 is a Sunday
 
-check('a day is 24 axis hours, and every day of the year is a period', () => {
+check('a day is 24 axis hours, and every real day of the year is a period', () => {
   const days = cutPeriods(indexes(), 'day', in2035);
   assert.equal(axisHours('day'), 24);
-  assert.equal(days.length, 365);
+  assert.equal(days.length, 365, '2035 has no Feb 29');
   assert.equal(days[50].label, 'Tue Feb 20');
   assert.equal(days[50].values[0], 50 * 24, 'HE 1 of Feb 20 at axis hour 0');
   assert.equal(days[50].values[23], 50 * 24 + 23);
+  assert.equal(days[59].label, 'Thu Mar 1', 'Mar 1 follows Feb 28');
+  assert.equal(days[59].values[0], 60 * 24, 'Mar 1 is day 60 of the slot');
+  const leap = cutPeriods(indexes(), 'day', in2036);
+  assert.equal(leap.length, 366);
+  assert.equal(leap[59].label, 'Fri Feb 29');
 });
 
 check('weeks run Monday to Sunday in the Case’s own year', () => {
@@ -63,33 +70,55 @@ check('weeks run Monday to Sunday in the Case’s own year', () => {
   assert.equal(weeks2045[1].values[0], 24, 'Jan 2 2045 is the next Monday');
 });
 
-check('a leap year’s weeks still run Monday to Sunday after its dropped Feb 29', () => {
-  // 2024: Feb 28 is a Wednesday, and Mar 1 a Friday, the day after the
-  // dropped Feb 29. Mon Mar 4 (day 62) must open a week.
+check('a leap year’s week holds its Feb 29 on its own weekday', () => {
+  // 2024: Feb 29 is a Thursday and Mar 1 a Friday. Mon Mar 4 (day 63)
+  // opens the next week.
   const in2024 = (day) => weekdayOf(2024, day);
   const weeks = cutPeriods(indexes(), 'week', in2024);
   const march4 = weeks.find((week) => week.label === 'week of Mar 4');
   assert.ok(march4, weeks.map((week) => week.label).join(' | '));
-  assert.equal(march4.values[0], 62 * 24, 'Mon Mar 4 on Monday');
+  assert.equal(march4.values[0], 63 * 24, 'Mon Mar 4 on Monday');
   const leapWeek = weeks.find((week) => week.label === 'week of Feb 26');
-  assert.equal(leapWeek.values[4 * 24], 59 * 24, 'Fri Mar 1 on Friday, Thursday Feb 29 left blank');
-  assert.ok(Number.isNaN(leapWeek.values[3 * 24]));
+  assert.equal(leapWeek.values[3 * 24], 59 * 24, 'Thu Feb 29 on Thursday');
+  assert.equal(leapWeek.values[4 * 24], 60 * 24, 'Fri Mar 1 on Friday');
 });
 
-check('a month is 31 days of axis, and February stops at day 28', () => {
+check('a non-leap year cuts no week at its phantom Feb 29', () => {
+  // 2035: Feb 26 is a Monday; Wed Feb 28 is followed by Thu Mar 1, so one
+  // week runs Feb 26 – Mar 4. Read as a Monday, the phantom day would cut
+  // a spurious week there.
+  const weeks = cutPeriods(indexes(), 'week', in2035);
+  const labels = weeks.map((week) => week.label);
+  assert.ok(!labels.includes('week of Feb 29') && !labels.includes('week of Mar 1'), labels.join());
+  const feb26 = weeks.find((week) => week.label === 'week of Feb 26');
+  assert.equal(feb26.values[2 * 24], 58 * 24, 'Wed Feb 28 on Wednesday');
+  assert.equal(feb26.values[3 * 24], 60 * 24, 'Thu Mar 1 on Thursday');
+  assert.equal(weeks[weeks.indexOf(feb26) + 1].label, 'week of Mar 5');
+  // 365 days from a Monday: 52 whole weeks and Mon Dec 31, as a leap year
+  // from a Tuesday makes a partial week and 52 more.
+  assert.equal(weeks.length, 53);
+  assert.ok(weeks.slice(1).every((week) => in2035(week.startDay) === 0));
+  const leapWeeks = cutPeriods(indexes(), 'week', in2036);
+  assert.equal(leapWeeks.length, 53);
+  assert.ok(leapWeeks.slice(1).every((week) => in2036(week.startDay) === 0));
+});
+
+check('a month is 31 days of axis, and February holds day 29 only in a leap year', () => {
   const months = cutPeriods(indexes(), 'month', in2035);
   assert.equal(axisHours('month'), 744);
   assert.equal(months.length, 12);
   assert.equal(months[1].label, 'Feb');
   assert.equal(months[1].values[27 * 24 + 23], 59 * 24 - 1, 'Feb 28 HE 24');
-  assert.ok(Number.isNaN(months[1].values[28 * 24]), 'no day 29');
-  assert.equal(months[2].values[0], 59 * 24, 'Mar 1 opens March at axis hour 0');
+  assert.ok(Number.isNaN(months[1].values[28 * 24]), 'no day 29 in 2035');
+  assert.equal(months[2].values[0], 60 * 24, 'Mar 1 opens March at axis hour 0');
+  const leap = cutPeriods(indexes(), 'month', in2036);
+  assert.equal(leap[1].values[28 * 24], 59 * 24, 'Feb 29 2036 at day 29');
 });
 
 check('filters blank hours inside a period and never move it', () => {
   const values = indexes();
-  // Keep only Feb 20 – Mar 10 (days 50-68).
-  for (let h = 0; h < 8760; h++) if (h < 50 * 24 || h >= 69 * 24) values[h] = NaN;
+  // Keep only Feb 20 – Mar 10 (days 50-69, 2035 has no Feb 29).
+  for (let h = 0; h < 8784; h++) if (h < 50 * 24 || h >= 70 * 24) values[h] = NaN;
   const days = cutPeriods(values, 'day', in2035);
   assert.equal(days.length, 19, 'a period with no kept hour is left out');
   const weeks = cutPeriods(values, 'week', in2035);
@@ -189,8 +218,9 @@ check('the adapter draws one series, and its Figure names the rest as left out',
       picked: null,
     },
   );
-  assert.equal(weekdays.length, 365);
+  assert.equal(weekdays.length, 366, 'one per day of the slot');
   assert.equal(weekdays[0], weekdayOf(2023, 0), "the weekdays are the series' own year's");
+  assert.equal(weekdays[59], -1, '2023 has no Feb 29, so it has no weekday');
   pane.leave();
   assert.equal(pane.figure.capture(), null, 'a pane that left the type has nothing to capture');
 });

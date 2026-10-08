@@ -15,11 +15,13 @@
 //     `0.42100000000000004`, and the percent was already the exact text.
 
 import { dayOfMonth, monthOf } from './chart-format';
-import { HOURS_PER_YEAR, MONTH_NAMES } from '../model/calendar';
+import { MONTH_NAMES, SLOT_MONTH_STARTS, YEAR_SLOT_HOURS } from '../model/calendar';
 import { kindNoun, shortLabels, type SeriesFacets } from '../series/label';
 
 /** The hour columns, in the order `hourFields` writes them. HourOfYear is
- * 0-based, HE hour-ending 1-24. */
+ * the 0-based hour of the leap-calendar slot, not of the real year: Mar 1 HE 1
+ * is 1440 in every year, so rows line up across years and Cases. HE is
+ * hour-ending 1-24. */
 export const HOUR_COLUMNS = ['Month', 'Day', 'HE', 'HourOfYear'] as const;
 
 /** The hour columns' cells for one hour-of-year, comma-joined. */
@@ -95,20 +97,24 @@ export function formatRatioCell(percent: number): string {
 // ------------------------------------------------ the drawer's hourly files
 //
 // A drawer export is a header (the tab's descriptor, then one key line per
-// series, the warnings and the refusals) and 8,760 rows per layout unit:
+// series, the warnings and the refusals) and its hour rows on the year slot:
 //
-//   * **wide**: one row per hour, one column per series.
+//   * **wide**: one row per hour of the 8,784-hour slot, one column per
+//     series. Feb 29 is always a row, blank for a series of a non-leap year,
+//     because the row is shared with every other column.
 //   * **long**: `Series, Month, Day, HE, HourOfYear, Value`, one row per
-//     series-hour, written one series at a time.
+//     series-hour, written one series at a time. A series writes its own
+//     year's days only: 8,784 rows in a leap year, 8,760 without Feb 29
+//     otherwise, since a row for a day that did not happen reads as a gap.
 //
 // Two layouts and never an automatic switch between them: one click must
-// produce one file shape. Every series has all 8,760 hours and a masked hour
-// is a blank cell, so two exports of one Case line up row for row.
+// produce one file shape. A masked hour is a blank cell, never a missing row,
+// so two exports of one Case line up row for row.
 
 /** Excel's 16,384 columns, less the four hour columns. */
 export const WIDE_MAX_SERIES = 16_380;
-/** The most series whose long rows fit Excel's 1,048,576: 120 x 8,760 does
- * not. */
+/** The most series whose long rows fit Excel's 1,048,576 whatever their
+ * years: 119 x 8,784 does, 120 x 8,760 does not. */
 export const LONG_EXCEL_SERIES = 119;
 
 export type HourlyLayout = 'wide' | 'long';
@@ -124,6 +130,8 @@ export interface HourlyEntry {
   readonly warnings: readonly string[];
   /** Its values are drawn "% of range" percents, written as ratios. */
   readonly ratio: boolean;
+  /** Its Case's year has a Feb 29, so long writes that day's rows. */
+  readonly leap: boolean;
 }
 
 /** The unit a series' cells are in. */
@@ -272,11 +280,25 @@ export function wideRows(
   return out;
 }
 
-/** One series' 8,760 long rows. */
-export function longRows(name: string, values: Float32Array | null, ratio: boolean): string {
+/** Feb 29's hours in the slot, `[FEB_29_FROM, FEB_29_FROM + 24)`. */
+export const FEB_29_FROM = (SLOT_MONTH_STARTS[1] + 28) * 24;
+
+/** How many long rows a series writes: its year's real hours. */
+export function longRowCount(leap: boolean): number {
+  return leap ? YEAR_SLOT_HOURS : YEAR_SLOT_HOURS - 24;
+}
+
+/** One series' long rows, Feb 29's only in a leap year. */
+export function longRows(
+  name: string,
+  values: Float32Array | null,
+  ratio: boolean,
+  leap: boolean,
+): string {
   const lead = csvField(name) + ',';
   let out = '';
-  for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+    if (!leap && hour === FEB_29_FROM) hour += 24;
     out += `${lead}${hourFields(hour)},${cellAt(values, ratio, hour)}\n`;
   }
   return out;
@@ -285,7 +307,7 @@ export function longRows(name: string, values: Float32Array | null, ratio: boole
 /** The widest a cell can print, sign and leading zeros of a shifted ratio
  * included (`-0.000000012345679`); asserted by the writer suite. */
 export const CELL_MAX_CHARS = 19;
-/** The widest hour fields: `Dec,31,24,8759`. */
+/** The widest hour fields: `Dec,31,24,8783`. */
 const HOUR_FIELDS_MAX_CHARS = 14;
 
 const utf8 = new TextEncoder();
@@ -294,27 +316,28 @@ export function utf8Bytes(text: string): number {
   return utf8.encode(text).length;
 }
 
-/** An upper bound on the file's UTF-8 bytes, from its exact header and names:
- * every cell is counted at its widest. */
+/** An upper bound on the file's UTF-8 bytes, from its exact header, names and
+ * long row counts: every cell is counted at its widest. */
 export function hourlyFileBound(
   layout: HourlyLayout,
   headerBytes: number,
   names: readonly string[],
+  entries: readonly HourlyEntry[],
 ): number {
   // Each hour row: hour fields and one separator and cell per column, then a
   // newline.
   if (layout === 'wide') {
     return (
       headerBytes +
-      HOURS_PER_YEAR * (HOUR_FIELDS_MAX_CHARS + names.length * (1 + CELL_MAX_CHARS) + 1)
+      YEAR_SLOT_HOURS * (HOUR_FIELDS_MAX_CHARS + names.length * (1 + CELL_MAX_CHARS) + 1)
     );
   }
   let rowsBytes = 0;
-  for (const name of names) {
+  names.forEach((name, i) => {
     rowsBytes +=
-      HOURS_PER_YEAR *
+      longRowCount(entries[i].leap) *
       (utf8Bytes(csvField(name)) + 1 + HOUR_FIELDS_MAX_CHARS + 1 + CELL_MAX_CHARS + 1);
-  }
+  });
   return headerBytes + rowsBytes;
 }
 
@@ -324,7 +347,7 @@ export function hourlyFileBound(
  * byte), and the Blob. Long streams its series and holds no copies.
  */
 export function hourlyPeakBytes(layout: HourlyLayout, fileBound: number, series: number): number {
-  const copies = layout === 'wide' ? series * HOURS_PER_YEAR * Float32Array.BYTES_PER_ELEMENT : 0;
+  const copies = layout === 'wide' ? series * YEAR_SLOT_HOURS * Float32Array.BYTES_PER_ELEMENT : 0;
   return copies + 2 * fileBound + fileBound;
 }
 
@@ -339,11 +362,12 @@ export function wideWithheld(series: number): string {
 }
 
 /** What the long item says about `series` series: past Excel's rows, it is a
- * file for pandas or R. Always offered, since nothing else can write it. */
+ * file for pandas or R. Always offered, since nothing else can write it. The
+ * menu knows no years, so the count is the least any mix of years writes. */
 export function longNote(series: number): string {
   if (series <= LONG_EXCEL_SERIES) return '';
   return (
-    `For pandas or R: ${(series * HOURS_PER_YEAR).toLocaleString()} rows is past ` +
-    "Excel's 1,048,576."
+    `For pandas or R: at least ${(series * longRowCount(false)).toLocaleString()} rows ` +
+    "is past Excel's 1,048,576."
   );
 }

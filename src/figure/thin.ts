@@ -1,6 +1,6 @@
 // src/figure/thin.ts
 //
-// A year of hours is 8,760 points, and a figure is about 1,950 output pixels
+// A year slot is 8,784 points, and a figure is about 1,950 output pixels
 // wide at 300 dpi. Drawing every hour makes a large SVG that Word is slow to
 // place and that prints no differently. Thinning keeps, for every output
 // pixel column, the lowest and highest value in it, which is everything a

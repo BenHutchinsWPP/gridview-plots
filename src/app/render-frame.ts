@@ -10,7 +10,7 @@
 // Like the ingest engines, this holds no app state and reaches no store or
 // DOM: `main.ts` hands in what a render reads, including the line pools.
 
-import { HOURS_PER_YEAR } from '../model/calendar';
+import { mostRealHours } from '../model/calendar';
 import type { Filters } from '../model/types';
 import type { SeriesPool } from '../series/pool';
 import type { AreaQuery, BoxDim } from '../tables/area/types';
@@ -161,6 +161,8 @@ export function computeFrame<B>(input: FrameInput<B>): Frame<B> {
   // that does not follow the dates.
   let wholeYearLines: CaseSeries[] | null = null;
   const wholeYear = capped ? undefined : () => (wholeYearLines ??= input.overview.resolve(draws));
+  const yearOf = (line: CaseSeries): number =>
+    line.spec?.caseId ? input.yearOfCase(line.spec.caseId) : NO_YEAR;
   const charts: ChartsInput = {
     boxDims: query.boxDims,
     limits: input.limitLines(series),
@@ -169,13 +171,23 @@ export function computeFrame<B>(input: FrameInput<B>): Frame<B> {
     refusal: capped ?? undefined,
     hasCases: input.hasCases,
     dates: query.filters.dates,
-    yearOf: (line) => (line.spec?.caseId ? input.yearOfCase(line.spec.caseId) : NO_YEAR),
+    yearOf,
     overview: wholeYear,
     overviewLimits: wholeYear && (() => input.limitLines(wholeYear())),
   };
 
+  // The most hours any line kept, of the most real hours any drawn line's
+  // Case has (`mostRealHours`). With nothing drawn, the loaded Cases' own,
+  // and with none loaded the year a yearless series takes, so an empty frame
+  // never claims a leap year it was not shown.
   let keptHours = 0;
   for (const entry of series) keptHours = Math.max(keptHours, entry.n);
+  const drawn = series.filter((entry) => entry.values !== null);
+  const years =
+    drawn.length > 0 ? drawn.map(yearOf) : query.cases.map((id) => input.yearOfCase(id));
+  const ofHours = mostRealHours(
+    (years.length > 0 ? years : [NO_YEAR]).map((firstYear) => ({ firstYear, numYears: 1 })),
+  );
 
   return {
     series,
@@ -186,7 +198,7 @@ export function computeFrame<B>(input: FrameInput<B>): Frame<B> {
       if (!wholeYearLines) input.overview.sweep();
     },
     browse: browseFrame(input),
-    status: statusSentence(query, series.length === 0 ? HOURS_PER_YEAR : keptHours),
+    status: statusSentence(query, series.length === 0 ? ofHours : keptHours, ofHours),
   };
 }
 

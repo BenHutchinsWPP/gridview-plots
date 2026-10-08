@@ -2,7 +2,9 @@
 // (invented names and values, GridView's format). Beyond test_fixtures.mjs's
 // properties: four preamble lines with the header on line 5, a title with a
 // quoted quantity and year, names with spaces, hyphens, plus signs and double
-// underscores that must survive exact matching, and optional Feb 29.
+// underscores that must survive exact matching.
+
+import { daysInMonth } from './test_fixtures.mjs';
 
 /** Interface names in the shapes the real exports use. Invented; the shapes
  * are what matters -- a name with a comma would be a different problem and
@@ -31,10 +33,6 @@ function rng(seed) {
   };
 }
 
-/** Non-leap month lengths. Feb 29 is emitted only when asked for, and then
- * only to prove ingest drops it. */
-const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
 /** `entity` is the FIRST WORD of the title line -- the only thing in a wide
  * export that says which KIND it is, and what routes it to a kind's adapter.
  * Default `Interface`; pass `Area` for a wide Area export. */
@@ -55,7 +53,7 @@ function headerLine(names) {
 }
 
 /** Emit rows, advancing day and hour as test_fixtures.mjs's `rows` does. */
-function* rows({ year, days, hours, seed, names, quantity, feb29, entity = 'Interface' }) {
+function* rows({ year, days, hours, seed, names, quantity, entity = 'Interface' }) {
   const next = rng(seed);
   for (const line of preamble(quantity, year, entity)) yield line;
   yield headerLine(names);
@@ -69,16 +67,7 @@ function* rows({ year, days, hours, seed, names, quantity, feb29, entity = 'Inte
       for (let m = 0; m < names.length; m++) fields.push(value(next, m));
       yield fields.join(',');
     }
-    // Feb 29, when asked for: the rows exist in the file and must not exist
-    // in the cube.
-    if (feb29 && month === 2 && day === 28) {
-      for (let hour = 1; hour <= hours; hour++) {
-        const fields = [`2/29/${year}`, String(hour), 'OffPeak'];
-        for (let m = 0; m < names.length; m++) fields.push(value(next, m));
-        yield fields.join(',');
-      }
-    }
-    if (++day > MONTH_LENGTHS[month - 1]) {
+    if (++day > daysInMonth(year, month)) {
       day = 1;
       month++;
     }
@@ -93,12 +82,11 @@ export function exportCsv({
   seed = 12345,
   names = interfaceNames(),
   quantity = 'Power Flow (MW)',
-  feb29 = false,
   entity = 'Interface',
 } = {}) {
   // CRLF throughout, including a terminator on the final row.
   return new TextEncoder().encode(
-    [...rows({ year, days, hours, seed, names, quantity, feb29, entity })].join('\r\n') + '\r\n',
+    [...rows({ year, days, hours, seed, names, quantity, entity })].join('\r\n') + '\r\n',
   );
 }
 
@@ -108,15 +96,15 @@ export async function writeExportCsv(path, options = {}) {
   const { once } = await import('node:events');
   const settings = {
     year: 2036,
-    days: 365,
     hours: 24,
     seed: 12345,
     names: interfaceNames(),
     quantity: 'Power Flow (MW)',
-    feb29: false,
     entity: 'Interface',
     ...options,
   };
+  // A whole year of its year by default, Feb 29 included in a leap year.
+  settings.days ??= daysInMonth(settings.year, 2) === 29 ? 366 : 365;
   const out = createWriteStream(path);
   let chunk = '';
   for (const row of rows(settings)) {

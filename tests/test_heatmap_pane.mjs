@@ -1,6 +1,6 @@
 // tests/test_heatmap_pane.mjs
 //
-// The 24x365 diurnal heatmap chart type. Its adapter, src/ui/panes/heatmap.ts,
+// The 24x366 diurnal heatmap chart type. Its adapter, src/ui/panes/heatmap.ts,
 // loads under Node, so it is run here against a fake DOM: colour mapping,
 // calendar geometry, hover hit-testing and its Figure are proven through
 // the adapter's own interface. src/ui/charts.ts cannot load (it imports
@@ -16,8 +16,8 @@
 //       by name;
 //   (d) color palette mathematics: smooth viridis interpolation for
 //       sequential quantities and cool-warm with centered zero for diverging;
-//   (e) calendar arithmetic: 8,760 hours mapped to 365 days x 24 hours without
-//       drift or leap-year distortion;
+//   (e) calendar arithmetic: the 8,784-hour slot mapped to 366 days x 24
+//       hours, a non-leap year's Feb 29 column blank;
 //   (f) hover interaction: hit-testing resolves the correct day, hour, and value;
 //   (g) the Figure takes the painted series first and names the rest as
 //       left out.
@@ -32,9 +32,9 @@ import './test_loader.mjs';
 import { installFakeDom, stubHost, frameOf } from './test_fixtures_dom.mjs';
 
 installFakeDom();
-const { createHeatmapAdapter, heatmapScale, viridisColor, coolwarmColor } =
+const { createHeatmapAdapter, heatmapScale, viridisColor, coolwarmColor, HEATMAP_EMPTY } =
   await import('../src/ui/panes/heatmap.ts');
-import { HOURS_PER_YEAR } from '../src/model/calendar.ts';
+import { YEAR_SLOT_HOURS } from '../src/model/calendar.ts';
 const { hourLabel } = await import('../src/ui/chart-format.ts');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -81,13 +81,14 @@ assert.equal(coolwarmColor(-10), coolwarmColor(0), 'coolwarm clamps underflow to
 assert.equal(coolwarmColor(10), coolwarmColor(1), 'coolwarm clamps overflow to t=1');
 
 // ------------------------------------------------------------------- (e) Calendar & stubbed render
-// Create an 8,760-hour synthetic series
-const testValues = new Float64Array(HOURS_PER_YEAR);
-for (let i = 0; i < HOURS_PER_YEAR; i++) {
+// A synthetic slot of a non-leap year: Feb 29 (hours 1416-1439) is NaN.
+const testValues = new Float64Array(YEAR_SLOT_HOURS);
+for (let i = 0; i < YEAR_SLOT_HOURS; i++) {
   // Peak midday (hours 11..15), low at night
   const hourOfDay = i % 24;
   testValues[i] = hourOfDay >= 9 && hourOfDay <= 16 ? 100 + hourOfDay * 10 : 10;
 }
+testValues.fill(NaN, 1416, 1440);
 
 const testSeries = {
   name: 'Test Solar',
@@ -96,7 +97,7 @@ const testSeries = {
   values: testValues,
   warnings: [],
   stats: { mean: 50, sd: 20, min: 10, max: 260 },
-  n: HOURS_PER_YEAR,
+  n: YEAR_SLOT_HOURS - 24,
   allZero: false,
 };
 const otherSeries = { ...testSeries, name: 'Test Wind', color: '#1f77b4' };
@@ -114,15 +115,26 @@ assert.deepEqual(
 );
 assert.equal(host.canvas.style.display, '', 'a drawn heatmap shows its canvas');
 
-// In 8,760 cells, each cell gets a fillRect call (plus the colorbar fillRect)
+// In 8,784 cells, each cell gets a fillRect call (plus the colorbar fillRect)
 const fillRects = host.canvas.context.calls.filter((c) => c.op === 'fillRect');
-assert.equal(fillRects.length, HOURS_PER_YEAR + 1, 'exactly 8,760 cells plus 1 colorbar drawn');
+assert.equal(fillRects.length, YEAR_SLOT_HOURS + 1, 'exactly 8,784 cells plus 1 colorbar drawn');
+// Cells are drawn a day column at a time, 24 to a day: column 59 is Feb 29,
+// and Dec 31 ends at the plot's right edge.
+const last = fillRects[YEAR_SLOT_HOURS - 1];
+assert.equal(last.x + last.w, 34 + 400 - 34 - 78, 'day 365 is the last column');
+const feb29 = fillRects.slice(59 * 24, 60 * 24);
+assert.ok(
+  feb29.every((c) => c.fill === HEATMAP_EMPTY),
+  'a non-leap year’s Feb 29 column is blank',
+);
+assert.ok(fillRects.slice(58 * 24, 59 * 24).every((c) => c.fill !== HEATMAP_EMPTY));
+assert.ok(fillRects.slice(60 * 24, 61 * 24).every((c) => c.fill !== HEATMAP_EMPTY));
 
 // ------------------------------------------------------------------- (f) Hover test
 // The plot box a 400 x 300 pane leaves: margins 34 left, 22 top, 36 bottom,
 // 78 right for the colour bar.
 const geom = { marginLeft: 34, marginTop: 22, plotWidth: 400 - 34 - 78, plotHeight: 300 - 22 - 36 };
-const testPx = geom.marginLeft + Math.round(geom.plotWidth / 2); // ~mid-year (day 182)
+const testPx = geom.marginLeft + Math.round(geom.plotWidth / 2); // mid-slot (day 183, Jul 2)
 const testPy = geom.marginTop + Math.round(geom.plotHeight / 2); // ~midday (HE 12)
 
 const tip = host.tip;
@@ -131,8 +143,8 @@ assert.equal(tip.style.display, '', 'hover inside plot bounds displays tooltip')
 assert.ok(tip.children.length >= 2, 'tooltip populates header and row content');
 assert.equal(
   tip.children[0].textContent,
-  `${hourLabel(4379)} (Hour 4380)`,
-  'tooltip reflects the mid-year midday hour, index 4379',
+  `${hourLabel(4403)} (Hour 4404)`,
+  'tooltip reflects the mid-slot midday hour, index 4403',
 );
 
 // Test hover outside the plot area
@@ -156,7 +168,7 @@ assert.notEqual(shot.capture.lines[0].values, testValues, 'the values are a copy
 const blank = {
   ...testSeries,
   name: 'Test Blank',
-  values: new Float64Array(HOURS_PER_YEAR).fill(NaN),
+  values: new Float64Array(YEAR_SLOT_HOURS).fill(NaN),
 };
 heatmap.draw(frameOf([blank]));
 assert.deepEqual(record.banners.at(-1), {
@@ -174,5 +186,5 @@ assert.equal(tip.style.display, 'none', 'after leave() the heatmap answers no ho
 assert.equal(heatmap.figure.capture(), null);
 
 console.log(
-  'ok - diurnal heatmap: SlotType registration, hand-drawn uPlot-free canvas, color palettes, 8,760 geometry, interactive hover inspection and its figure',
+  'ok - diurnal heatmap: SlotType registration, hand-drawn uPlot-free canvas, color palettes, 8,784 geometry, interactive hover inspection and its figure',
 );

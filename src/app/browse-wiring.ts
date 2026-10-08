@@ -97,7 +97,7 @@ export interface BrowseWiringHost {
   views: CaseViews;
   /** The drawer's per-kind variable memory and the scoping over it. */
   browse: BrowseScopes;
-  /** One 8,760-point buffer for every ranked row of every tab. */
+  /** One 8,784-point buffer for every ranked row of every tab. */
   scratch: Float32Array;
   /** Every tab's ranking, kept per cube while its mask and rows hold still. */
   ranks: RankMemo;

@@ -40,6 +40,7 @@ const SURFACE = {
   inbuf_ptr: [],
   slab_ptr: [],
   row_hour_ptr: [],
+  row_year_ptr: [],
   row_tou_ptr: [],
   // Byte budgets this build was compiled with.
   inbuf_size: [],
@@ -54,8 +55,7 @@ const SURFACE = {
   last_overflow: [],
   last_wide_field: [],
   last_bad_row: [],
-  last_feb29: [],
-  last_year_mismatch: [],
+  last_out_of_range: [],
   last_bad_tou: [],
   // A cell count, not a row count.
   last_bad_cell: [],
@@ -66,8 +66,13 @@ const SURFACE = {
   ],
   // Clear `rows` rows of the configured slab to NaN.
   slab_fill_nan: ['rows: rows of the configured slab to clear'],
-  // Parse `len` bytes of the input window as rows of calendar year `year`.
-  parse_block: ['len: bytes in the input window', "year: the case's calendar year"],
+  // Parse `len` bytes of the input window as rows of `numYears` calendar
+  // years from `firstYear`.
+  parse_block: [
+    'len: bytes in the input window',
+    "firstYear: the Case's first calendar year",
+    'numYears: how many consecutive years the Case spans',
+  ],
 };
 
 const module = new WebAssembly.Module(readFileSync(WASM));

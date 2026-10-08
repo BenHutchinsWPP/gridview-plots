@@ -10,12 +10,12 @@
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
 
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 const { buildLookup, parseLookupCsv } = await import('../src/lookups/parse.ts');
 const { bucketLabelFor, bucketedReduce, reduceSingleBucket } =
   await import('../src/lookups/reduce.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 let checks = 0;
 function ok(label) {
   checks++;

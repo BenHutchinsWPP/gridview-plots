@@ -11,13 +11,13 @@ import assert from 'node:assert/strict';
 import './test_loader.mjs';
 
 const { normalizeToRange, rangeLabel, PERCENT } = await import('../src/series/range.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
 const checks = [];
 const ok = (name, fn) => checks.push([name, fn]);
 
-/** A year of hours, `fill(hour)` each. */
-const year = (fill) => Float32Array.from({ length: HOURS_PER_YEAR }, (_, hour) => fill(hour));
+/** A year slot of hours, `fill(hour)` each. */
+const year = (fill) => Float32Array.from({ length: YEAR_SLOT_HOURS }, (_, hour) => fill(hour));
 
 ok('a battery at −25/+50 against −50/+100 is −50% and +50%', () => {
   const series = year((hour) => (hour % 2 === 0 ? 50 : -25));
@@ -30,10 +30,10 @@ ok('a battery at −25/+50 against −50/+100 is −50% and +50%', () => {
 
 ok('the label names only the divisors the shown hours used', () => {
   // No limit in hour 0; the mask hides it, so every shown hour used the limit.
-  const upper = Float32Array.from({ length: HOURS_PER_YEAR }, (_, hour) =>
+  const upper = Float32Array.from({ length: YEAR_SLOT_HOURS }, (_, hour) =>
     hour === 0 ? NaN : 100,
   );
-  const shown = Uint8Array.from({ length: HOURS_PER_YEAR }, (_, hour) => (hour === 0 ? 0 : 1));
+  const shown = Uint8Array.from({ length: YEAR_SLOT_HOURS }, (_, hour) => (hour === 0 ? 0 : 1));
   const all = normalizeToRange(
     year(() => 50),
     { upper },

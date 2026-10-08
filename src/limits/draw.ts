@@ -4,14 +4,15 @@
 // hourly divisors of its "% of range" line. A boundary's lines are drawn from
 // the hourly limits its kind summed, by the same masking.
 //
-//   * Expanded to 8,760 hours so the limit inherits the series' hour filter
+//   * Expanded to the series' own hours so the limit inherits its hour filter
 //     by copying its NaN mask, rather than reimplementing the calendar mask.
+//     A phantom Feb 29 is NaN like the series' value there.
 //   * A STEP function: a limit is a schedule, so nothing is interpolated
 //     between months.
 //   * Unit-gated: a Case can hold MW and $ tables on different y scales, so a
 //     series in another unit gets no limit rather than a mis-scaled one.
 
-import { buildCalendar, getMonth, HOURS_PER_YEAR } from '../model/calendar';
+import { buildCalendar, getMonth, isPhantomDay } from '../model/calendar';
 import type { LimitsStore } from './store';
 import type { InterfaceLimit, LimitSide } from './types';
 import { sideAt, type RangeLimits, type RangeSide } from '../series/range';
@@ -83,9 +84,9 @@ function linesOf(
   for (const side of ['max', 'min'] as const) {
     const hourly = sides[side];
     if (hourly === undefined) continue;
-    const values = new Float32Array(HOURS_PER_YEAR);
+    const values = new Float32Array(series.length);
     let any = false;
-    for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+    for (let hour = 0; hour < series.length; hour++) {
       // The series' NaN is the filter, this month's NaN is "no limit set".
       // Both come out as NaN, because both mean "draw nothing here" -- the
       // pane does not have to tell them apart and must not try.
@@ -111,7 +112,7 @@ function linesOf(
 /**
  * One interface's limits as hourly "% of range" divisors: MAX is the upper
  * side, MIN the lower, each hour taking its own month's value in the Case's
- * calendar year. A month with no limit is NaN, which the normalizer fills
+ * calendar year (Feb 29 is February's; a phantom one is NaN). A month with no limit is NaN, which the normalizer fills
  * with the series' peak for that month's hours alone. No row: no limits.
  */
 export function rangeLimitsOf(limit: InterfaceLimit | undefined, year: number): RangeLimits {
@@ -119,9 +120,10 @@ export function rangeLimitsOf(limit: InterfaceLimit | undefined, year: number): 
   const calendar = buildCalendar(year);
   const hourly = (months: Float32Array | undefined): Float32Array | undefined => {
     if (months === undefined) return undefined;
-    const values = new Float32Array(HOURS_PER_YEAR);
-    for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
-      values[hour] = months[getMonth(calendar[hour]) - 1];
+    const values = new Float32Array(calendar.length);
+    for (let hour = 0; hour < calendar.length; hour++) {
+      const entry = calendar[hour];
+      values[hour] = isPhantomDay(entry) ? NaN : months[getMonth(entry) - 1];
     }
     return values;
   };

@@ -16,7 +16,7 @@
 //     nomograms). Dividing by the group's peak instead was rejected because
 //     it answers nothing about the limits the analyst loaded.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../model/calendar';
 import { sideAt, type RangeLimits } from '../../series/range';
 import type { InterfaceTable } from './types';
 
@@ -35,11 +35,20 @@ export const SUMMED_LIMITS = 'summed limits';
  */
 export function summedLimits(members: readonly SignedLimits[]): RangeLimits {
   if (members.length === 0) return {};
-  const upper = new Float32Array(HOURS_PER_YEAR);
-  const lower = new Float32Array(HOURS_PER_YEAR);
+  // As long as the members' hourly limits; a constant side has no length of
+  // its own, so members with only constants span one slot.
+  let hours = 0;
+  for (const { limits } of members) {
+    for (const side of [limits.upper, limits.lower]) {
+      if (side !== undefined && typeof side !== 'number') hours = Math.max(hours, side.length);
+    }
+  }
+  if (hours === 0) hours = YEAR_SLOT_HOURS;
+  const upper = new Float32Array(hours);
+  const lower = new Float32Array(hours);
   let anyUpper = false;
   let anyLower = false;
-  for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+  for (let hour = 0; hour < hours; hour++) {
     let up = 0;
     let low = 0;
     for (const { sign, limits } of members) {

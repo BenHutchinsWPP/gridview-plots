@@ -38,8 +38,10 @@ file is the one to keep.
 
 ### Rules worth knowing
 
-- **Every case is 8,760 hours.** Feb 29 is dropped at load. Hours are read as
-  hour-ending 1-24.
+- **Every case lays its year out on a fixed 8,784-hour leap calendar.** Feb 29
+  is kept, and is blank in a non-leap year, so the same date is the same hour
+  in every case. Hour counts are real hours: 8,760 in a non-leap year. Hours
+  are read as hour-ending 1-24.
 - **Row order does not matter**, but the same entity-hour appearing twice is
   refused. That usually means two exports were concatenated.
 - **Files given the same study name load as one table.** This is how a year

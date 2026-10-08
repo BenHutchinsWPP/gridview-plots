@@ -8,8 +8,8 @@ import assert from 'node:assert/strict';
 
 import './test_loader.mjs';
 
+const { YEAR_SLOT_DAYS } = await import('../src/model/calendar.ts');
 const {
-  DAYS_PER_YEAR,
   dayLabel,
   extendRange,
   monthRange,
@@ -44,23 +44,26 @@ function check(label, fn) {
 const day = (text) => parseDay(text).day;
 const feb20ToMar10 = { start: day('Feb 20'), end: day('Mar 10') };
 
-check('Feb 20 – Mar 10 is 19 days, 456 hours, from HE 1 of Feb 20', () => {
+check('Feb 20 – Mar 10 is 20 days on the leap slot, 480 hours, from HE 1 of Feb 20', () => {
   assert.equal(feb20ToMar10.start, 50);
-  assert.equal(rangeDays(feb20ToMar10), 19);
+  assert.equal(rangeDays(feb20ToMar10), 20);
   const [from, to] = rangeHours(feb20ToMar10);
-  assert.equal(to - from, 456);
+  assert.equal(to - from, 480);
   assert.equal(from, 50 * 24);
   assert.equal(rangeLabel(feb20ToMar10), 'Feb 20 – Mar 10');
   assert.equal(rangeLabel({ start: 50, end: 50 }), 'Feb 20');
 });
 
-check('typed dates read three ways, and Feb 29 is refused naming why', () => {
+check('typed dates read three ways, and Feb 29 is day 59 of every year', () => {
   assert.equal(day('Feb 20'), 50);
   assert.equal(day('February 20'), 50);
   assert.equal(day('2/20'), 50);
-  assert.equal(day('dec 31'), DAYS_PER_YEAR - 1);
-  assert.match(parseDay('2/29').refusal, /every Case drops it/);
-  assert.match(parseDay('Feb 29').refusal, /every Case drops it/);
+  assert.equal(day('dec 31'), YEAR_SLOT_DAYS - 1);
+  assert.equal(day('Feb 29'), 59);
+  assert.equal(day('2/29'), 59);
+  assert.equal(day('Mar 1'), 60);
+  assert.equal(dayLabel(59), 'Feb 29');
+  assert.ok('refusal' in parseDay('Feb 30'));
   assert.ok('refusal' in parseDay('Apr 31'));
   assert.ok('refusal' in parseDay('13/1'));
   assert.ok('refusal' in parseDay('soon'));
@@ -71,7 +74,7 @@ check('a window steps by its own length and stops at the year’s ends', () => {
   assert.deepEqual(stepRange(week, 1), { start: 17, end: 23 });
   assert.deepEqual(stepRange(week, -1), { start: 3, end: 9 });
   assert.deepEqual(stepRange({ start: 2, end: 8 }, -1), { start: 0, end: 6 }, 'stops at Jan 1');
-  const last = { start: 358, end: 364 };
+  const last = { start: 359, end: 365 };
   assert.deepEqual(stepRange(last, 1), last, 'a window at Dec 31 does not step on');
   assert.deepEqual(stepRange({ start: 100, end: 100 }, 1), { start: 101, end: 101 });
 });
@@ -88,9 +91,9 @@ check('whole months step by months, not by days', () => {
 });
 
 check('Alt slides a day keeping the length; Shift moves the end', () => {
-  assert.deepEqual(slideSet([feb20ToMar10], 1), [{ start: 51, end: 69 }]);
+  assert.deepEqual(slideSet([feb20ToMar10], 1), [{ start: 51, end: 70 }]);
   assert.deepEqual(slideSet([{ start: 0, end: 6 }], -1), [{ start: 0, end: 6 }]);
-  assert.deepEqual(extendRange(feb20ToMar10, 1), { start: 50, end: 69 });
+  assert.deepEqual(extendRange(feb20ToMar10, 1), { start: 50, end: 70 });
   assert.deepEqual(
     extendRange({ start: 5, end: 5 }, -1),
     { start: 5, end: 5 },
@@ -101,13 +104,14 @@ check('Alt slides a day keeping the length; Shift moves the end', () => {
 check('Day and Week start at From; Month is the month containing it', () => {
   assert.deepEqual(windowFrom(50, 'day'), { start: 50, end: 50 });
   assert.deepEqual(windowFrom(50, 'week'), { start: 50, end: 56 });
-  assert.deepEqual(windowFrom(362, 'week'), { start: 358, end: 364 }, 'a week keeps 7 days');
+  assert.deepEqual(windowFrom(363, 'week'), { start: 359, end: 365 }, 'a week keeps 7 days');
   assert.deepEqual(windowFrom(50, 'month'), monthRange(1));
+  assert.deepEqual(monthRange(1), { start: 31, end: 59 }, 'February holds its 29th');
 });
 
 check('a drag-zoom over hour indexes becomes the days it touches', () => {
-  assert.deepEqual(rangeOfHours(50 * 24 + 3.2, 68 * 24 + 20.7), feb20ToMar10);
-  assert.deepEqual(rangeOfHours(-0.5, 8759.5), { start: 0, end: 364 });
+  assert.deepEqual(rangeOfHours(50 * 24 + 3.2, 69 * 24 + 20.7), feb20ToMar10);
+  assert.deepEqual(rangeOfHours(-0.5, 8783.5), { start: 0, end: 365 });
 });
 
 check('a date’s weekday is its year’s', () => {
@@ -115,6 +119,13 @@ check('a date’s weekday is its year’s', () => {
   assert.equal(weekdayOf(2035, 0), 0);
   assert.equal(weekdayOf(2045, 0), 6);
   assert.equal(dayLabel(0), 'Jan 1');
+});
+
+check('a phantom Feb 29 has no weekday; the days after it keep their own', () => {
+  assert.equal(weekdayOf(2035, 59), -1, '2035 has no Feb 29');
+  assert.equal(weekdayOf(2035, 60), 3, '2035-03-01 is a Thursday');
+  assert.equal(weekdayOf(2036, 59), 4, '2036-02-29 is a Friday');
+  assert.equal(weekdayOf(2036, 60), 5, '2036-03-01 is a Saturday');
 });
 
 check('runs that overlap or touch merge; no runs is every day', () => {
@@ -164,15 +175,15 @@ check('several runs step by a week together and stop at the year’s ends', () =
   assert.deepEqual(
     stepSet(late, 1),
     [
-      { start: 302, end: 302 },
-      { start: 364, end: 364 },
+      { start: 303, end: 303 },
+      { start: 365, end: 365 },
     ],
     'moves only as far as Dec 31 allows',
   );
   assert.ok(sameSet(stepSet(stepSet(late, 1), 1), stepSet(late, 1)), 'then stops');
   assert.deepEqual(
-    stepSet([{ start: 31, end: 58 }], 1),
-    [{ start: 59, end: 89 }],
+    stepSet([{ start: 31, end: 59 }], 1),
+    [{ start: 60, end: 90 }],
     'one run as before',
   );
   assert.deepEqual(extendSet(set, 1).at(-1), { start: 194, end: 195 }, 'Shift moves the last end');

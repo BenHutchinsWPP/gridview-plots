@@ -406,6 +406,7 @@ async function downloadHourly(download: HourlyDownload): Promise<void> {
         resolve: (ref) => resolveDraw(exportContext, { ref, color: '#000000', dashed: false }),
         caseLabel: views.caseLabel,
         caseNames: views.caseNames,
+        yearOfCase: views.yearOfCase,
         progress: (message) => setBusy(message),
         nextFrame,
         confirm: confirmLargeDownload,

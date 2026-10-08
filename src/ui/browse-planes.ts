@@ -43,7 +43,7 @@ export function rankScopedRows<D extends { cube: Float32Array }>(input: {
   rowCounts: readonly number[];
   /** Row `i`'s axis index, counted across all tables in order. */
   axisIndexOf: (row: number) => number;
-  /** One table's presence and where an entity's 8,760 values begin. */
+  /** One table's presence and where an entity's 8,784 values begin. */
   planesOf: (data: D) => { presence: Uint8Array; planeStart: (axisIndex: number) => number };
   scratch: Float32Array;
   /** Rankings already computed, reused while a table's inputs hold still. */
@@ -80,6 +80,7 @@ export function rankScopedRows<D extends { cube: Float32Array }>(input: {
       rankedStats(
         table.data.cube,
         starts,
+        table.mask.length,
         table.mask,
         scratch,
         ranked.subarray(at * RANKED_FIELDS, (at + count) * RANKED_FIELDS),
@@ -113,6 +114,7 @@ function rankInRange(
   rankedStats(
     planeScratch,
     Int32Array.of(start < 0 ? -1 : 0),
+    mask.length,
     mask,
     scratch,
     ranked.subarray(row * RANKED_FIELDS, (row + 1) * RANKED_FIELDS),

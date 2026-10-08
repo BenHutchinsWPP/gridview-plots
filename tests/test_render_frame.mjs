@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import './test_loader.mjs';
 
-const { HOURS_PER_YEAR: H } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS: H } = await import('../src/model/calendar.ts');
 const { computeFrame, datesCleared, drawContextOf } = await import('../src/app/render-frame.ts');
 
 let checks = 0;
@@ -46,7 +46,7 @@ const QUERY = Object.freeze({
 });
 
 /** A resolved line: one value per hour, `n` of them kept. */
-function line(rowId, { warnings = [], n = H } = {}) {
+function line(rowId, { warnings = [], n = H, caseId = 'c1' } = {}) {
   const values = new Float32Array(H).fill(Number.NaN);
   values.fill(1, 0, n);
   const q = { min: 1, p25: 1, p50: 1, p75: 1, max: 1 };
@@ -62,7 +62,7 @@ function line(rowId, { warnings = [], n = H } = {}) {
     quantiles: q,
     allZero: false,
     rowId,
-    spec: { caseId: 'c1' },
+    spec: { caseId },
   };
 }
 
@@ -181,7 +181,11 @@ function frameOf(over = {}) {
   frame.settle();
   assert.equal(overview.sweeps, 1, 'settle frees the overview pool');
   assert.ok(!log.includes('overview.resolve'));
-  assert.equal(frame.status.split(' ')[0], H.toLocaleString(), 'nothing drawn counts every hour');
+  assert.equal(
+    frame.status.split(' · ')[0],
+    '8,760 of 8,760 h',
+    "nothing drawn counts every real hour of the loaded Case's year",
+  );
   ok('a capped render resolves nothing and sweeps the drawn and overview pools');
 
   // The pins alone fit; the preview is what took the set past the cap.
@@ -214,9 +218,10 @@ function frameOf(over = {}) {
 // ------------------------------------------------------ boxes, on demand
 {
   const { frame, years } = frameOf();
-  assert.deepEqual(years, [], 'no box is cut until a pane asks');
+  // The status sentence reads the Case years too, so count from here.
+  const unasked = years.length;
   const month = frame.charts.boxes(0);
-  assert.ok(month.length > 0 && years.length > 0, 'a month cut reads the Case year');
+  assert.ok(month.length > 0 && years.length > unasked, 'a month cut reads the Case year');
   const read = years.length;
   assert.equal(frame.charts.boxes(1), month, 'a second pane on the same dimension reuses it');
   assert.equal(years.length, read);
@@ -234,6 +239,40 @@ function frameOf(over = {}) {
   assert.equal(frame.status.split(' ')[0], '100', 'the status counts the hours kept');
   assert.equal(frameOf({ draws: [], pinnedIds: [] }).frame.status.split(' ')[0], '8,760');
   ok('the charts input and status sentence state the render as drawn');
+}
+{
+  // The count is out of real hours, never the slot's 8,784: a non-leap Case
+  // reads 8,760, a leap one 8,784, and a frame mixing them the most any has.
+  const status = (over) => frameOf(over).frame.status.split(' · ')[0];
+  const yearOfCase = (caseId) => (caseId === 'leap' ? 2032 : 2031);
+  assert.equal(status({}), '100 of 8,760 h');
+  assert.equal(status({ yearOfCase: () => 2032 }), '100 of 8,784 h');
+  const full = (caseIds) =>
+    source('drawn', [], (draws) =>
+      draws.map((one, i) =>
+        line(one.ref.id, { caseId: caseIds[i], n: caseIds[i] === 'leap' ? 8784 : 8760 }),
+      ),
+    );
+  assert.equal(
+    status({ drawn: full(['c1']), yearOfCase }),
+    '8,760 of 8,760 h',
+    'an unfiltered non-leap Case shows every hour it has',
+  );
+  assert.equal(
+    status({
+      drawn: full(['c1', 'leap']),
+      draws: [draw('p1'), draw('p2')],
+      pinnedIds: ['p1', 'p2'],
+      yearOfCase,
+    }),
+    '8,784 of 8,784 h',
+  );
+  assert.equal(
+    status({ draws: [], pinnedIds: [], query: { ...QUERY, cases: [] } }),
+    '8,760 of 8,760 h',
+    'no Case loaded: the non-leap year a yearless series takes',
+  );
+  ok('the status counts hours out of the real hours of the Cases drawn');
 }
 
 // ------------------------------------------------ the browse signature

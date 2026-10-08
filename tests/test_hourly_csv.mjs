@@ -7,14 +7,18 @@
 //     never by a division that brings back float noise.
 //   * A field carrying a delimiter is quoted, so a label never shifts columns.
 //   * The chart pane's download writes through the writer.
-//   * A drawer file has 8,760 hour rows per layout unit with masked hours
+//   * A drawer file has 8,784 hour rows per layout unit with masked hours
 //     blank, a key line per series whose name is unique, warnings once each
 //     with a count, refusals grouped with at most five names, and a size
 //     bound no smaller than the bytes it writes. Wide is withheld past
 //     Excel's column limit.
-//   * Long writes 8,760 rows per series under a `Series` value that is the
+//   * Long writes 8,784 rows per series under a `Series` value that is the
 //     wide header and a key line, holds no series copies, and says past
 //     Excel's rows that it is for pandas or R.
+//   * The download layout is wire format: wide is the 8,784-hour slot with a
+//     non-leap series blank on Feb 29, long writes no Feb 29 rows for a
+//     non-leap series, and HourOfYear is the slot hour (Mar 1 HE 1 is 1440
+//     in every year).
 
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
@@ -36,7 +40,7 @@ const {
   wideWithheld,
 } = await import('../src/ui/hourly-csv.ts');
 const { exportHourly } = await import('../src/app/hourly-export.ts');
-const { HOURS_PER_YEAR: H } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS: H } = await import('../src/model/calendar.ts');
 
 let checks = 0;
 function ok(label) {
@@ -126,8 +130,10 @@ function ok(label) {
   assert.equal(hourFields(0), 'Jan,1,1,0');
   assert.equal(hourFields(23), 'Jan,1,24,23');
   assert.equal(hourFields(24 * 31), 'Feb,1,1,744');
-  assert.equal(hourFields(8759), 'Dec,31,24,8759');
-  ok('the hour columns are Month, Day, HE (1-24) and HourOfYear (0-8759)');
+  assert.equal(hourFields(1416), 'Feb,29,1,1416');
+  assert.equal(hourFields(1440), 'Mar,1,1,1440');
+  assert.equal(hourFields(8783), 'Dec,31,24,8783');
+  ok('the hour columns are Month, Day, HE (1-24) and HourOfYear (0-8783 on the leap slot)');
 
   assert.equal(csvField('Case 1 · A, B'), '"Case 1 · A, B"');
   assert.equal(csvField('x; y'), '"x; y"');
@@ -159,6 +165,9 @@ function series(subject, values, extra = {}) {
     ref: extra.ref ?? {},
   };
 }
+
+/** The fake host's Case years: `c1` is a leap year unless a test says. */
+const YEARS = { c1: 2024, c2: 2025 };
 
 const refOf = (subject, extra = {}) => ({
   id: subject,
@@ -194,6 +203,7 @@ async function run(layout, resolved, { notes = [], confirm = true } = {}) {
         log.push('resolve');
         return byId.get(ref.id) ?? null;
       },
+      yearOfCase: (caseId) => YEARS[caseId],
       progress: (message) => log.push(`busy:${message}`),
       nextFrame: async () => log.push('frame'),
       confirm: async (bytes) => {
@@ -225,8 +235,8 @@ const body = (text) => {
   assert.equal(rows.length - 1, H);
   assert.equal(rows[1], 'Jan,1,1,0,10,20,');
   assert.equal(rows[25], 'Jan,2,1,24,,,');
-  assert.equal(rows[H], 'Dec,31,24,8759,1104.875,1114.875,');
-  ok('wide: 8,760 hour rows, masked hours and a refused series blank');
+  assert.equal(rows[H], 'Dec,31,24,8783,1107.875,1117.875,');
+  ok('wide: 8,784 hour rows, masked hours and a refused series blank');
 
   assert.ok(asked >= new TextEncoder().encode(text).length, `${asked} bytes bound`);
   ok('the wide size bound is at least the bytes written');
@@ -360,7 +370,7 @@ const body = (text) => {
     'a refused series is blank',
   );
   assert.equal(data[H + 1].value, '0.42625');
-  ok('long: 8,760 rows per series, masked hours and a refused series blank, % as ratios');
+  ok('long: 8,784 rows per series, masked hours and a refused series blank, % as ratios');
 
   const keys = header(long.text)
     .filter((line) => line.startsWith('# Series: '))
@@ -386,13 +396,22 @@ const body = (text) => {
   const headerText = long.parts[0];
   assert.equal(
     long.asked,
-    3 * hourlyFileBound('long', new TextEncoder().encode(headerText).length, keys),
+    3 *
+      hourlyFileBound(
+        'long',
+        new TextEncoder().encode(headerText).length,
+        keys,
+        keys.map(() => ({ leap: true })),
+      ),
     'the confirm is asked on long’s own bound',
   );
   ok('the long size bound is at least three times the bytes written, and holds no copies');
 
   assert.equal(longNote(LONG_EXCEL_SERIES), '');
-  assert.match(longNote(LONG_EXCEL_SERIES + 1), /^For pandas or R: 1,051,200 rows/);
+  // The rows long writes: 8,784 per series, the slot, with a header row.
+  assert.ok(LONG_EXCEL_SERIES * 8784 + 1 <= 1_048_576, '119 series fit Excel');
+  assert.ok((LONG_EXCEL_SERIES + 1) * 8784 + 1 > 1_048_576, '120 do not');
+  assert.match(longNote(LONG_EXCEL_SERIES + 1), /^For pandas or R: at least 1,051,200 rows/);
   ok('long says it is for pandas or R above 119 series');
 
   // The export's buffer is reused between resolves, so a copy is the only
@@ -410,6 +429,46 @@ const body = (text) => {
   await run('wide', [scratch(series('ALDER', plane(1))), scratch(series('BIRCH', plane(2)))]);
   assert.equal(copies, 2, 'wide');
   ok('long writes each series as it resolves and copies none');
+}
+
+{
+  // A leap Case (c1, 2024) and a non-leap one (c2, 2025), whose Feb 29 the
+  // draw leaves NaN: the download layout every reader of these files relies on.
+  const feb29 = (hour) => hour >= 1416 && hour < 1440;
+  const resolved = [
+    series('ALDER', plane(10)),
+    series('BIRCH', plane(20, feb29), { ref: { caseId: 'c2' }, facets: { caseLabel: 'Case 2' } }),
+  ];
+  const wide = await run('wide', resolved);
+  const rows = body(wide.text);
+  assert.equal(rows.length - 1, H);
+  assert.equal(rows[1 + 1415], 'Feb,28,24,1415,186.875,196.875');
+  assert.equal(rows[1 + 1416], 'Feb,29,1,1416,187,');
+  assert.equal(rows[1 + 1439], 'Feb,29,24,1439,189.875,');
+  assert.equal(rows[1 + 1440], 'Mar,1,1,1440,190,200');
+  ok('wide: 8,784 rows on the slot, Feb 29 a value in a leap year and blank in a non-leap one');
+
+  const long = await run('long', resolved);
+  const data = body(long.text).slice(1);
+  const leapRows = data.filter((line) => line.startsWith('Case 1'));
+  const plainRows = data.filter((line) => line.startsWith('Case 2'));
+  assert.equal(leapRows.length, 8784);
+  assert.equal(plainRows.length, 8760);
+  assert.equal(data.length, 8784 + 8760);
+  assert.ok(leapRows.includes('Case 1 · ALDER [MW],Feb,29,1,1416,187'));
+  assert.ok(!plainRows.some((line) => line.includes(',Feb,29,')));
+  assert.equal(plainRows[1416], 'Case 2 · BIRCH [MW],Mar,1,1,1440,200');
+  ok(
+    'long: a non-leap series writes no Feb 29 rows, a leap one does, and Mar 1 HE 1 is 1440 in both',
+  );
+
+  const bytes = new TextEncoder().encode(long.text).length;
+  assert.ok(long.asked >= 3 * bytes);
+  assert.ok(
+    hourlyFileBound('long', 0, ['x'], [{ leap: false }]) <
+      hourlyFileBound('long', 0, ['x'], [{ leap: true }]),
+  );
+  ok("long's size bound counts a non-leap series' rows, not the slot's");
 }
 
 console.log(`\n${checks} checks passed.`);

@@ -81,7 +81,7 @@ export function renderReport(results, meta) {
   out.push('only part more workers can shorten, and `blit ms` + `cube ms` + `final ms` is the');
   out.push('serial fraction that sets the ceiling on any pool size.');
   out.push('`plan ms` is column-plan construction; `cube ms` is the contiguous');
-  out.push('`Float32Array` of entities x 8,760 that `createAccumulator` allocates and fills');
+  out.push('`Float32Array` of entities x 8,784 that `createAccumulator` allocates and fills');
   out.push('with NaN. The cube is measured even where the column plan is refused, because');
   out.push('its cost is a property of the width and not of whether the file is accepted.');
   out.push('');
@@ -133,7 +133,7 @@ function renderDrops(results, meta) {
   const out = ['## The multi-case drop', ''];
   out.push('One Case holds several tables and a study compares runs, so dropping several');
   out.push('bus-width cases in one session is a normal thing to do. Each finalizes into one');
-  out.push('contiguous `Float32Array` of entities x 8,760 that is held for as long as the');
+  out.push('contiguous `Float32Array` of entities x 8,784 that is held for as long as the');
   out.push('case is loaded. These rows are measured with every earlier case still held --');
   out.push('the tables are kept alive deliberately, so what is sampled is residency and not');
   out.push('a parse that has already been collected.');
@@ -456,7 +456,7 @@ function renderFindings(results) {
   if (widest) {
     out.push(
       `**Cube allocation.** One contiguous \`Float32Array\` of ` +
-        `${widest.entities.toLocaleString()} x 8,760 is ${mb(widest.cubeBytes)} MB and ` +
+        `${widest.entities.toLocaleString()} x 8,784 is ${mb(widest.cubeBytes)} MB and ` +
         `allocates in ${cell(widest.stages.cubeAlloc)} ms, with the process peaking at ` +
         `${cell(widest.peakRssMb)} MB. It succeeded at every width on this host, so at bus ` +
         `width the allocation is a cost, not a wall -- on 32 GB of RAM. Whether it is a wall ` +

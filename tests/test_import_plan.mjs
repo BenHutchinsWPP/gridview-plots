@@ -237,7 +237,7 @@ check(
         {
           name: 'Existing Study',
           occupiedSlots: [slotKeyFor('area', undefined)],
-          slotHours: { [slotKeyFor('area', undefined)]: 4344 },
+          slotHours: { [slotKeyFor('area', undefined)]: { covers: 4344, of: 8760 } },
         },
       ],
     });
@@ -259,7 +259,7 @@ check(
         {
           name: 'Existing Study',
           occupiedSlots: [slotKeyFor('area', undefined)],
-          slotHours: { [slotKeyFor('area', undefined)]: 8760 },
+          slotHours: { [slotKeyFor('area', undefined)]: { covers: 8760, of: 8760 } },
         },
       ],
     });
@@ -268,6 +268,18 @@ check(
       !full[0].replaceReason.includes('8,760 hours'),
       'a full year earns no coverage sentence',
     );
+    // A leap year's whole year is 8,784 hours; 8,760 of them is a gap.
+    const leapShort = planImports(files, 'one-case', {
+      caseName: 'Existing Study',
+      existingCases: [
+        {
+          name: 'Existing Study',
+          occupiedSlots: [slotKeyFor('area', undefined)],
+          slotHours: { [slotKeyFor('area', undefined)]: { covers: 8760, of: 8784 } },
+        },
+      ],
+    });
+    assert.ok(leapShort[0].replaceReason.includes('8,760 of 8,784 hours'));
 
     // A table from a bundle written before the record existed: unknown, and
     // unknown must not be described as a partial year OR as a full one.

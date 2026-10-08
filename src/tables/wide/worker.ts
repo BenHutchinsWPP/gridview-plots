@@ -40,8 +40,10 @@ export interface BlockMessage {
   /** The slab shape for this block: per block, since files in one drop may
    * differ in width. */
   layout: SlabLayout;
-  /** The case's year; rows from another year are refused, not folded in. */
-  year: number;
+  /** The Case's years: `numYears` from `firstYear`. Rows dated outside them
+   * are refused, not folded in. In a merge group these are the GROUP's. */
+  firstYear: number;
+  numYears: number;
 }
 
 export type WorkerRequest = InitMessage | BlockMessage;
@@ -127,7 +129,8 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>) => {
       from,
       to,
       message.activePlanes,
-      message.year,
+      message.firstYear,
+      message.numYears,
     );
     const result: BlockResult = {
       kind: 'done',
@@ -137,6 +140,7 @@ const handleMessage = async (event: MessageEvent<WorkerRequest>) => {
     };
     (self as unknown as Worker).postMessage(result, [
       result.data.buffer,
+      result.rowYear.buffer,
       result.rowHour.buffer,
       result.rowTou.buffer,
     ]);

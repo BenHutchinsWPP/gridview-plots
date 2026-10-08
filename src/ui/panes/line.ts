@@ -12,7 +12,7 @@
 
 import { scaleOf, scalesOf } from '../../series/scales';
 import uPlot from 'uplot';
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../model/calendar';
 import { checkStackOverlap, stackOrder } from '../../series/model';
 import { withAlpha } from '../palette';
 import { hourLabel, timeAxisValues, timeSplits } from '../chart-format';
@@ -48,7 +48,7 @@ const LIMIT_DASH = [2, 3];
  * as bands. */
 const STACK_FILL_ALPHA = 0.3;
 
-const HOUR_AXIS = Array.from({ length: HOURS_PER_YEAR }, (_, i) => i);
+const HOUR_AXIS = Array.from({ length: YEAR_SLOT_HOURS }, (_, i) => i);
 const PERCENT_AXIS = Array.from(
   { length: DURATION_POINTS },
   (_, i) => (i / (DURATION_POINTS - 1)) * 100,
@@ -218,7 +218,7 @@ function downloadHours(plot: uPlot | null, series: readonly CaseSeries[]): void 
   if (min == null || max == null || drawn.length === 0) return;
 
   const rows = [[...HOUR_COLUMNS, ...drawn.map((s) => csvField(s.name))].join(',')];
-  for (let hour = Math.max(0, Math.ceil(min)); hour <= Math.min(HOURS_PER_YEAR - 1, max); hour++) {
+  for (let hour = Math.max(0, Math.ceil(min)); hour <= Math.min(YEAR_SLOT_HOURS - 1, max); hour++) {
     const values = drawn.map((s) => (s.values as Float32Array)[hour]);
     if (values.every((value) => Number.isNaN(value))) continue;
     rows.push(`${hourFields(hour)},${values.map(formatCell).join(',')}`);
@@ -270,14 +270,14 @@ export function createTimeAdapter(host: PaneHost): PaneAdapter {
     }
 
     host.uplotHost.style.display = '';
-    let first = HOURS_PER_YEAR;
+    let first = YEAR_SLOT_HOURS;
     let last = -1;
     const data: uPlot.AlignedData = [
       HOUR_AXIS,
       ...drawable.map((s) => {
-        const column: (number | null)[] = new Array(HOURS_PER_YEAR);
+        const column: (number | null)[] = new Array(YEAR_SLOT_HOURS);
         const values = s.values as Float32Array;
-        for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+        for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
           const value = values[hour];
           if (Number.isNaN(value)) {
             column[hour] = null;
@@ -296,8 +296,8 @@ export function createTimeAdapter(host: PaneHost): PaneAdapter {
     // series so `colors[i - 1]` still lines up with `drawable`.
     const limits = limitsCheck.checked ? (input.limits ?? []) : [];
     for (const limit of limits) {
-      const column: (number | null)[] = new Array(HOURS_PER_YEAR);
-      for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+      const column: (number | null)[] = new Array(YEAR_SLOT_HOURS);
+      for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
         const value = limit.values[hour];
         column[hour] = Number.isNaN(value) ? null : value;
       }
@@ -640,13 +640,13 @@ export function createStackedAdapter(host: PaneHost): PaneAdapter {
     // BOTTOM-UP BY TOTAL (`stackOrder`): from here `stack` is the order. The
     // refusals above run on the SELECTION, where the reader ticked the series.
     const stack = stackOrder(drawable);
-    let first = HOURS_PER_YEAR;
+    let first = YEAR_SLOT_HOURS;
     let last = -1;
     const data: uPlot.AlignedData = [
       HOUR_AXIS,
       ...stack.map((_s, seriesIdx) => {
-        const column: (number | null)[] = new Array(HOURS_PER_YEAR);
-        for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+        const column: (number | null)[] = new Array(YEAR_SLOT_HOURS);
+        for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
           const allFiltered = stack.every((entry) =>
             Number.isNaN((entry.values as Float32Array)[hour]),
           );

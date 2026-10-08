@@ -19,7 +19,7 @@
 //      stored plane and nothing else, which is what keeps the presence rule
 //      above true of every number it returns.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../model/calendar';
 import { applyMask, createScratch, isAllZero, quantiles, sortAsc, stats } from '../../kernels';
 import type { InterfaceTable } from './types';
 
@@ -38,11 +38,11 @@ export function hasData(data: InterfaceTable, interfaceIndex: number): boolean {
 }
 
 function planeStart(interfaceIndex: number): number {
-  return interfaceIndex * HOURS_PER_YEAR;
+  return interfaceIndex * YEAR_SLOT_HOURS;
 }
 
 /**
- * Copy one interface's 8,760-point plane into `out`.
+ * Copy one interface's 8,784-point plane into `out`.
  *
  * There is no aggregation step: the stored plane IS the series (rule 3
  * above), so the only outcomes are the plane or a refusal that names why it
@@ -74,6 +74,6 @@ export function buildSeries(
   }
 
   const start = planeStart(index);
-  out.set(data.cube.subarray(start, start + HOURS_PER_YEAR));
+  out.set(data.cube.subarray(start, start + YEAR_SLOT_HOURS));
   return { values: out, warnings: [] };
 }

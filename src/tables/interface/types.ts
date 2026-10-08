@@ -3,7 +3,7 @@
 // The Interface table type, unit vocabulary, and save-envelope half. Unit
 // meaning is in `rules.ts`; drawing is in `series.ts`.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import type { HoursPresent, TouCodes } from '../../model/types';
 
 /** How a quantity behaves when hours are combined. Mirrors
@@ -23,7 +23,7 @@ export interface UnitRule {
   readonly note?: string;
 }
 
-/** One interface export file; the Case owns its name. `cube[iface * 8760 +
+/** One interface export file; the Case owns its name. `cube[iface * 8784 +
  * hour]`, with `iface` indexing `interfaces`. */
 export interface InterfaceTable {
   cube: Float32Array;
@@ -38,8 +38,8 @@ export interface InterfaceTable {
    * and the picker distinguish "never monitored in this run" from "monitored
    * but not kept". */
   sourceColumns: string[];
-  /** Calendar year this case's 8,760 hours belong to. (Feb 29 is dropped at
-   * ingest: AGENTS.md.) */
+  /** Calendar year this case's hours belong to; it decides whether the
+   * slot's Feb 29 is real. */
   year: number;
   /** What this file measures, verbatim from its title line, e.g.
    * `Power Flow (MW)`. Empty when the title line could not be read. */
@@ -61,6 +61,8 @@ export function serializeInterfaceTable(table: InterfaceTable): {
   return {
     fields: {
       year: table.year,
+      firstYear: table.year,
+      numYears: 1,
       interfaces: table.interfaces,
       sourceColumns: table.sourceColumns,
       quantity: table.quantity,
@@ -79,6 +81,7 @@ export function deserializeInterfaceTable(
 ): InterfaceTable {
   const entry = fields as {
     year: number;
+    numYears?: number;
     interfaces: string[];
     sourceColumns: string[];
     quantity: string;
@@ -88,12 +91,13 @@ export function deserializeInterfaceTable(
     hoursPresent?: HoursPresent;
   };
 
-  const values = new Float32Array(cube);
-  const expected = entry.interfaces.length * HOURS_PER_YEAR;
+  const slot = savedHoursOnSlot(entry, new Float32Array(cube), entry.interfaces.length);
+  const values = slot.cube;
+  const expected = entry.interfaces.length * YEAR_SLOT_HOURS;
   if (values.length !== expected) {
     throw new Error(
       `saved Interface cube is ${values.length} values, expected ${expected} ` +
-        `(${entry.interfaces.length} interfaces × ${HOURS_PER_YEAR} h)`,
+        `(${entry.interfaces.length} interfaces × ${YEAR_SLOT_HOURS} h)`,
     );
   }
   // The bitmap every kernel consults before reading the cube: one byte
@@ -110,8 +114,8 @@ export function deserializeInterfaceTable(
     cube: values,
     interfaces: entry.interfaces.slice(),
     presence: entry.presence,
-    tou: entry.tou,
-    hoursPresent: entry.hoursPresent,
+    tou: slot.tou,
+    hoursPresent: slot.hoursPresent,
     sourceColumns: entry.sourceColumns.slice(),
     year: entry.year,
     quantity: entry.quantity,

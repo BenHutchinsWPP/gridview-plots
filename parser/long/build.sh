@@ -43,9 +43,11 @@ INBUF_BYTES=$((INBUF_MIB * MIB))
 ARENA_BYTES=$((ARENA_MIB * MIB))
 NAME_TABLE=$((MAX_NAMES * 2))       # block.c derives this; mirrored for the sum
 
+YEAR_WINDOW=512                     # block.c's 2 * MAX_YEARS, the scan's per-year counts
+
 # The same arrays block.c declares: inbuf + arena + areaHash/areaIdx +
-# nameHash/nameSlot + nameOff/nameLen.
-STATIC_BYTES=$((INBUF_BYTES + ARENA_BYTES + AREA_TABLE * 8 + NAME_TABLE * 8 + MAX_NAMES * 8))
+# nameHash/nameSlot + nameOff/nameLen + yearRows.
+STATIC_BYTES=$((INBUF_BYTES + ARENA_BYTES + AREA_TABLE * 8 + NAME_TABLE * 8 + MAX_NAMES * 8 + YEAR_WINDOW * 4))
 STATIC_MIB=$(( (STATIC_BYTES + MIB - 1) / MIB ))
 INITIAL_MEMORY_MIB=${INITIAL_MEMORY_MIB:-$((STATIC_MIB + HEADROOM_MIB))}
 INITIAL_MEMORY=$((INITIAL_MEMORY_MIB * MIB))

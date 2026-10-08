@@ -21,7 +21,7 @@ const {
   sortAsc,
   stats,
 } = await import('../src/tables/generator/kernels.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 const {
   isPolysemous,
   quantityNote,
@@ -37,7 +37,7 @@ const rulesData = (
   await import('../data/generator/quantity-rules.json', { with: { type: 'json' } })
 ).default;
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 let checks = 0;
 function ok(label) {
   checks++;

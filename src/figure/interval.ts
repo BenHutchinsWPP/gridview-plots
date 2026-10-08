@@ -34,9 +34,9 @@ export interface FigureInterval {
   readonly band: boolean;
   /** The period picked out in the pane, by label. */
   readonly picked: string | null;
-  /** Each day's weekday in the series' year, 0 = Monday, as the pane reads
-   * them: a leap year's calendar drops Feb 29, so they cannot be counted on
-   * from Jan 1. */
+  /** Each slot day's weekday in the series' year, 0 = Monday, -1 for a
+   * phantom Feb 29, as the pane reads them: a non-leap year's slot holds a
+   * day with no weekday, so they cannot be counted on from Jan 1. */
   readonly weekdays: readonly number[];
 }
 

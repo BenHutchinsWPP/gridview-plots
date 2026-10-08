@@ -6,25 +6,13 @@
 // must overlay cleanly, so no `Date` may touch this file.
 
 import type uPlot from 'uplot';
-import { HOURS_PER_YEAR, MONTH_NAMES } from '../model/calendar';
+import { MONTH_NAMES, SLOT_MONTH_STARTS, YEAR_SLOT_HOURS } from '../model/calendar';
 
-/** Month boundaries in hour-of-year, for the time series x axis. The axis is
- * a (month, day, hour) index and never a date: different case years must
- * overlay cleanly, and no Date object may touch this. */
-const MONTH_STARTS = (() => {
-  const lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  const starts: number[] = [];
-  let hour = 0;
-  for (const days of lengths) {
-    starts.push(hour);
-    hour += days * 24;
-  }
-  return starts;
-})();
-/** Month for an hour-of-year, by index arithmetic on MONTH_STARTS. */
+/** Month for an hour of the slot, by index arithmetic on the slot's month
+ * starts: Feb 29 is hours 1416-1439 in every year, real or not. */
 export function monthOf(hour: number): number {
   let month = 11;
-  while (month > 0 && MONTH_STARTS[month] > hour) month--;
+  while (month > 0 && SLOT_MONTH_STARTS[month] * 24 > hour) month--;
   return month;
 }
 
@@ -32,7 +20,7 @@ export function monthOf(hour: number): number {
  * the two are always asked together and the arithmetic reads as an off-by-one
  * waiting to happen wherever it is spelled again. */
 export function dayOfMonth(hour: number): number {
-  return Math.floor((hour - MONTH_STARTS[monthOf(hour)]) / 24) + 1;
+  return Math.floor(hour / 24) - SLOT_MONTH_STARTS[monthOf(hour)] + 1;
 }
 
 export function hourLabel(hour: number): string {
@@ -66,7 +54,7 @@ function timeSplitsFor(min: number, max: number, width: number, labelRoom: numbe
   const inWindow = (hours: number[]) => hours.filter((hour) => hour >= min && hour <= max);
   const room = Math.max(2, Math.floor(width / labelRoom));
 
-  if (span > 60 * 24) return inWindow(MONTH_STARTS);
+  if (span > 60 * 24) return inWindow(SLOT_MONTH_STARTS.map((day) => day * 24));
 
   if (span > 2 * 24) {
     const firstDay = Math.ceil(min / 24);
@@ -103,7 +91,7 @@ export function timeSplits(self: uPlot, _axis: number, min: number, max: number)
 /** `timeTicks`' labels as a uPlot axis `values` hook. */
 export function timeAxisValues(self: uPlot, splits: number[]): string[] {
   const scale = self.scales.x;
-  return timeLabelsFor(splits, (scale.max ?? HOURS_PER_YEAR) - (scale.min ?? 0));
+  return timeLabelsFor(splits, (scale.max ?? YEAR_SLOT_HOURS) - (scale.min ?? 0));
 }
 
 /** Trim a label to a pixel width, with an ellipsis. Canvas has no text

@@ -5,7 +5,7 @@
 // only because area-axis reduction commutes with the subtraction (AGENTS.md),
 // and another kind offered them would list metrics nothing fills.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { realHours, realHoursSeen, YEAR_SLOT_HOURS } from '../../model/calendar';
 import { derivedFor, requiredInputs, ruleFor } from './rules';
 import type { AreaTable } from './types';
 import { unionSchema } from '../long/header';
@@ -55,10 +55,10 @@ export function applyDerived(accumulator: CaseAccumulator): string[] {
     const divide = derived.op === 'div';
 
     for (let area = 0; area < accumulator.entityCount; area++) {
-      const out = (area * numMetrics + metric) * HOURS_PER_YEAR;
-      const a = (area * numMetrics + left) * HOURS_PER_YEAR;
-      const b = (area * numMetrics + right) * HOURS_PER_YEAR;
-      for (let hour = 0; hour < HOURS_PER_YEAR; hour++) {
+      const out = (area * numMetrics + metric) * YEAR_SLOT_HOURS;
+      const a = (area * numMetrics + left) * YEAR_SLOT_HOURS;
+      const b = (area * numMetrics + right) * YEAR_SLOT_HOURS;
+      for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
         const x = cube[a + hour];
         const y = cube[b + hour];
         // x/0 is absent (NaN), not Infinity, which no NaN guard would catch.
@@ -135,17 +135,13 @@ export function finalizeCase(
       `${label}: no rows for ${missingAreas.length} area(s): ${missingAreas.join(', ')}.`,
     );
   }
-  let covered = 0;
-  for (let h = 0; h < HOURS_PER_YEAR; h++) covered += accumulator.hourSeen[h];
-  if (covered < HOURS_PER_YEAR) {
+  const covered = realHoursSeen(accumulator.hourSeen, year, 1);
+  const real = realHours(year, 1);
+  if (covered < real) {
     warnings.push(
-      `${label}: covers ${covered.toLocaleString()} of ${HOURS_PER_YEAR.toLocaleString()} hours; ` +
+      `${label}: covers ${covered.toLocaleString()} of ${real.toLocaleString()} hours; ` +
         `the rest read as no-data.`,
     );
-  }
-  // Feb 29 is dropped at ingest; a leap year says so.
-  if ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) {
-    warnings.push(`${label}: ${year} is a leap year — Feb 29 was dropped at ingest.`);
   }
 
   return {

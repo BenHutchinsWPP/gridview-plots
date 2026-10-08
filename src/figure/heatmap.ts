@@ -1,7 +1,7 @@
 // src/figure/heatmap.ts
 //
-// The diurnal heatmap pane as a figure: one cell per hour, days Jan 1 to
-// Dec 31 across and hour ending 1 to 24 up, painted on the pane's own colour
+// The diurnal heatmap pane as a figure: one cell per hour, the slot's 366
+// days Jan 1 to Dec 31 across and hour ending 1 to 24 up, painted on the pane's own colour
 // scale (`heatmapScale`), so the figure cannot pick another palette for the
 // same series. Cells are SVG rectangles, not an embedded bitmap, so the
 // figure stays vector.
@@ -11,7 +11,12 @@
 // the pane paints it, and a footnote says what that grey means: a blank cell
 // must not be read as zero.
 
-import { MONTH_LENGTHS, MONTH_NAMES } from '../model/calendar';
+import {
+  MONTH_NAMES,
+  SLOT_MONTH_LENGTHS,
+  SLOT_MONTH_STARTS,
+  YEAR_SLOT_DAYS,
+} from '../model/calendar';
 import { formatNumber } from '../ui/chart-format';
 import {
   HEATMAP_EMPTY,
@@ -25,7 +30,6 @@ import { line, outlinedRect, rect, text } from './svg';
 import type { FigureCapture, PaneRenderer } from './build';
 
 const HOURS_IN_DAY = 24;
-const DAYS = 365;
 const HOUR_TICKS = [1, 6, 12, 18, 24];
 const BAR_PT = 7;
 const BAR_MAX_PT = 200;
@@ -99,12 +103,10 @@ export function heatmapPane(
       empty ? ['Grey cells are hours with no value (filtered out or missing), not zero.'] : [],
 
     xTicks() {
-      let day = 0;
-      return MONTH_NAMES.map((label, month) => {
-        const middle = day + MONTH_LENGTHS[month] / 2;
-        day += MONTH_LENGTHS[month];
-        return { at: middle / DAYS, label };
-      });
+      return MONTH_NAMES.map((label, month) => ({
+        at: (SLOT_MONTH_STARTS[month] + SLOT_MONTH_LENGTHS[month] / 2) / YEAR_SLOT_DAYS,
+        label,
+      }));
     },
 
     legendBlock({ left, width, measure, say, valueTitle }) {
@@ -156,11 +158,11 @@ export function heatmapPane(
 
     marks(lines, _window, frame) {
       const y = lines[at].y;
-      const cellWidth = frame.width / DAYS;
+      const cellWidth = frame.width / YEAR_SLOT_DAYS;
       const out: string[] = [];
-      for (let day = 0; day < DAYS; day++) {
+      for (let day = 0; day < YEAR_SLOT_DAYS; day++) {
         const x = frame.left + day * cellWidth;
-        const w = cellWidth + (day < DAYS - 1 ? SEAM_PT : 0);
+        const w = cellWidth + (day < YEAR_SLOT_DAYS - 1 ? SEAM_PT : 0);
         for (let hour = 0; hour < HOURS_IN_DAY; hour++) {
           // Hour ending `hour + 1` spans half an hour either side of it;
           // the top row is drawn exactly to the frame.
@@ -179,9 +181,7 @@ export function heatmapPane(
       );
       // Month boundaries, below the plot as the pane marks them.
       const bottom = frame.top + frame.height;
-      let day = 0;
-      for (const length of MONTH_LENGTHS.slice(0, -1)) {
-        day += length;
+      for (const day of SLOT_MONTH_STARTS.slice(1)) {
         const x = frame.left + day * cellWidth;
         out.push(line(x, bottom, x, bottom + 3, { color: '#999999', width: 0.5 }));
       }

@@ -17,7 +17,7 @@
 // scenarios with different path limits each -- so a per-case limit must die
 // with its case. See `store.ts`, which holds both halves for that reason.
 //
-// Twelve values, never 8,760. The expansion to hours belongs to whatever
+// Twelve values, never one per hour. The expansion to hours belongs to whatever
 // draws the line, because only the pane knows the case's calendar year; a
 // store that expanded eagerly would be guessing it.
 

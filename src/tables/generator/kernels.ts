@@ -15,7 +15,7 @@
 //      id row and no disambiguation path -- the opposite of the Bus kind,
 //      deliberately.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../model/calendar';
 import { applyMask, createScratch, isAllZero, quantiles, sortAsc, stats } from '../../kernels';
 import type { GeneratorTable } from './types';
 
@@ -33,13 +33,13 @@ export function hasData(data: GeneratorTable, generatorIndex: number): boolean {
   return data.presence[generatorIndex] === 1;
 }
 
-/** Where a generator's 8,760-point plane starts in the cube. */
+/** Where a generator's 8,784-point plane starts in the cube. */
 export function planeStart(generatorIndex: number): number {
-  return generatorIndex * HOURS_PER_YEAR;
+  return generatorIndex * YEAR_SLOT_HOURS;
 }
 
 /**
- * Copy one generator's 8,760-point plane into `out`.
+ * Copy one generator's 8,784-point plane into `out`.
  *
  * The stored plane IS the series in this build (rule 3), so the only outcomes
  * are the plane or a refusal that names why it is not there -- not carried by
@@ -70,6 +70,6 @@ export function buildSeries(
   }
 
   const start = planeStart(index);
-  out.set(data.cube.subarray(start, start + HOURS_PER_YEAR));
+  out.set(data.cube.subarray(start, start + YEAR_SLOT_HOURS));
   return { values: out, warnings: [] };
 }

@@ -4,11 +4,21 @@
 // rail, a pane's zoom and the overview move it. Pure, so the stepping rules
 // are tested without a DOM.
 //
-// A day is a day-of-year, 0-364. Every Case drops Feb 29, so day `d` is hours
-// `24d … 24d + 23` in every Case whatever its year: no calendar lookup, and
-// the one filter that means the same hours in a 2035 and a 2045 Case.
+// A day is a day of the leap-calendar slot, 0-365, Feb 29 = 59 in every
+// year. Day `d` is hours `24d … 24d + 23` in every Case whatever its year: no
+// calendar lookup, and the one filter that means the same hours in a 2035 and
+// a 2036 Case. In a non-leap year Feb 29 is an ordinary day that keeps no
+// hours.
 
-import { MONTH_LENGTHS, MONTH_NAMES, buildCalendar, getDayOfWeek } from './calendar';
+import {
+  MONTH_NAMES,
+  SLOT_MONTH_LENGTHS,
+  SLOT_MONTH_STARTS,
+  YEAR_SLOT_DAYS,
+  buildCalendar,
+  getDayOfWeek,
+  isPhantomDay,
+} from './calendar';
 
 /** Days `start` to `end`, both kept. */
 export interface DateRange {
@@ -16,27 +26,21 @@ export interface DateRange {
   readonly end: number;
 }
 
-export const DAYS_PER_YEAR = 365;
-const LAST_DAY = DAYS_PER_YEAR - 1;
-
-/** The first day of each month. */
-export const MONTH_STARTS: readonly number[] = MONTH_LENGTHS.map((_, m) =>
-  MONTH_LENGTHS.slice(0, m).reduce((sum, n) => sum + n, 0),
-);
+const LAST_DAY = YEAR_SLOT_DAYS - 1;
 
 const clamp = (value: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, value));
 
 /** The month, 0-11, a day falls in. */
 export function monthOfDay(day: number): number {
   let m = 11;
-  while (MONTH_STARTS[m] > day) m--;
+  while (SLOT_MONTH_STARTS[m] > day) m--;
   return m;
 }
 
 /** "Feb 20". */
 export function dayLabel(day: number): string {
   const m = monthOfDay(day);
-  return `${MONTH_NAMES[m]} ${day - MONTH_STARTS[m] + 1}`;
+  return `${MONTH_NAMES[m]} ${day - SLOT_MONTH_STARTS[m] + 1}`;
 }
 
 /** "Feb 20 – Mar 10", or "Feb 20" for one day. */
@@ -74,14 +78,19 @@ export function rangeOfHours(min: number, max: number): DateRange {
 }
 
 export function monthRange(month: number): DateRange {
-  return { start: MONTH_STARTS[month], end: MONTH_STARTS[month] + MONTH_LENGTHS[month] - 1 };
+  return {
+    start: SLOT_MONTH_STARTS[month],
+    end: SLOT_MONTH_STARTS[month] + SLOT_MONTH_LENGTHS[month] - 1,
+  };
 }
 
 /** How many whole months the range is, or 0 when it is not whole months. */
 export function wholeMonths(range: DateRange): number {
   const m0 = monthOfDay(range.start);
   const m1 = monthOfDay(range.end);
-  return range.start === MONTH_STARTS[m0] && range.end === monthRange(m1).end ? m1 - m0 + 1 : 0;
+  return range.start === SLOT_MONTH_STARTS[m0] && range.end === monthRange(m1).end
+    ? m1 - m0 + 1
+    : 0;
 }
 
 /**
@@ -93,10 +102,10 @@ export function stepRange(range: DateRange, dir: 1 | -1): DateRange {
   const k = wholeMonths(range);
   if (k > 0) {
     const m0 = clamp(monthOfDay(range.start) + dir * k, 0, 12 - k);
-    return { start: MONTH_STARTS[m0], end: monthRange(m0 + k - 1).end };
+    return { start: SLOT_MONTH_STARTS[m0], end: monthRange(m0 + k - 1).end };
   }
   const len = rangeDays(range);
-  const start = clamp(range.start + dir * len, 0, DAYS_PER_YEAR - len);
+  const start = clamp(range.start + dir * len, 0, YEAR_SLOT_DAYS - len);
   return { start, end: start + len - 1 };
 }
 
@@ -110,7 +119,7 @@ export function extendRange(range: DateRange, dir: 1 | -1): DateRange {
 export function windowFrom(from: number, length: 'day' | 'week' | 'month'): DateRange {
   if (length === 'month') return monthRange(monthOfDay(from));
   const days = length === 'day' ? 1 : 7;
-  const start = clamp(from, 0, DAYS_PER_YEAR - days);
+  const start = clamp(from, 0, YEAR_SLOT_DAYS - days);
   return { start, end: start + days - 1 };
 }
 
@@ -133,21 +142,19 @@ export function parseDay(text: string): ParsedDay {
   } else {
     return { refusal: 'A date like “Feb 20” or “2/20”.' };
   }
-  if (month === 1 && day === 29) {
-    return {
-      refusal: 'Feb 29 is not a date here: every Case drops it, so each year has 365 days.',
-    };
-  }
-  if (month < 0 || month > 11 || day < 1 || day > MONTH_LENGTHS[month]) {
+  if (month < 0 || month > 11 || day < 1 || day > SLOT_MONTH_LENGTHS[month]) {
     return { refusal: `${t} is not a date.` };
   }
-  return { day: MONTH_STARTS[month] + day - 1 };
+  return { day: SLOT_MONTH_STARTS[month] + day - 1 };
 }
 
 /** A day's weekday in one year, 0 = Monday .. 6 = Sunday, from the calendar
- * every mask is built on. */
+ * every mask is built on; -1 for Feb 29 of a non-leap year, which is no day
+ * at all. A walker over days skips a -1: counted as a weekday, it would cut a
+ * spurious week at Mar 1 or shade a phantom day as a Monday. */
 export function weekdayOf(year: number, day: number): number {
-  return getDayOfWeek(buildCalendar(year)[day * 24]);
+  const entry = buildCalendar(year)[day * 24];
+  return isPhantomDay(entry) ? -1 : getDayOfWeek(entry);
 }
 
 // ------------------------------------------------------------ scattered days

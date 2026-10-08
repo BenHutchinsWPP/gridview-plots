@@ -1,6 +1,6 @@
 // src/storage/envelope.ts
 //
-// The v3 bundle envelope: manifest types, the tagging that lets a typed array
+// The bundle envelope: manifest types, the tagging that lets a typed array
 // ride in JSON, and the pure halves of save and load (`buildManifest`,
 // `casesFromManifest`). No I/O. It sits below `store.ts` and `legacy.ts` so
 // the two do not form an import cycle.
@@ -41,9 +41,14 @@ import {
 import { tableKindEntry, type TableFields } from '../tables/registry';
 import { savePins, type SavedPin, type SelectionEntry } from '../ui/browse-model';
 
-/** The v3 envelope's version. Version plus magic is what tells a legacy v1
- * (`GVAP`) or v2 (`GVIP`) file apart. */
-export const BUNDLE_VERSION = 3;
+/** The envelope's version. Version plus magic is what tells a legacy v1
+ * (`GVAP`) or v2 (`GVIP`) file apart. A v4 table entry carries
+ * `firstYear`/`numYears` beside `year` and holds 8,784 hours per plane. */
+export const BUNDLE_VERSION = 4;
+/** The same envelope with each plane 8,760 hours, Feb 29 dropped. Read, never
+ * written: a table entry without `numYears` is put on the slot by
+ * `savedHoursOnSlot` (src/model/calendar.ts). */
+export const PRE_SLOT_VERSION = 3;
 
 /** One table in a case's `tables` map. `kind` is a plain string: another
  * build may have written it, so it is checked against the registry, not
@@ -386,7 +391,7 @@ export function casesFromManifest(
         `${BUNDLE_VERSION}. Upgrade the app to open it.`,
     );
   }
-  if (manifest.version !== BUNDLE_VERSION) {
+  if (manifest.version !== BUNDLE_VERSION && manifest.version !== PRE_SLOT_VERSION) {
     // v1/v2 manifests are migrated before reaching here, so any other
     // version is one this build does not know: refuse it by name.
     throw new Error(

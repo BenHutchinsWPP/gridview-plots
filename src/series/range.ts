@@ -16,7 +16,7 @@
 //   * A limit may vary by hour (an interface's monthly limit), with NaN for
 //     "no limit this hour"; the fallback then applies to that hour alone.
 
-import { HOURS_PER_YEAR } from '../model/calendar';
+import { YEAR_SLOT_HOURS } from '../model/calendar';
 
 /** A side's divisor: one number for the year, or one per hour. NaN means no
  * limit (that hour, or at all). */
@@ -63,7 +63,7 @@ export function normalizeToRange(
   scale = 1,
   shown?: ArrayLike<number>,
 ): RangeUse {
-  const hours = Math.min(series.length, HOURS_PER_YEAR);
+  const hours = Math.min(series.length, YEAR_SLOT_HOURS);
   let peak = 0;
   let trough = 0;
   for (let hour = 0; hour < hours; hour++) {
@@ -126,7 +126,7 @@ export function normalizedCopy(
   limits: RangeLimits,
   out: Float32Array,
 ): Float32Array {
-  out.set(series.subarray(0, HOURS_PER_YEAR));
+  out.set(series.subarray(0, YEAR_SLOT_HOURS));
   normalizeToRange(out, limits);
   return out;
 }

@@ -1,43 +1,53 @@
 // .claude/skills/drive-app/make-sample-data.mjs
 //
-// Invented full-year (8,760-row) exports for driving the app: two Cases of
-// Interface flow and Bus LMP, a two-line-header BusList, two interface limit
-// schedules, and a one-Case study of every kind with groups. Every name is SAMPLE_. Usage: node make-sample-data.mjs <dir>
+// Invented full-year exports for driving the app, 8,760 rows a 2035 Case: two
+// Cases of Interface flow and Bus LMP, a two-line-header BusList, two interface limit
+// schedules, a one-Case study of every kind with groups, and a 2035-2037 Case
+// (leap 2036 kept) whose levels scale by year. Every name is SAMPLE_. Usage: node make-sample-data.mjs <dir>
 import { mkdirSync, writeFileSync } from 'node:fs';
 const Y = 2035,
   dir = process.argv[2];
 mkdirSync(dir, { recursive: true });
 const DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-function* hours() {
-  for (let m = 1; m <= 12; m++)
-    for (let d = 1; d <= DAYS[m - 1]; d++) for (let h = 1; h <= 24; h++) yield [m, d, h];
+// Levels are ×1, ×2, ×3 in 2035, 2036, 2037, so a chart tells the years apart.
+const grow = (y) => y - Y + 1;
+function* hours(last = Y) {
+  for (let y = Y; y <= last; y++)
+    for (let m = 1; m <= 12; m++) {
+      const days = m === 2 && y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0) ? 29 : DAYS[m - 1];
+      for (let d = 1; d <= days; d++) for (let h = 1; h <= 24; h++) yield [m, d, h, y];
+    }
 }
-function iface(file, quantity, levels, scale = 1) {
+function iface(file, quantity, levels, scale = 1, last = Y) {
   const names = Object.keys(levels);
   const out = [
     `Interface Hourly '${quantity}' Data for Year ${Y}`,
     'SYNTHETIC DATA -- invented for an app check. Not a real export.',
-    `(From the first hour of 1/1/${Y} to the last hour of 12/31/${Y}. Column identifier -- Interface Name)`,
+    `(From the first hour of 1/1/${Y} to the last hour of 12/31/${last}. Column identifier -- Interface Name)`,
     '',
     `Date, Hour, TOU,${names.join(',')}`,
   ];
-  for (const [m, d, h] of hours())
+  for (const [m, d, h, y] of hours(last))
     out.push(
-      `${m}/${d}/${Y},${h},${h % 2 ? 'OffPeak' : 'OnPeak'},${names.map((n) => levels[n] * scale).join(',')}`,
+      `${m}/${d}/${y},${h},${h % 2 ? 'OffPeak' : 'OnPeak'},${names.map((n) => levels[n] * scale * grow(y)).join(',')}`,
     );
   writeFileSync(`${dir}/${file}`, out.join('\r\n') + '\r\n');
 }
-function bus(file, quantity, ids, names, levels) {
+function bus(file, quantity, ids, names, levels, last = Y) {
   const out = [
     `Bus Hourly '${quantity}' Data for Year ${Y}`,
     '',
-    `(From the first hour of 1/1/${Y} to the last hour of 12/31/${Y}. Column identifier -- BusName)`,
+    `(From the first hour of 1/1/${Y} to the last hour of 12/31/${last}. Column identifier -- BusName)`,
     '',
     ['', '', 'BusNumber', ...ids].join(','),
     ['Date', ' Hour', ' TOU', ...names].join(','),
   ];
-  for (const [m, d, h] of hours())
-    out.push([`${m}/${d}/${Y}`, h, h % 2 ? 'OffPeak' : 'OnPeak', ...levels].join(','));
+  for (const [m, d, h, y] of hours(last))
+    out.push(
+      [`${m}/${d}/${y}`, h, h % 2 ? 'OffPeak' : 'OnPeak', ...levels.map((v) => v * grow(y))].join(
+        ',',
+      ),
+    );
   writeFileSync(`${dir}/${file}`, out.join('\r\n') + '\r\n');
 }
 const flows = { SAMPLE_P01: 100, SAMPLE_P02: 40, SAMPLE_P03: 7 };
@@ -105,18 +115,18 @@ hourly('SAMPLE_CASEA_AreaLoad.csv', 'Area', 'AreaName', 'Load (MWh)', {
 // load-weighted LMP beside its weight, and beside a metric that is not its
 // weight: what Area Groups may offer turns on which. A per-column export
 // cannot hold both, being one metric per Case.
-function areaLong(file, metrics) {
+function areaLong(file, metrics, last = Y) {
   const names = Object.keys(metrics);
   const out = [`Date, Hour, TOU, Name, ${names.join(', ')}`];
-  for (const [m, d, h] of hours())
+  for (const [m, d, h, y] of hours(last))
     for (const [a, area] of ['SAMPLE_AREA_1', 'SAMPLE_AREA_2', 'SAMPLE_AREA_3'].entries())
       out.push(
         [
-          `${m}/${d}/${Y}`,
+          `${m}/${d}/${y}`,
           h,
           h % 2 ? 'OffPeak' : 'OnPeak',
           area,
-          ...names.map((n) => metrics[n][a]),
+          ...names.map((n) => metrics[n][a] * grow(y)),
         ].join(','),
       );
   writeFileSync(`${dir}/${file}`, out.join('\r\n') + '\r\n');
@@ -168,3 +178,7 @@ generatorList('SAMPLE_GeneratorList.csv', (k) => `SAMPLE_AREA_${k}`);
 // the third of each in SAMPLE_AREA_3. Same names, so only the lists differ.
 generatorList('SAMPLE_GeneratorList_SharedArea.csv', (k) => `SAMPLE_AREA_${k < 3 ? 1 : 3}`);
 busList('SAMPLE_BusList_SharedArea.csv', (i) => `SAMPLE_AREA_${i < 2 ? 1 : 3}`);
+// One Case spanning 2035-2037, one file per shape and kind a span must load.
+iface('SAMPLE_CASEM_InterfaceFlow.csv', 'Power Flow (MW)', flows, 1, 2037);
+bus('SAMPLE_CASEM_BusLMP.csv', 'LMP ($/MWh)', ids, bnames, [21, 22, 23], 2037);
+areaLong('SAMPLE_CASEM_AreaLong.csv', { 'Load (MWh)': [1000, 100, 10], [LMP]: [30, 20, 10] }, 2037);

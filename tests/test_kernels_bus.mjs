@@ -22,7 +22,7 @@ const {
   sortAsc,
   stats,
 } = await import('../src/tables/bus/kernels.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 const {
   busLabel,
   combinesAcrossBuses,
@@ -39,7 +39,7 @@ const {
 const rulesData = (await import('../data/bus/quantity-rules.json', { with: { type: 'json' } }))
   .default;
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 let checks = 0;
 function ok(label) {
   checks++;

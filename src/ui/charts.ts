@@ -59,7 +59,7 @@ export interface CaseSeries {
   color: string;
   /** Lines of different units get different y scales. */
   unit: string;
-  /** 8,760 values, NaN where filtered out or missing; null when refused. */
+  /** 8,784 values (the year slot), NaN where filtered out or missing; null when refused. */
   values: Float32Array | null;
   /** Shown in place of a chart. */
   refusal?: string;
@@ -115,7 +115,7 @@ export interface DrawnLimit {
   color: string;
   /** The bounded series' unit, so both share a y scale. */
   unit: string;
-  /** 8,760 values, NaN where unbounded or filtered; already masked. */
+  /** 8,784 values (the year slot), NaN where unbounded or filtered; already masked. */
   values: Float32Array;
   /** A boundary's members' limits summed (`summedLimitLines`). */
   summed?: boolean;

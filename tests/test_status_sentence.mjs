@@ -29,18 +29,20 @@ const parts = (sentence) => sentence.split(' · ');
 
 check('unfiltered: kept hours, all dates, all days, the case count, nothing else', () => {
   assert.equal(
-    statusSentence(view({}), 8760),
+    statusSentence(view({}), 8760, 8760),
     `${n(8760)} of ${n(8760)} h · all dates · all days · 1 case`,
   );
 });
 
 check('the case count is pluralised', () => {
-  assert.equal(parts(statusSentence(view({}, []), 8760)).at(-1), '0 cases');
-  assert.equal(parts(statusSentence(view({}, ['a', 'b']), 8760)).at(-1), '2 cases');
+  assert.equal(parts(statusSentence(view({}, []), 8760, 8760)).at(-1), '0 cases');
+  assert.equal(parts(statusSentence(view({}, ['a', 'b']), 8760, 8760)).at(-1), '2 cases');
 });
 
-check('the kept hours are the figure given, not recomputed', () => {
-  assert.equal(parts(statusSentence(view({}), 1234))[0], `${n(1234)} of ${n(8760)} h`);
+check('the kept hours and their real hours are the figures given, not recomputed', () => {
+  assert.equal(parts(statusSentence(view({}), 1234, 8760))[0], `${n(1234)} of ${n(8760)} h`);
+  // A leap-year Case has 8,784 real hours; the sentence never reads the slot.
+  assert.equal(parts(statusSentence(view({}), 8784, 8784))[0], `${n(8784)} of ${n(8784)} h`);
 });
 
 check('a date set names its runs, at most four and then a count', () => {
@@ -49,28 +51,28 @@ check('a date set names its runs, at most four and then a count', () => {
     { start: 40, end: 40 },
   ];
   assert.equal(
-    parts(statusSentence(view({ dates: two }), 96))[1],
+    parts(statusSentence(view({ dates: two }), 96, 8760))[1],
     `${rangeLabel(two[0])}, ${rangeLabel(two[1])}`,
   );
   const six = Array.from({ length: 6 }, (_, i) => ({ start: i * 10, end: i * 10 + 2 }));
-  const said = parts(statusSentence(view({ dates: six }), 96))[1];
+  const said = parts(statusSentence(view({ dates: six }), 96, 8760))[1];
   assert.ok(said.startsWith(six.slice(0, 4).map(rangeLabel).join(', ')), said);
   assert.ok(said.endsWith(' and 2 more runs'), said);
 });
 
 check('days of week collapse into runs', () => {
   assert.equal(
-    parts(statusSentence(view({ daysOfWeek: new Set([0, 1, 2, 3, 4]) }), 100))[2],
+    parts(statusSentence(view({ daysOfWeek: new Set([0, 1, 2, 3, 4]) }), 100, 8760))[2],
     'Mon–Fri',
   );
   assert.equal(
-    parts(statusSentence(view({ daysOfWeek: new Set([5, 6, 0]) }), 100))[2],
+    parts(statusSentence(view({ daysOfWeek: new Set([5, 6, 0]) }), 100, 8760))[2],
     'Mon, Sat–Sun',
   );
 });
 
 check('hours are hour-ending and follow the days', () => {
-  const said = parts(statusSentence(view({ hoursOfDay: new Set([7, 8, 9, 10, 18]) }), 100));
+  const said = parts(statusSentence(view({ hoursOfDay: new Set([7, 8, 9, 10, 18]) }), 100, 8760));
   assert.equal(said[3], 'HE 7–10, 18');
   assert.equal(said.length, 5, said.join(' · '));
 });
@@ -80,6 +82,7 @@ check('seasons and TOU are named only when filtered, in that order', () => {
     statusSentence(
       view({ seasons: new Set(['Summer', 'Winter']), tou: new Set(['OnPeak']) }, ['a', 'b']),
       100,
+      8760,
     ),
   );
   assert.deepEqual(said.slice(3), ['Winter, Summer', 'OnPeak', '2 cases']);

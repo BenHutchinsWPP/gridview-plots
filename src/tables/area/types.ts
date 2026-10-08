@@ -3,7 +3,7 @@
 // Area model types. `AreaQuery` is the frozen object the UI renders from:
 // build a new one per interaction and never mutate it.
 
-import { HOURS_PER_YEAR } from '../../model/calendar';
+import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import { allAreas } from './groupings';
 import type { Filters, HoursPresent, TouCodes } from '../../model/types';
 
@@ -75,7 +75,7 @@ export interface ColumnRule {
 
 /**
  * One case's Area table. `cube` is indexed
- * `(area * numMetrics + metric) * 8760 + hour`. It carries NO name: the Case
+ * `(area * numMetrics + metric) * 8784 + hour`. It carries NO name: the Case
  * owns identity and label (src/model/case-model.ts).
  */
 export interface AreaTable {
@@ -105,6 +105,8 @@ export function serializeAreaTable(table: AreaTable): {
   return {
     fields: {
       year: table.year,
+      firstYear: table.year,
+      numYears: 1,
       metrics: table.metrics,
       sourceColumns: table.sourceColumns,
       areas: table.areas,
@@ -122,6 +124,7 @@ export function deserializeAreaTable(
 ): AreaTable {
   const entry = fields as {
     year: number;
+    numYears?: number;
     metrics: string[];
     sourceColumns: string[];
     areas: string[];
@@ -133,12 +136,13 @@ export function deserializeAreaTable(
   // An empty area list (older bundles) falls back to the global axis,
   // resolved BEFORE the cube is measured so the fallback is validated.
   const areas = entry.areas.length > 0 ? entry.areas.slice() : allAreas();
-  const values = new Float32Array(cube);
-  const expected = areas.length * entry.metrics.length * HOURS_PER_YEAR;
+  const slot = savedHoursOnSlot(entry, new Float32Array(cube), areas.length * entry.metrics.length);
+  const values = slot.cube;
+  const expected = areas.length * entry.metrics.length * YEAR_SLOT_HOURS;
   if (values.length !== expected) {
     throw new Error(
       `saved Area cube is ${values.length} values, expected ${expected} ` +
-        `(${areas.length} areas × ${entry.metrics.length} metrics × ${HOURS_PER_YEAR} h)`,
+        `(${areas.length} areas × ${entry.metrics.length} metrics × ${YEAR_SLOT_HOURS} h)`,
     );
   }
   if (entry.presence.length !== areas.length * entry.metrics.length) {
@@ -153,8 +157,8 @@ export function deserializeAreaTable(
     areas,
     metrics: entry.metrics.slice(),
     presence: entry.presence,
-    tou: entry.tou,
-    hoursPresent: entry.hoursPresent,
+    tou: slot.tou,
+    hoursPresent: slot.hoursPresent,
     sourceColumns: entry.sourceColumns.slice(),
     year: entry.year,
   };

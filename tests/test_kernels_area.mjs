@@ -22,11 +22,11 @@ const {
   createScratch,
   isAllZero,
 } = await import('../src/tables/area/kernels.ts');
-const { HOURS_PER_YEAR } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 const { allAreas } = await import('../src/tables/area/groupings.ts');
 const { ruleFor } = await import('../src/tables/area/rules.ts');
 
-const HOURS = HOURS_PER_YEAR;
+const HOURS = YEAR_SLOT_HOURS;
 const areas = allAreas();
 
 let checks = 0;
@@ -220,6 +220,52 @@ function maskOf(hours) {
     'zero-weight hours must be reported, not silently dropped',
   );
   ok('WEIGHTED_MEAN matches the hand calculation, and sum(w)==0 falls back to weight 1');
+}
+
+{
+  // A non-leap Case: Feb 29 is phantom, NaN in every plane. Those 24 hours
+  // have no value to weight, so they are NaN and no zero-weight hour; a real
+  // hour whose weights sum to zero still is one.
+  const price = 'Avg LMP Weighted by Load ($/MWh)';
+  const FEB_29 = 59 * 24;
+  const phantom = (hour) => hour >= FEB_29 && hour < FEB_29 + 24;
+  const build = (zeroAt) =>
+    buildSeries(
+      makeCase([price, 'Load (MWh)'], 3, (area, metric, hour) => {
+        if (phantom(hour)) return NaN;
+        if (metric === 0) return [10, 20, 30][area];
+        return hour === zeroAt ? 0 : [1, 2, 3][area];
+      }),
+      price,
+      areas.slice(0, 3),
+      createScratch(),
+    );
+  const clean = build(-1);
+  assert.deepEqual(clean.warnings, [], 'a non-leap Case raises no zero-weight warning');
+  assert.equal(clean.weightColumn, 'Load (MWh)');
+  assert.ok(Number.isNaN(clean.values[FEB_29]), 'a phantom hour is no value, not a plain mean');
+  const zeroed = build(5);
+  assert.equal(zeroed.warnings.length, 1, zeroed.warnings.join(' | '));
+  assert.match(zeroed.warnings[0], /^1 hour\(s\) have a total "Load \(MWh\)" of zero/);
+  close(zeroed.values[5], 20, 1e-5, 'the real zero-weight hour is the plain mean');
+  ok("a non-leap Case's phantom Feb 29 is skipped, not a zero-weight hour");
+}
+
+{
+  // An identically-zero weight is judged over the hours that hold data: a
+  // phantom Feb 29 does not stop the fall-through to the fallback weight.
+  const price = 'RD A. S. Price';
+  const rule = ruleFor(price);
+  const FEB_29 = 59 * 24;
+  const data = makeCase([price, rule.weight, rule.fallbackWeight], 2, (area, metric, hour) => {
+    if (hour >= FEB_29 && hour < FEB_29 + 24) return NaN;
+    if (metric === 0) return [4, 8][area];
+    if (metric === 1) return 0;
+    return [1, 3][area];
+  });
+  const series = buildSeries(data, price, areas.slice(0, 2), createScratch());
+  assert.equal(series.weightColumn, rule.fallbackWeight);
+  ok('a weight zero in every real hour of a non-leap Case still falls through to its fallback');
 }
 
 {

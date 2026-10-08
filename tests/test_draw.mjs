@@ -32,7 +32,7 @@
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
 
-const { HOURS_PER_YEAR: H } = await import('../src/model/calendar.ts');
+const { YEAR_SLOT_HOURS: H } = await import('../src/model/calendar.ts');
 const { resolveDraws } = await import('../src/app/draw.ts');
 const { createSeriesPool } = await import('../src/series/pool.ts');
 const { readFileSync } = await import('node:fs');
@@ -483,6 +483,8 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
   const parts = await exportHourly(
     {
       resolve: (ref) => resolveDraw(exportCtx, pin(ref)),
+      // Every table here states 2035: long writes no Feb 29 rows for it.
+      yearOfCase: () => 2035,
       progress: () => {},
       nextFrame: async () => {},
       confirm: async () => true,
@@ -491,12 +493,16 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
   );
   const lines = parts.join('').split('\n');
   const rows = lines.slice(lines.indexOf('Series,Month,Day,HE,HourOfYear,Value') + 1, -1);
-  assert.equal(rows.length, refs.length * H);
+  const perSeries = H - 24;
+  assert.equal(rows.length, refs.length * perSeries);
   refs.forEach((ref, i) => {
     const values = drawn[i].values;
     assert.equal(drawn[i].unit, ref.perUnit ? '%' : ref.unit);
-    for (let hour = 0; hour < H; hour++) {
-      const cell = rows[i * H + hour].split(',').at(-1);
+    for (let row = 0; row < perSeries; row++) {
+      const hour = row < 1416 ? row : row + 24;
+      const fields = rows[i * perSeries + row].split(',');
+      assert.equal(Number(fields.at(-2)), hour, `${ref.id} row ${row} is slot hour ${hour}`);
+      const cell = fields.at(-1);
       if (Number.isNaN(values[hour])) {
         assert.equal(cell, '', `${ref.id} hour ${hour} is masked`);
       } else if (ref.perUnit) {

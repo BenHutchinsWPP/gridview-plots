@@ -10,7 +10,7 @@
 // its own unfiltered peak/trough (an area has no limit), a group after it is
 // combined.
 
-import { HOURS_PER_YEAR } from '../../../model/calendar';
+import { YEAR_SLOT_HOURS } from '../../../model/calendar';
 import { CASE_GROUP_BY } from '../../../series/model';
 import { createScratch, type RankMemo } from '../../../kernels';
 import { rankScopedRows } from '../../../ui/browse-planes';
@@ -302,7 +302,7 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
       }
       return {
         presence,
-        planeStart: (axisIndex) => (axisIndex * numMetrics + metricIndex) * HOURS_PER_YEAR,
+        planeStart: (axisIndex) => (axisIndex * numMetrics + metricIndex) * YEAR_SLOT_HOURS,
       };
     },
     scratch: input.scratch ?? createScratch(),

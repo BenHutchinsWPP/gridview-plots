@@ -236,7 +236,7 @@ function wideBlockBytes(plan, layout) {
  * A ColumnPlan shaped only as far as `createAccumulator` reads it, so the
  * cube allocation can be measured at a width whose real plan is refused.
  *
- * Ceiling 3 -- one contiguous Float32Array of entities x 8,760 -- is a
+ * Ceiling 3 -- one contiguous Float32Array of entities x 8,784 -- is a
  * property of the WIDTH, not of whether the parser will accept the file. This
  * probe measures the allocation even when a rung fails before reaching it.
  */
@@ -318,7 +318,8 @@ async function measureWide(entry, dir, result, { parser: provided = null, retain
           skipPartialFirstRow: start !== plan.dataStart,
           activePlanes: columnPlan.activePlanes,
           layout,
-          year: plan.year,
+          firstYear: plan.year,
+          numYears: 1,
         };
         // The two calls worker.ts makes, timed as one: this is what a worker
         // does, and it is the only part more workers can shorten.
@@ -333,6 +334,7 @@ async function measureWide(entry, dir, result, { parser: provided = null, retain
             to,
             columnPlan.activePlanes,
             plan.year,
+            1,
           );
         });
         split.blit(() => interfacePool.blitBlock(accumulator, payload));
@@ -520,6 +522,7 @@ async function measureLong(entry, dir, result) {
             plan.header.metricNames.length,
             rowsPerBlock[i],
             plan.year,
+            1,
           );
         });
         split.blit(() => areaPool.blitBlock(accumulator, payload));

@@ -17,14 +17,13 @@
 
 #include <wasm_simd128.h>
 
-// Cumulative days before each month, and each month's length, non-leap;
-// Feb 29 rows are dropped.
-static const unsigned short CUM[12] = {0,31,59,90,120,151,181,212,243,273,304,334};
-static const unsigned char  DIM[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+// Cumulative days before each month, and each month's length, on a leap
+// calendar: every year is laid out as 366 days, so a date is the same day
+// index in every year and Feb 29 is day 59 whether or not the year has one.
+static const unsigned short CUM[12] = {0,31,60,91,121,152,182,213,244,274,305,335};
+static const unsigned char  DIM[12] = {31,29,31,30,31,30,31,31,30,31,30,31};
 
-// date_to_day's two refusals. FEB29 (dropped on purpose) and NO_DAY
-// (unreadable) are distinct, so the leap day never looks like a mangled file.
-#define FEB29  0xFFFFFFFEu
+// date_to_day's refusal: an unreadable date, or a day its year lacks.
 #define NO_DAY 0xFFFFFFFFu
 
 // read_tou's refusal: neither OnPeak nor OffPeak.
@@ -214,10 +213,10 @@ static inline int is_midnight(const unsigned char* p, const unsigned char* e) {
   return h == 12 && e - p == 2 && (p[0] | 0x20) == 'a' && (p[1] | 0x20) == 'm';
 }
 
-// M/D/YYYY -> day-of-year, FEB29 or NO_DAY, with the year in `*yearOut` for
-// the reader to check every row against one Case year. The day must exist in
-// its month, so 4/31 is refused rather than read as May 1; 2/29 is dropped in
-// a leap year and refused in any other.
+// M/D/YYYY -> leap-calendar day 0..365 or NO_DAY, with the year in `*yearOut`
+// for the reader to place the row in the Case's years. The day must exist in
+// its month, so 4/31 is refused rather than read as May 1, and 2/29 must
+// exist in its year: in any other it is a mangled date, not an empty slot.
 static inline unsigned date_to_day(const unsigned char* p, const unsigned char* e,
                                    unsigned* yearOut) {
   unsigned month = 0, day = 0, year = 0;
@@ -235,12 +234,9 @@ static inline unsigned date_to_day(const unsigned char* p, const unsigned char* 
     if (!is_midnight(p, e)) return NO_DAY;
   }
   *yearOut = year;
-  if (month < 1 || month > 12 || day < 1) return NO_DAY;
-  if (month == 2 && day == 29) {
-    int leap = (year % 4u == 0u && year % 100u != 0u) || year % 400u == 0u;
-    return leap ? FEB29 : NO_DAY;
-  }
-  if (day > DIM[month - 1]) return NO_DAY;
+  if (month < 1 || month > 12 || day < 1 || day > DIM[month - 1]) return NO_DAY;
+  if (month == 2 && day == 29 &&
+      !((year % 4u == 0u && year % 100u != 0u) || year % 400u == 0u)) return NO_DAY;
   return CUM[month - 1] + day - 1;
 }
 

@@ -35,7 +35,7 @@ export function contextStub() {
     stroke: noop,
     fill: noop,
     fillRect(x, y, w, h) {
-      calls.push({ op: 'fillRect', x, y, w, h });
+      calls.push({ op: 'fillRect', x, y, w, h, fill: this.fillStyle });
     },
     strokeRect(x, y, w, h) {
       calls.push({ op: 'strokeRect', x, y, w, h });
