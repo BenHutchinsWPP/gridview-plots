@@ -880,23 +880,39 @@ body.is-busy {
   background: #eceff3;
   cursor: pointer;
 }
-.gv-section .ds-day.ds-weekend {
-  background: #dce1e8;
+/* Marked days are shaded whole, and keep a deeper shade inside a selection
+   so the 5s and 10s still read there. Feb 29's own colour says it is a day
+   only in a leap year. */
+.gv-section .ds-day.ds-mark-5 {
+  background: #dfe3e9;
+}
+.gv-section .ds-day.ds-mark-10 {
+  background: #cbd1da;
+}
+.gv-section .ds-day.ds-feb29 {
+  background: #f2e3c2;
 }
 .gv-section .ds-day.ds-in {
-  background: #7fb2e5;
+  background: #8dbbe9;
 }
-.gv-section .ds-day.ds-edge {
+.gv-section .ds-day.ds-in.ds-mark-5 {
+  background: #7db0e4;
+}
+.gv-section .ds-day.ds-in.ds-mark-10 {
+  background: #659dd6;
+}
+.gv-section .ds-day.ds-in.ds-edge {
   background: var(--color-accent);
 }
 .gv-section .ds-day.ds-hover {
   outline: 1px solid #004c99;
 }
+/* Two fixed lines, the totals over the hovered day, so filling or emptying
+   the hover never moves what sits below the strip. */
 .gv-section .ds-readout {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 2px 8px;
+  display: grid;
+  grid-template-rows: 15px 15px;
+  line-height: 15px;
   margin-top: 6px;
   font:
     11px 'Monaco',
@@ -907,16 +923,12 @@ body.is-busy {
 }
 .gv-section .ds-readout span {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .gv-section .ds-readout b {
   color: var(--color-text-primary);
   font-weight: 600;
-}
-.gv-section .ds-note {
-  font-size: 11px;
-  color: var(--color-text-secondary);
-  line-height: 1.45;
-  margin: 6px 0 0;
 }
 
 /* Pane headers and inline warnings */
@@ -1067,18 +1079,39 @@ body.is-busy {
   color: var(--color-text-secondary);
   font-weight: 600;
   margin-bottom: 2px;
+  column-span: all;
+}
+
+/* Rows past the pane's height flow into columns (`column-count` set by
+   chart-tooltip.ts); a row never splits across two. */
+.gv-section .chart-tip {
+  column-gap: 14px;
+}
+
+.gv-section .chart-tip-more {
+  color: var(--color-text-secondary);
+  font-style: italic;
+  column-span: all;
 }
 
 .gv-section .chart-tip-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  break-inside: avoid;
 }
 
 .gv-section .chart-tip-name {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 140px;
+  min-width: 0;
+}
+
+/* An overlay's year: the name gives way to the ellipsis, the year never. */
+.gv-section .chart-tip-tag {
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
 }
 
 .gv-section .chart-tip-row b {

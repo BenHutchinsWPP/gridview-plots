@@ -9,7 +9,8 @@
 //   - two halves fill one cube, each member read at its OWN column order
 //   - drop order does not change any entity's year of numbers
 //   - two members covering the same HOUR is refused, across files
-//   - the group refusals: two years, and two quantities on the title lines
+//   - the group's span: abutting years merge, a year between them is refused
+//   - the group refusal for two quantities on the title lines
 //   - a column only one half carries warns and still loads
 //   - the union header keeps `raw` aligned to `entityNames`, which is what a
 //     bus export's id-to-name pairing rides on
@@ -69,7 +70,10 @@ function merge(members) {
   for (const plan of plans.slice(1)) {
     for (let e = 0; e < presence.length; e++) presence[e] ||= plan.presence[e];
   }
-  const accumulator = createAccumulator({ ...plans[0], presence });
+  const accumulator = createAccumulator(
+    { ...plans[0], presence },
+    { firstYear: 2035, numYears: 1 },
+  );
   members.forEach((member, i) => {
     // Line 5 is the header; the body starts after it.
     let at = 0;
@@ -89,7 +93,7 @@ function merge(members) {
       plans[i],
     );
   });
-  return finalizeWide(accumulator, 'jan.csv + jul.csv', 2035, members[0].title, SPEC);
+  return finalizeWide(accumulator, 'jan.csv + jul.csv', members[0].title, SPEC);
 }
 
 const KEYS = 'Date, Hour, TOU';
@@ -139,7 +143,7 @@ const JUL1 = 182 * 24;
 // --------------------------------------- the same hour twice is still refused
 {
   const again = half(`${KEYS},P01,P02`, ['1/1/2035,1,OffPeak,99.5,99.5']);
-  assert.throws(() => merge([JAN, again]), /hour 0 of the year/);
+  assert.throws(() => merge([JAN, again]), /hour 0 of 2035 \(Jan 1, hour ending 1\)/);
   ok('two members covering one hour is refused across files, not last-write-wins');
 }
 
@@ -165,8 +169,9 @@ const JUL1 = 182 * 24;
 
   const jan = await plan('jan.csv', TITLE, `${KEYS},P01,P02`, '1/1/2035,1,OffPeak,10.5,20.5');
   const jul = await plan('jul.csv', TITLE, `${KEYS},P01,P02`, '7/1/2035,1,OnPeak,500.5,600.5');
-  assert.deepEqual(checkMergeGroup([jan, jul]), { warnings: [] });
-  assert.deepEqual(checkMergeGroup([jan]), { warnings: [] });
+  const ONE_YEAR = { firstYear: 2035, numYears: 1 };
+  assert.deepEqual(checkMergeGroup([jan, jul]), { span: ONE_YEAR, warnings: [] });
+  assert.deepEqual(checkMergeGroup([jan]), { span: ONE_YEAR, warnings: [] });
   ok('two halves of one year, of one quantity, merge with nothing to say');
 
   const next = await plan(
@@ -175,8 +180,23 @@ const JUL1 = 182 * 24;
     `${KEYS},P01,P02`,
     '7/1/2036,1,OnPeak,500.5,600.5',
   );
-  assert.match(checkMergeGroup([jan, next]).refusal, /different years \(2035, 2036\)/);
-  ok('two years assigned to one study are refused, not read into one calendar');
+  assert.deepEqual(checkMergeGroup([jan, next]), {
+    span: { firstYear: 2035, numYears: 2 },
+    warnings: [],
+  });
+  ok('two abutting years assigned to one study span both');
+
+  const later = await plan(
+    'later.csv',
+    "Interface Hourly 'Power Flow (MW)' Data for Year 2037",
+    `${KEYS},P01,P02`,
+    '7/1/2037,1,OnPeak,500.5,600.5',
+  );
+  assert.match(
+    checkMergeGroup([later, jan]).refusal,
+    /together have rows for 2035 and 2037 but none for 2036\./,
+  );
+  ok('two years with a year between them are refused, naming the missing year');
 
   // The unit is inside the title's quantity in this shape, so a MW half and an
   // MWh half are two tables -- there is no column name to keep them apart.
@@ -226,9 +246,12 @@ const JUL1 = 182 * 24;
 {
   const FEB_29 = 59 * 24;
   const covers = (year, fill) => {
-    const accumulator = createAccumulator(buildColumnPlan(JAN.header, RETAINED));
+    const accumulator = createAccumulator(buildColumnPlan(JAN.header, RETAINED), {
+      firstYear: year,
+      numYears: 1,
+    });
     fill(accumulator.hourSeen);
-    const { warnings } = finalizeWide(accumulator, 'year.csv', year, JAN.title, SPEC);
+    const { warnings } = finalizeWide(accumulator, 'year.csv', JAN.title, SPEC);
     return warnings.filter((w) => w.includes('covers'));
   };
   const realOnly = (seen) => seen.fill(1).fill(0, FEB_29, FEB_29 + 24);

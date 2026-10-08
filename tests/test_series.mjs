@@ -46,6 +46,7 @@ function ok(label) {
 }
 
 const NO_FILTERS = {
+  years: null,
   dates: null,
   hoursOfDay: null,
   daysOfWeek: null,
@@ -70,7 +71,16 @@ function makeCase({
     presence[index] = 1;
     for (let hour = 0; hour < HOURS; hour++) cube[index * HOURS + hour] = fill(index, hour);
   });
-  return { cube, generators, presence, tou: new Uint8Array(HOURS), sourceColumns, year, quantity };
+  return {
+    cube,
+    generators,
+    presence,
+    tou: new Uint8Array(HOURS),
+    sourceColumns,
+    firstYear: year,
+    numYears: 1,
+    quantity,
+  };
 }
 
 const RESOLVERS = { generator: resolveGeneratorSeries };
@@ -92,7 +102,7 @@ function draw(data, subject, { filters = NO_FILTERS, spec = {}, opts = {} } = {}
     subject,
     ...spec,
   };
-  return resolveSeries(RESOLVERS, full, data, filters, createSeriesBuffers(), options(opts));
+  return resolveSeries(RESOLVERS, full, data, filters, createSeriesBuffers(HOURS), options(opts));
 }
 
 // ------------------------------------------------------------------ the spec
@@ -143,7 +153,7 @@ function draw(data, subject, { filters = NO_FILTERS, spec = {}, opts = {} } = {}
     { caseId: 'case-1', source: { kind: 'bus', quantity: 'LMP ($/MWh)' }, subject: { entity: 7 } },
     data,
     NO_FILTERS,
-    createSeriesBuffers(),
+    createSeriesBuffers(HOURS),
     options(),
   );
   assert.equal(entry.values, null, 'an unregistered kind draws nothing');
@@ -169,6 +179,46 @@ function draw(data, subject, { filters = NO_FILTERS, spec = {}, opts = {} } = {}
   assert.equal(entry.color, '#1f77b4');
   assert.equal(entry.dashed, undefined, 'a pinned line is solid');
   ok("an entity subject draws its plane with this kind's own unit and statistics");
+}
+
+{
+  // Three years, each at its own level: 1000 y + hour of day. The duration
+  // curve and every statistic pool the span, not the first slot.
+  const numYears = 3;
+  const cube = Float32Array.from(
+    { length: numYears * HOURS },
+    (_, h) => 1000 * Math.floor(h / HOURS) + (h % 24),
+  );
+  const data = {
+    cube,
+    generators: ['G1 PV'],
+    presence: new Uint8Array([1]),
+    tou: new Uint8Array(numYears * HOURS),
+    sourceColumns: ['G1 PV'],
+    firstYear: 2035,
+    numYears,
+    quantity: 'Generation (MWh)',
+  };
+  const entry = resolveSeries(
+    RESOLVERS,
+    {
+      caseId: 'case-1',
+      source: { kind: 'generator', quantity: data.quantity },
+      subject: { entity: 'G1 PV' },
+    },
+    data,
+    NO_FILTERS,
+    createSeriesBuffers(numYears * HOURS),
+    options(),
+  );
+  assert.equal(entry.values.length, numYears * HOURS);
+  assert.equal(entry.n, realHours(2035, numYears), 'every real hour of all three years');
+  assert.equal(entry.sorted[0], 0, 'the lowest is year one’s');
+  assert.equal(entry.sorted[entry.n - 1], 2023, 'the highest is year three’s');
+  assert.equal(Math.floor(entry.sorted[entry.n / 2] / 1000), 1, 'the middle rank is year two’s');
+  assert.equal(entry.stats.min, 0);
+  assert.equal(entry.stats.max, 2023);
+  ok('a three-year line ranks the kept hours of every year it spans');
 }
 
 {
@@ -401,7 +451,8 @@ function makeBusCase({
     presence,
     tou: new Uint8Array(HOURS),
     sourceColumns: [...sourceColumns],
-    year,
+    firstYear: year,
+    numYears: 1,
     quantity,
   };
 }
@@ -417,7 +468,7 @@ function drawBus(data, subject, { filters = NO_FILTERS, spec = {} } = {}) {
     },
     data,
     filters,
-    createSeriesBuffers(),
+    createSeriesBuffers(HOURS),
     options({
       detail: 'Winter 2035 · WILLOWBEND (10002)',
       tableLabel: 'Winter 2035 · LMP ($/MWh)',
@@ -571,7 +622,8 @@ function makeAreaCase({
     presence,
     tou: new Uint8Array(HOURS),
     sourceColumns: [...sourceColumns],
-    year,
+    firstYear: year,
+    numYears: 1,
   };
 }
 
@@ -590,7 +642,7 @@ function drawArea(
     },
     data,
     filters,
-    createSeriesBuffers(),
+    createSeriesBuffers(HOURS),
     options({
       detail: `Winter 2035 · AREA_AV · ${metric}`,
       tableLabel: `Winter 2035 · ${metric}`,
@@ -699,7 +751,8 @@ function makeInterfaceCase({
     presence,
     tou: new Uint8Array(HOURS),
     sourceColumns: [...sourceColumns],
-    year,
+    firstYear: year,
+    numYears: 1,
     quantity,
     unit,
   };
@@ -716,7 +769,7 @@ function drawInterface(data, subject, { filters = NO_FILTERS, spec = {}, opts = 
     },
     data,
     filters,
-    createSeriesBuffers(),
+    createSeriesBuffers(HOURS),
     options({
       detail: `Winter 2035 · ${subject.entity ?? ''} · ${data.quantity}`,
       tableLabel: 'Winter 2035',

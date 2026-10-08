@@ -32,6 +32,8 @@ const { YEAR_SLOT_HOURS, TOU_LABELS } = await import('../src/model/calendar.ts')
 const areaHeader = await import('../src/tables/long/header.ts');
 const areaBlock = await import('../src/tables/long/block.ts');
 const areaPool = await import('../src/tables/long/pool.ts');
+const longMerge = await import('../src/tables/long/merge.ts');
+const { yearSpanOf } = await import('../src/ingest.ts');
 const areaLong = await import('../src/tables/area/long.ts');
 const ifaceHeader = await import('../src/tables/interface/header.ts');
 const ifaceBlock = await import('../src/tables/interface/block.ts');
@@ -199,9 +201,12 @@ const areaRanges = wholeRowRanges(AREA_CSV, areaPlan.dataStart, 4096);
   const scanner = await areaBlock.instantiateParser(areaWasm);
   const names = new Set();
   for (const [from, to] of areaRanges) {
-    for (const name of areaBlock.scanAxis(scanner, AREA_CSV, from, to).names) names.add(name);
+    const scan = areaBlock.scanAxis(scanner, AREA_CSV, from, to);
+    for (const name of scan.names) names.add(name);
+    longMerge.addYearRows(areaPlan.rowsByYear, scan);
   }
   areaPlan.entities = [...names];
+  Object.assign(areaPlan, yearSpanOf(AREA_FILE.name, areaPlan.rowsByYear).span);
 }
 const areaAxis = areaPool.unionEntities([areaPlan], [GHOST_AREA]);
 
@@ -212,7 +217,7 @@ const AREA_RETAINED = [...areaUnion.slice(0, 3), ABSENT_METRIC];
 
 const areaColumnPlan = areaHeader.buildColumnPlan(areaPlan.header, AREA_RETAINED);
 const areaParser = await areaBlock.instantiateParser(areaWasm, areaHeader.entityHashes(areaAxis));
-const areaAccumulator = areaPool.createAccumulator(areaColumnPlan, areaAxis.length);
+const areaAccumulator = areaPool.createAccumulator(areaColumnPlan, areaAxis.length, areaPlan);
 for (const [from, to] of areaRanges) {
   const scan = areaBlock.scanAxis(areaParser, AREA_CSV, from, to);
   areaPool.blitBlock(
@@ -226,8 +231,8 @@ for (const [from, to] of areaRanges) {
       areaAxis.length,
       areaColumnPlan.sourceMetricCount,
       scan.rows,
-      areaPlan.year,
-      1,
+      areaPlan.firstYear,
+      areaPlan.numYears,
     ),
   );
 }
@@ -236,7 +241,6 @@ const areaFinal = areaLong.finalizeCase(
   areaAccumulator,
   AREA_FILE.name,
   areaPlan.header.metricNames,
-  areaPlan.year,
   areaAxis,
 );
 const areaTable = areaFinal.data;
@@ -254,7 +258,7 @@ function ingestInterface(bytes, plan) {
   // One layout per file, sized against the instance's budget, exactly as the
   // pool does it.
   const layout = ifacePool.layoutFor(interfaceParser.budget, columnPlan);
-  const accumulator = ifacePool.createAccumulator(columnPlan);
+  const accumulator = ifacePool.createAccumulator(columnPlan, plan);
   for (const [from, to] of wholeRowRanges(bytes, plan.dataStart, 2048)) {
     ifacePool.blitBlock(
       accumulator,
@@ -265,8 +269,8 @@ function ingestInterface(bytes, plan) {
         from,
         to,
         columnPlan.activePlanes,
-        plan.year,
-        1,
+        plan.firstYear,
+        plan.numYears,
       ),
     );
   }
@@ -274,7 +278,6 @@ function ingestInterface(bytes, plan) {
     accumulator,
     ifacePool.caseNameOf(plan.file.name),
     plan.header.entityNames,
-    plan.year,
     plan.title,
   );
 }
@@ -295,7 +298,7 @@ await check('the three files ingest into three tables with real, mixed presence 
   assert.deepEqual(areaTable.areas, areaAxis);
   assert.deepEqual(areaTable.metrics, AREA_RETAINED);
   assert.deepEqual(areaTable.sourceColumns, areaPlan.header.metricNames);
-  assert.equal(areaTable.year, YEAR);
+  assert.deepEqual([areaTable.firstYear, areaTable.numYears], [YEAR, 1]);
   assert.equal(areaTable.cube.length, areaAxis.length * AREA_RETAINED.length * HOURS);
   assert.equal(areaTable.presence.length, areaAxis.length * AREA_RETAINED.length);
 
@@ -494,7 +497,7 @@ await check('every table round-trips byte-for-byte: cube, presence bitmap and TO
     assert.ok(bytesOf(back.data.tou).equals(bytesOf(original.data.tou)), `${slot}: TOU array`);
     assert.ok(back.data.presence instanceof Uint8Array);
     assert.ok(back.data.tou instanceof Uint8Array);
-    assert.equal(back.data.year, YEAR);
+    assert.deepEqual([back.data.firstYear, back.data.numYears], [YEAR, 1]);
   }
 
   // Named planes, so a bitmap that came back all-ones (every kernel would then
@@ -680,7 +683,7 @@ const legacyManifest = {
   cases: [
     {
       name: 'Legacy Base Case',
-      year: areaTable.year,
+      year: areaTable.firstYear,
       metrics: areaTable.metrics,
       sourceColumns: areaTable.sourceColumns,
       areas: areaTable.areas,

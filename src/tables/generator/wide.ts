@@ -18,7 +18,7 @@ import {
 } from '../wide/pool';
 import type { GeneratorTable } from './types';
 
-export { hasSimd, NO_SIMD_MESSAGE, coverageOf, cubeBytesFor, unionOf } from '../wide/pool';
+export { hasSimd, NO_SIMD_MESSAGE, coverageOf, unionOf } from '../wide/pool';
 export type { CasePlan } from '../wide/pool';
 
 /** The entity word a wide Generator export's title line opens with. */
@@ -41,7 +41,8 @@ const finalizeGenerator: Finalize<GeneratorTable> = (wide: WideCase, plan: CaseP
     tou: wide.tou,
     hoursPresent: wide.hoursPresent,
     sourceColumns: plan.header.entityNames,
-    year: wide.year,
+    firstYear: wide.firstYear,
+    numYears: wide.numYears,
     quantity: wide.title.quantity,
   },
   warnings: [],

@@ -11,7 +11,8 @@
 //   5. two rows disagreeing about one hour's TOU, within a block or across;
 //   6. padding, case and a spreadsheet's `1.0` read as the plain value;
 //   7. a block of BLOCK_TARGET_BYTES always fits the parser's arena;
-//   8. the axis scan counts rows per year, past where a u16 hour would wrap.
+//   8. the axis scan counts rows per year, past where a u16 hour would wrap,
+//      and the blit places each row at its year's offset in the span cube.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -170,16 +171,18 @@ await assert.rejects(
     const accumulator = createAccumulator(
       { metrics: ['M1', 'M2'], slabPlan: Int32Array.from([0, 1]), activePlanes: [0, 1] },
       AXIS.length,
+      { firstYear: YEAR, numYears: 1 },
     );
     blitBlock(accumulator, payload);
   },
-  /Hour 13 of the year is OffPeak on one row and OnPeak/,
+  /Hour 13 of 2035 \(Jan 1, hour ending 14\) is OffPeak on one row and OnPeak/,
   'two entities disagreeing about one hour',
 );
 {
   const accumulator = createAccumulator(
     { metrics: ['M1', 'M2'], slabPlan: Int32Array.from([0, 1]), activePlanes: [0, 1] },
     AXIS.length,
+    { firstYear: YEAR, numYears: 1 },
   );
   blitBlock(accumulator, await parse(['1/1/2035,14,OnPeak,A,1,2']));
   const second = await parse(['1/1/2035,14,OffPeak,B,1,2']);
@@ -248,6 +251,11 @@ ok('padding, case, dashes, `1.0` and a short row read as their plain values');
 }
 
 // ----------------------------------------------------- 8. years in the scan
+const TWO_METRICS = {
+  metrics: ['M1', 'M2'],
+  slabPlan: Int32Array.from([0, 1]),
+  activePlanes: [0, 1],
+};
 async function scanOf(rows) {
   const parser = await instantiateParser(wasmModule, entityHashes(AXIS));
   const bytes = new TextEncoder().encode(rows.join('\r\n') + '\r\n');
@@ -289,6 +297,45 @@ async function scanOf(rows) {
   const last = nine.rows - 1;
   assert.deepEqual([nine.rowYear[last], nine.rowHour[last]], [8, 8783]);
   assert.deepEqual(valuesAt(nine, 1, 8783), [99, 98]);
+
+  // The blit puts it at year offset 8 of the span cube,
+  // `((entity * metrics + metric) * numYears + yearOffset) * 8784 + slotHour`,
+  // and year 0's same slot hour stays empty.
+  const accumulator = createAccumulator(TWO_METRICS, AXIS.length, { firstYear: 2030, numYears: 9 });
+  blitBlock(accumulator, nine);
+  const at = (entity, metric, year, hour) => ((entity * 2 + metric) * 9 + year) * 8784 + hour;
+  assert.deepEqual(
+    [accumulator.cube[at(1, 0, 8, 8783)], accumulator.cube[at(1, 1, 8, 8783)]],
+    [99, 98],
+  );
+  assert.ok(Number.isNaN(accumulator.cube[at(1, 0, 0, 8783)]), 'nothing folded onto year 0');
+  assert.equal(accumulator.cube[at(0, 0, 3, (335 + 3) * 24 + 23)], 3, 'Dec 4 2033 HE 24 of A');
+  assert.equal(accumulator.hourSeen.length, 9 * 8784);
+  assert.deepEqual([accumulator.hourSeen[8 * 8784 + 8783], accumulator.hourSeen[8783]], [1, 0]);
+}
+{
+  // One slot hour in two years is two hours: neither a duplicate nor a TOU
+  // clash. The same (entity, hour) twice in year 2 is a duplicate, named by
+  // its year and date.
+  const span = { firstYear: 2030, numYears: 2 };
+  const accumulator = createAccumulator(TWO_METRICS, AXIS.length, span);
+  blitBlock(
+    accumulator,
+    await parse(['1/1/2030,1,OnPeak,A,1,2', '1/1/2031,1,OffPeak,A,3,4'], {
+      year: 2030,
+      numYears: 2,
+    }),
+  );
+  assert.deepEqual([accumulator.tou[0], accumulator.tou[8784]], [1, 0]);
+  const again = await parse(['1/1/2031,1,OffPeak,A,5,6'], { year: 2030, numYears: 2 });
+  assert.throws(
+    () => blitBlock(accumulator, again),
+    /area index 0 at hour 0 of 2031 \(Jan 1, hour ending 1\)/,
+  );
+  // A block parsed against a wider span than the cube's is refused, not
+  // written past the cube.
+  const narrow = createAccumulator(TWO_METRICS, AXIS.length, { firstYear: 2030, numYears: 1 });
+  assert.throws(() => blitBlock(narrow, again), /year offset 1 of a 1-year Case/);
 }
 {
   // rowYear is a u8 offset, so a span past 256 years is refused at the scan.
@@ -307,5 +354,6 @@ async function scanOf(rows) {
 ok(
   'the axis scan reports min, max and rows per year, nine years without a wrap, and refuses a span past 256 years',
 );
+ok('the blit places each row at its year offset; a duplicate in year 2 is refused by its date');
 
 console.log(`\n${checks} checks passed`);

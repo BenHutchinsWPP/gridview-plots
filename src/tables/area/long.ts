@@ -5,7 +5,7 @@
 // only because area-axis reduction commutes with the subtraction (AGENTS.md),
 // and another kind offered them would list metrics nothing fills.
 
-import { realHours, realHoursSeen, YEAR_SLOT_HOURS } from '../../model/calendar';
+import { realHours, realHoursSeen } from '../../model/calendar';
 import { derivedFor, requiredInputs, ruleFor } from './rules';
 import type { AreaTable } from './types';
 import { unionSchema } from '../long/header';
@@ -18,7 +18,11 @@ import type { LongSignature } from '../long/signature';
  * default would let a batch that forgot its kind parse a bus export as area,
  * silently, with the wrong entity column. Every caller names its signature.
  */
-export const AREA_LONG: LongSignature = { keys: ['Name'], entityCol: 3, noun: 'area' };
+export const AREA_LONG: LongSignature = {
+  keys: ['Name'],
+  entityCol: 3,
+  noun: { one: 'area', many: 'areas' },
+};
 import type { CaseAccumulator, CasePlan, Finalize, LongKind } from '../long/kind';
 
 export function unionOf(plans: CasePlan[]): string[] {
@@ -36,6 +40,9 @@ export function unionOf(plans: CasePlan[]): string[] {
 export function applyDerived(accumulator: CaseAccumulator): string[] {
   const { plan, cube } = accumulator;
   const numMetrics = plan.metrics.length;
+  // One plane per (area, metric), as long as the span: `hourSeen` has one
+  // entry per hour of it.
+  const hours = accumulator.hourSeen.length;
   const warnings: string[] = [];
 
   for (let metric = 0; metric < numMetrics; metric++) {
@@ -55,10 +62,10 @@ export function applyDerived(accumulator: CaseAccumulator): string[] {
     const divide = derived.op === 'div';
 
     for (let area = 0; area < accumulator.entityCount; area++) {
-      const out = (area * numMetrics + metric) * YEAR_SLOT_HOURS;
-      const a = (area * numMetrics + left) * YEAR_SLOT_HOURS;
-      const b = (area * numMetrics + right) * YEAR_SLOT_HOURS;
-      for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+      const out = (area * numMetrics + metric) * hours;
+      const a = (area * numMetrics + left) * hours;
+      const b = (area * numMetrics + right) * hours;
+      for (let hour = 0; hour < hours; hour++) {
         const x = cube[a + hour];
         const y = cube[b + hour];
         // x/0 is absent (NaN), not Infinity, which no NaN guard would catch.
@@ -108,7 +115,6 @@ export function finalizeCase(
   accumulator: CaseAccumulator,
   label: string,
   sourceColumns: string[],
-  year: number,
   areas: string[],
 ): { data: AreaTable; warnings: string[] } {
   const { plan, cube } = accumulator;
@@ -135,8 +141,9 @@ export function finalizeCase(
       `${label}: no rows for ${missingAreas.length} area(s): ${missingAreas.join(', ')}.`,
     );
   }
-  const covered = realHoursSeen(accumulator.hourSeen, year, 1);
-  const real = realHours(year, 1);
+  const { firstYear, numYears } = accumulator;
+  const covered = realHoursSeen(accumulator.hourSeen, firstYear, numYears);
+  const real = realHours(firstYear, numYears);
   if (covered < real) {
     warnings.push(
       `${label}: covers ${covered.toLocaleString()} of ${real.toLocaleString()} hours; ` +
@@ -153,7 +160,8 @@ export function finalizeCase(
       tou: accumulator.tou,
       hoursPresent: accumulator.hourSeen,
       sourceColumns,
-      year,
+      firstYear,
+      numYears,
     },
     warnings,
   };
@@ -164,7 +172,7 @@ const finalizeArea: Finalize<AreaTable> = (accumulator, plan, axis) => {
   // After every block (operands must be complete) and before presence is
   // turned into the per-(area, metric) bitmap.
   const warnings = applyDerived(accumulator);
-  const finalized = finalizeCase(accumulator, plan.label, plan.header.metricNames, plan.year, axis);
+  const finalized = finalizeCase(accumulator, plan.label, plan.header.metricNames, axis);
   return { data: finalized.data, warnings: [...warnings, ...finalized.warnings] };
 };
 

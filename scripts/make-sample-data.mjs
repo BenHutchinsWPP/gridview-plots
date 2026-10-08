@@ -1076,7 +1076,7 @@ export function buildFiles(seed = DEFAULT_SEED) {
     'area-wide-conflict-tou-b.csv',
   );
 
-  // Two files whose dates are in different calendar years.
+  // One study in two files whose years leave a gap between them.
   add(
     'area-wide-conflict-year-a.csv',
     buildWideText({
@@ -1087,23 +1087,25 @@ export function buildFiles(seed = DEFAULT_SEED) {
       names: conflictAreas,
       seed: seed + 20,
     }),
-    `year-conflict half 1 of 2: dated ${YEAR}.`,
+    `year-gap half 1 of 2: dated ${YEAR}.`,
   );
   add(
     'area-wide-conflict-year-b.csv',
     buildWideText({
       entity: 'Area',
       quantity: 'Load (MWh)',
-      year: YEAR + 1,
+      year: YEAR + 2,
       range: conflictRange,
       names: conflictAreas,
       seed: seed + 21,
     }),
-    `year-conflict half 2 of 2: dated ${YEAR + 1}, otherwise identical in shape to -a.csv.`,
+    `year-gap half 2 of 2: dated ${YEAR + 2}, otherwise identical in shape to -a.csv; ` +
+      `no file carries ${YEAR + 1}.`,
   );
   mark(
-    'two files whose dates are in different calendar years',
-    `area-wide-conflict-year-a.csv is dated ${YEAR}; area-wide-conflict-year-b.csv is dated ${YEAR + 1}.`,
+    'a same-study pair whose years leave a gap',
+    `area-wide-conflict-year-a.csv is dated ${YEAR} and area-wide-conflict-year-b.csv ` +
+      `${YEAR + 2}; merged as one study they leave ${YEAR + 1} with no rows.`,
     'area-wide-conflict-year-a.csv',
     'area-wide-conflict-year-b.csv',
   );

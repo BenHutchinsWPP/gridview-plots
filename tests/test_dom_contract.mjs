@@ -35,6 +35,9 @@ const { createBrowseDetent } = await import('../src/ui/browse-detent.ts');
 const { createPane } = await import('../src/ui/panes/pane.ts');
 const { createChrome } = await import('../src/ui/shell.ts');
 const { createDateStrip } = await import('../src/ui/date-strip.ts');
+const { createFilterRail } = await import('../src/ui/filter-rail.ts');
+const { SLOT_MONTH_LENGTHS, SLOT_MONTH_STARTS, yearsStillLoaded } =
+  await import('../src/model/calendar.ts');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => readFileSync(join(root, relative), 'utf8');
@@ -615,7 +618,9 @@ assert.ok(
   );
   assert.match(button, /aria-haspopup="menu"/);
   assert.ok(
-    drawer.includes('const withheld = wideWithheld(count);') &&
+    drawer.includes('wideColumnCount(') &&
+      /const withheld = wideWithheld\(columns\);/.test(drawer) &&
+      !/wideWithheld\([^)]*\.length/.test(drawer) &&
       drawer.includes('wideNote.textContent = withheld;') &&
       drawer.includes("wideItem.disabled = count === 0 || withheld !== '';"),
     'the wide item is disabled past its limit and the menu states why, before it is picked',
@@ -1339,6 +1344,11 @@ console.log(
     /for \(const pane of panes\) pane\.render\(frame\);\n\s*updateFigureButtons\(drawable\);/,
     'the Figure buttons are decided after the panes have painted their refusals',
   );
+  assert.match(
+    charts,
+    /for \(const pane of panes\) pane\.resize\(\);\n(\s*\/\/.*\n)*\s*updateFigureButtons\(lastDrawable\);/,
+    'and again after a resize, which can refuse a pane or draw it again',
+  );
   const dialog = read('src/figure/dialog.ts');
   assert.equal(sitesOf(dialog, KEYDOWN_ADD).length, 1, 'the Figure dialog listens for Escape once');
   assert.equal(
@@ -1368,7 +1378,10 @@ console.log(
   {
     const host = new FakeElement();
     const changes = [];
-    createDateStrip(host, (dates) => changes.push(dates)).render([{ start: 10, end: 12 }], [2031]);
+    createDateStrip(host, (dates) => changes.push(dates)).render(
+      [{ start: 10, end: 12 }],
+      [{ firstYear: 2031, numYears: 1 }],
+    );
     const strip = host.querySelector('.ds-strip');
     const stopped = [];
     const event = (key) => ({
@@ -1395,10 +1408,15 @@ console.log(
   }
   {
     // The readout counts real hours: the slot's 8,784 is storage, and a
-    // phantom Feb 29 holds none.
-    const readout = (dates, years) => {
+    // phantom Feb 29 holds none. `years` are one-year Cases; a span is a
+    // Case of several years, whose dates fall in each of them.
+    const readout = (dates, years, spans = [], kept = null) => {
       const host = new FakeElement();
-      createDateStrip(host, () => {}).render(dates, years);
+      createDateStrip(host, () => {}).render(
+        dates,
+        [...years.map((firstYear) => ({ firstYear, numYears: 1 })), ...spans],
+        kept,
+      );
       const summary = host.querySelector('.ds-readout').children[0];
       return summary.children.map((node) => node.textContent).join('');
     };
@@ -1415,6 +1433,74 @@ console.log(
     const week = [{ start: 56, end: 62 }];
     assert.equal(readout(week, [2031]), '6 days · 144 of 8,760 h');
     assert.equal(readout(week, [2031, 2032]), '7 days · 168 of 8,784 h');
+    const span = [{ firstYear: 2031, numYears: 2 }];
+    assert.equal(readout(null, [], span), 'All dates · 17,544 of 17,544 h', 'both years');
+    assert.equal(readout(feb, [], span), '3 days · 120 of 17,544 h', 'Feb 29 in 2032 only');
+    assert.equal(
+      readout(week, [2033], span),
+      '7 days · 312 of 17,544 h',
+      '6 + 7 days in the larger Case',
+    );
+    // The Years filter shrinks the count, never the whole, as the status
+    // sentence's does.
+    const three = [{ firstYear: 2035, numYears: 3 }];
+    assert.equal(readout(null, [], three, new Set([2036])), 'All dates · 8,784 of 26,304 h');
+    assert.equal(
+      readout(feb, [], three, new Set([2035, 2037])),
+      '2 days · 96 of 26,304 h',
+      'no kept year has Feb 29',
+    );
+    assert.equal(readout(feb, [], three, new Set([2036])), '3 days · 72 of 26,304 h');
+  }
+  {
+    // Day-of-month marks orient the eye, the same in every year: no weekend
+    // is shaded, since two loaded years put weekends on different dates.
+    // Feb 29 has its own colour and is an ordinary day to pick.
+    const host = new FakeElement();
+    const changes = [];
+    createDateStrip(host, (dates) => changes.push(dates)).render(null, [
+      { firstYear: 2035, numYears: 2 },
+    ]);
+    const cells = host.querySelectorAll('.ds-day');
+    assert.equal(cells.length, 366, 'one cell per slot day');
+    assert.ok(
+      host.descendants().every((node) => !node.className.includes('ds-weekend')),
+      'no weekend shading',
+    );
+    assert.ok(!read('src/styles.css').includes('ds-weekend'), 'nor its style');
+    assert.ok(
+      host.descendants().every((node) => !/weekend/i.test(node.textContent)),
+      'nor a note about it',
+    );
+    const marked = (name) =>
+      cells
+        .filter((cell) => cell.classList.contains(name))
+        .map((cell) => {
+          const day = Number(cell.dataset.day);
+          let m = 11;
+          while (SLOT_MONTH_STARTS[m] > day) m--;
+          return `${m + 1}/${day - SLOT_MONTH_STARTS[m] + 1}`;
+        });
+    const each = (dates) =>
+      SLOT_MONTH_LENGTHS.flatMap((length, m) =>
+        dates.filter((date) => date <= length).map((date) => `${m + 1}/${date}`),
+      );
+    assert.deepEqual(marked('ds-mark-5'), each([5, 15, 25]), 'the 5th, 15th and 25th lightly');
+    assert.deepEqual(marked('ds-mark-10'), each([10, 20, 30]), 'the 10th, 20th and 30th deeper');
+    assert.ok(!marked('ds-mark-10').includes('2/30') && marked('ds-mark-10').includes('4/30'));
+    assert.deepEqual(marked('ds-feb29'), ['2/29'], 'Feb 29 in its own colour, unmarked');
+    const feb29 = cells.find((cell) => cell.classList.contains('ds-feb29'));
+    assert.ok(!/ds-mark/.test(feb29.className));
+    const strip = host.querySelector('.ds-strip');
+    globalThis.requestAnimationFrame ??= () => 1;
+    globalThis.cancelAnimationFrame ??= () => {};
+    strip.focus = () => {};
+    document.elementFromPoint = () => feb29;
+    const press = { pointerId: 1, preventDefault() {} };
+    strip.fire('pointerdown', press);
+    strip.fire('pointerup', press);
+    delete document.elementFromPoint;
+    assert.deepEqual(changes.at(-1), [{ start: 59, end: 59 }], 'clicking Feb 29 picks day 59');
   }
   const charts = read('src/ui/charts.ts');
   const guard = charts.slice(charts.indexOf('function datesFromPane'));
@@ -1423,7 +1509,9 @@ console.log(
     /sameSet\(dates, lastInput\.dates\)\) return;/,
     'a pane reporting the dates already applied is a no-op',
   );
-  console.log('ok - the date strip keeps its arrows, and a pane re-reporting the dates is a no-op');
+  console.log(
+    'ok - the date strip keeps its arrows and marks days of the month, Feb 29 its own, and a pane re-reporting the dates is a no-op',
+  );
 }
 
 // The Filters fold to their title, so the slicers below them can be reached
@@ -1437,4 +1525,109 @@ console.log(
   );
   assert.ok(template.includes('data-el="filters-on"'), 'its title carries the filters that are on');
   console.log('ok - the Filters fold to a title that still names the filters that are on');
+}
+
+// The Years chips are the loaded Cases' years, above the dates (the coarsest
+// filter first), shown only when there are two to choose between. They are
+// chips like Hour and Day: one click keeps that year, a full or empty
+// selection is no filter. A chosen year no longer loaded leaves the filter.
+{
+  const yearAt = template.indexOf('data-el="year-group"');
+  assert.ok(yearAt >= 0, 'the rail has a Years group');
+  assert.ok(yearAt < template.indexOf('data-el="date-strip"'), 'above Months & days');
+  assert.match(template, /data-el="year-group" class="filter-group" hidden>/, 'hidden until shown');
+  assert.ok(template.includes('data-el="year-chips"'), 'holding the year chips');
+  assert.ok(template.includes('data-filter="years"'), 'with its own clear');
+
+  /** A section root resolving the rail's hooks, as the template lays them out. */
+  const hooks = new Map();
+  const root = new FakeElement();
+  root.querySelector = (selector) => {
+    const name = /^\[data-el="([^"]+)"\]$/.exec(selector)?.[1];
+    if (!name) return null;
+    if (!hooks.has(name)) hooks.set(name, new FakeElement());
+    return hooks.get(name);
+  };
+  const clear = new FakeElement('button');
+  clear.className = 'filter-clear';
+  clear.dataset.filter = 'years';
+  root.querySelector('[data-el="filters-section"]').appendChild(clear);
+  const patches = [];
+  const rail = createFilterRail(root, (patch) => patches.push(patch));
+  const filters = {
+    years: null,
+    dates: null,
+    hoursOfDay: null,
+    daysOfWeek: null,
+    seasons: null,
+    tou: null,
+  };
+  const group = hooks.get('year-group');
+  const chips = () => hooks.get('year-chips').children;
+  const press = (chip, ctrlKey = false) =>
+    hooks.get('year-chips').fire('pointerdown', {
+      target: chip,
+      ctrlKey,
+      metaKey: false,
+      shiftKey: false,
+      pointerId: 1,
+    });
+
+  rail.render({ filters }, [{ firstYear: 2035, numYears: 1 }], [2035]);
+  assert.equal(group.hidden, true, 'one year loaded: nothing to choose');
+  rail.render({ filters }, [{ firstYear: 2035, numYears: 3 }], [2035, 2036, 2037]);
+  assert.equal(group.hidden, false, '2035-2037 loaded: shown');
+  assert.deepEqual(
+    chips().map((chip) => chip.textContent),
+    ['2035', '2036', '2037'],
+  );
+  assert.ok(
+    chips().every((chip) => chip.className.includes('chip-active')),
+    'none chosen: all on',
+  );
+  assert.equal(clear.disabled, true, 'nothing to clear');
+
+  press(chips()[1]);
+  assert.deepEqual(patches.pop(), { years: new Set([2036]) }, 'a click keeps that year alone');
+  const only2036 = { ...filters, years: new Set([2036]) };
+  rail.render({ filters: only2036 }, [{ firstYear: 2035, numYears: 3 }], [2035, 2036, 2037]);
+  assert.deepEqual(
+    chips().map((chip) => chip.className.includes('chip-active')),
+    [false, true, false],
+  );
+  assert.equal(clear.disabled, false, 'the clear clears it');
+  assert.equal(hooks.get('filters-on').textContent, '· Years', 'the folded title names it');
+  press(chips()[1]);
+  assert.deepEqual(patches.pop(), { years: null }, 'clicking the one chosen year clears it');
+
+  rail.render({ filters }, [{ firstYear: 2035, numYears: 3 }], [2035, 2036, 2037]);
+  press(chips()[0], true);
+  assert.deepEqual(patches.pop(), { years: new Set([2036, 2037]) }, 'ctrl-click drops one');
+  rail.render(
+    { filters: { ...filters, years: new Set([2036, 2037]) } },
+    [{ firstYear: 2035, numYears: 3 }],
+    [2035, 2036, 2037],
+  );
+  press(chips()[0], true);
+  assert.deepEqual(patches.pop(), { years: null }, 'and adding it back is every year: no filter');
+
+  clear.disabled = false;
+  root.querySelector('[data-el="filters-section"]').fire('click', { target: clear });
+  assert.deepEqual(patches.pop(), { years: null }, "the group's clear");
+
+  // Unloading a Case: main.ts prunes the filter to the years still loaded.
+  const chosen = new Set([2035, 2037]);
+  assert.deepEqual(yearsStillLoaded(chosen, [2035, 2036]), new Set([2035]));
+  assert.equal(yearsStillLoaded(chosen, [2036]), null, 'none left: no filter');
+  assert.equal(yearsStillLoaded(chosen, [2035, 2037]), null, 'every loaded year: no filter');
+  assert.equal(yearsStillLoaded(chosen, [2035, 2036, 2037]), chosen, 'unchanged: the same set');
+  assert.equal(yearsStillLoaded(null, [2035, 2036]), null);
+  assert.match(
+    read('src/main.ts'),
+    /function setQueryCases\(\): void \{\n  const years = yearsStillLoaded\(query\.filters\.years, views\.loadedYears\(\)\);/,
+    'every change of the loaded Cases prunes the Years filter',
+  );
+  console.log(
+    'ok - the Years chips are the loaded years, shown past one, and follow what is loaded',
+  );
 }

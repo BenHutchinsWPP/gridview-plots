@@ -1,6 +1,8 @@
 // src/tables/wide/pool.ts
 //
-// Worker pool, file dispatch and cube assembly for the WIDE SHAPE. A kind
+// Worker pool, file dispatch and cube assembly for the WIDE SHAPE: an
+// `entity x years x 8784` cube, one leap-calendar slot per year of the Case's
+// span. A kind
 // supplies a `WideSpec` (numbers plus a noun) and a `finalize` callback; this
 // module never learns which kind it reads (AGENTS.md, "Kind is not shape").
 //
@@ -14,7 +16,7 @@
 //   * Block size comes from the file's own row length and width, so a block
 //     never holds more rows than the slab the parser was configured with.
 
-import { realHours, realHoursSeen, YEAR_SLOT_HOURS } from '../../model/calendar';
+import { realHours, realHoursSeen, YEAR_SLOT_HOURS, type YearSpan } from '../../model/calendar';
 import {
   dispatch,
   hasSimd,
@@ -24,6 +26,9 @@ import {
   ready,
   type DispatchFailure,
   aboutPlans,
+  cubeCost,
+  spanHourLabel,
+  yearGapRefusal,
   type PlanWarning,
 } from '../../ingest';
 
@@ -33,7 +38,9 @@ export { hasSimd, NO_SIMD_MESSAGE, partitionByFailure };
 import { checkMergeGroup } from './merge';
 import {
   buildColumnPlan,
+  DATE_LINE_INDEX,
   KEY_COLS,
+  parseDateLine,
   parseHeaderLine,
   parseTitleLine,
   unionSchema,
@@ -109,13 +116,19 @@ export interface CasePlan {
   header: HeaderInfo;
   /**
    * The lines above the column header, verbatim (CR kept). This module reads
-   * only the title from `preamble[0]`; a kind may read more (the bus id row).
+   * the title from `preamble[0]` and the date line from
+   * `preamble[DATE_LINE_INDEX]`; a kind may read more (the bus id row).
    */
   preamble: string[];
   title: TitleInfo;
   /** Byte offset of the first data row -- block 0 starts here, not at 0. */
   dataStart: number;
-  year: number;
+  /** The years the date line states, or the first row's one year when there
+   * is none. A sizing hint the parse verifies: a row outside them is refused,
+   * and so is a year inside them with no rows. In a merge group's `repPlan`,
+   * the group's span. */
+  firstYear: number;
+  numYears: number;
   /** The SHORTEST sampled data row, so a block's byte size bounds its row
    * count from above. */
   bytesPerRow: number;
@@ -203,10 +216,10 @@ export async function readCasePlan(
   const firstRow = decoder.decode(probe.subarray(dataStart, rowEnd));
 
   // Date is `M/D/YYYY` parsed as integers, never a Date object (timezone
-  // shifts). Any row's year will do: block.c checks every row against it and
-  // refuses a file that spans two years.
+  // shifts). Without a date line, any row's year will do: block.c checks
+  // every row against it and refuses a row from another year.
   const year = Number(firstRow.split(',', 1)[0].split('/')[2]);
-  if (!Number.isInteger(year) || year < 1900 || year > 2200) {
+  if (!readableYear(year)) {
     throw new Error(`${file.name}: could not read a year from the first Date field.`);
   }
 
@@ -229,7 +242,40 @@ export async function readCasePlan(
     .split('\n')
     .slice(0, preambleLines);
 
-  return { file, header, title, preamble, dataStart, year, bytesPerRow: Math.max(1, shortest) };
+  const span = spanOfPreamble(file.name, preamble, year);
+  return { file, header, title, preamble, dataStart, ...span, bytesPerRow: Math.max(1, shortest) };
+}
+
+/** The same bound for a year read from a row or from the date line. */
+function readableYear(year: number): boolean {
+  return Number.isInteger(year) && year >= 1900 && year <= 2200;
+}
+
+/**
+ * The date line's years, or `firstRowYear` alone when there is no date line.
+ * The title's year is not consulted: it names only the first year of a run.
+ * A first row outside the date line's years is refused here, by name; any
+ * other row outside them is refused by the parser.
+ */
+function spanOfPreamble(name: string, preamble: string[], firstRowYear: number): YearSpan {
+  const dates = parseDateLine(preamble[DATE_LINE_INDEX] ?? '');
+  if (dates === null) return { firstYear: firstRowYear, numYears: 1 };
+  const { firstYear, lastYear } = dates;
+  const stated = firstYear === lastYear ? `${firstYear}` : `${firstYear}-${lastYear}`;
+  if (!readableYear(firstYear) || !readableYear(lastYear) || lastYear < firstYear) {
+    throw new Error(
+      `${name}: the date line spans ${firstYear} to ${lastYear}, which is not a run of years ` +
+        `this reader can size a table for, so the load is refused.`,
+    );
+  }
+  if (firstRowYear < firstYear || firstRowYear > lastYear) {
+    throw new Error(
+      `${name}: the first data row is dated ${firstRowYear}, outside ${stated}, the years the ` +
+        `date line states. The date line sizes the table, so the load is refused rather than ` +
+        `guessing which of the two is right.`,
+    );
+  }
+  return { firstYear, numYears: lastYear - firstYear + 1 };
 }
 
 /** Every entity any dropped file carries, in first-seen order. */
@@ -308,39 +354,47 @@ function pool(): Promise<ParserPool> {
 
 export interface CaseAccumulator {
   plan: ColumnPlan;
+  firstYear: number;
+  numYears: number;
+  /** `(entity x numYears + yearOffset) x 8784 + slotHour`. */
   cube: Float32Array;
-  /** Per-hour TOU code, 0xFF until a row covers the hour. */
+  /** Per span hour, TOU code, 0xFF until a row covers the hour. */
   tou: Uint8Array;
   hourSeen: Uint8Array;
-  /** One bit per HOUR: has a row claimed it? A wide row is one whole hour, so
-   * no per-entity bit is needed. A merge group shares it, so two files
-   * covering the same hour are refused like two rows of one file. */
+  /** One bit per SPAN HOUR: has a row claimed it? A wide row is one whole
+   * hour, so no per-entity bit is needed. A merge group shares it, so two
+   * files covering the same hour are refused like two rows of one file. */
   covered: Uint8Array;
 }
 
-export function createAccumulator(plan: ColumnPlan): CaseAccumulator {
-  const cube = new Float32Array(plan.entities.length * YEAR_SLOT_HOURS);
+/** `span` is the merge group's. */
+export function createAccumulator(plan: ColumnPlan, span: YearSpan): CaseAccumulator {
+  const hours = span.numYears * YEAR_SLOT_HOURS;
+  const cube = new Float32Array(plan.entities.length * hours);
   cube.fill(NaN);
   return {
     plan,
+    firstYear: span.firstYear,
+    numYears: span.numYears,
     cube,
-    tou: new Uint8Array(YEAR_SLOT_HOURS).fill(0xff),
-    hourSeen: new Uint8Array(YEAR_SLOT_HOURS),
-    covered: new Uint8Array(Math.ceil(YEAR_SLOT_HOURS / 8)),
+    tou: new Uint8Array(hours).fill(0xff),
+    hourSeen: new Uint8Array(hours),
+    covered: new Uint8Array(Math.ceil(hours / 8)),
   };
 }
 
 /**
- * Scatter one block's rows into the cube at each row's own hour, so any row
- * order loads identically. Plane-outer, row-inner on purpose: one entity's
- * year is a contiguous run, so the writes stay in cache.
+ * Scatter one block's rows into the cube at each row's own span hour, so any
+ * row order loads identically. Plane-outer, row-inner on purpose: one
+ * entity's span is a contiguous run, so the writes stay in cache.
  */
 export function blitBlock(
   accumulator: CaseAccumulator,
   block: BlockPayload,
   columnPlan: ColumnPlan = accumulator.plan,
 ): void {
-  const { cube, covered } = accumulator;
+  const { cube, covered, numYears } = accumulator;
+  const span = numYears * YEAR_SLOT_HOURS;
   // The block's OWN file's plan. It differs from the group's only in a merge
   // group, where files with different columns fill one cube.
   const plan = columnPlan;
@@ -349,31 +403,37 @@ export function blitBlock(
 
   // Claim each hour before writing: two rows for one hour would otherwise keep
   // whichever worker finished last.
+  const at = new Int32Array(rows);
   for (let r = 0; r < rows; r++) {
-    // One year per Case, as in src/tables/long/pool.ts's blitBlock.
-    if (rowYear[r] !== 0) {
-      throw new Error(`A row was placed in year offset ${rowYear[r]} of a one-year Case.`);
+    // A block parsed against another span than this cube's, as in
+    // src/tables/long/pool.ts's blitBlock.
+    if (rowYear[r] >= numYears) {
+      throw new Error(
+        `A row was placed in year offset ${rowYear[r]} of a ${numYears}-year Case. Every block ` +
+          `of a Case must be parsed against the Case's own years.`,
+      );
     }
-    const hour = rowHour[r];
+    const hour = rowYear[r] * YEAR_SLOT_HOURS + rowHour[r];
     const byte = hour >> 3;
     const mask = 1 << (hour & 7);
     if (covered[byte] & mask) {
       throw new Error(
-        `Two rows both describe hour ${hour} of the year. One case is one calendar year, so an ` +
-          `hour cannot appear twice; two exports concatenated into one file look like this, and ` +
-          `so do two files given one study name that cover the same part of the year. ` +
-          `Load them as separate studies.`,
+        `Two rows both describe hour ${spanHourLabel(accumulator.firstYear, hour)}. A case ` +
+          `holds one row per hour, so an hour cannot appear twice; two exports concatenated ` +
+          `into one file look like this, and so do two files given one study name that cover ` +
+          `the same hours. Load them as separate studies.`,
       );
     }
     covered[byte] |= mask;
     accumulator.tou[hour] = rowTou[r];
     accumulator.hourSeen[hour] = 1;
+    at[r] = hour;
   }
 
   for (let p = 0; p < plan.activePlanes.length; p++) {
-    const base = plan.slabPlan[plan.activePlanes[p]] * YEAR_SLOT_HOURS;
+    const base = plan.slabPlan[plan.activePlanes[p]] * span;
     const src = p * rows;
-    for (let r = 0; r < rows; r++) cube[base + rowHour[r]] = data[src + r];
+    for (let r = 0; r < rows; r++) cube[base + at[r]] = data[src + r];
   }
 }
 
@@ -382,17 +442,19 @@ export function blitBlock(
  * slot keys and aggregation rules never reach this module.
  */
 export interface WideCase {
+  /** `(entity x numYears + yearOffset) x 8784 + slotHour`. */
   cube: Float32Array;
   /** The cube's entity axis, in cube-index order. */
   entities: string[];
   /** One byte per entity: 1 = this file's header carried it. */
   presence: Uint8Array;
-  /** Per-hour TOU code, one per slot hour, read from the file. */
+  /** Per-hour TOU code, one per span hour, read from the file. */
   tou: Uint8Array;
-  /** One byte per hour: 1 = some row covered it (unioned across a merge
+  /** One byte per span hour: 1 = some row covered it (unioned across a merge
    * group). */
   hoursPresent: Uint8Array;
-  year: number;
+  firstYear: number;
+  numYears: number;
   title: TitleInfo;
 }
 
@@ -400,17 +462,31 @@ export interface WideCase {
  * Close one accumulator and report what the SHAPE can see going wrong:
  * missing columns, uncovered hours, a title that
  * disagrees with the rows. Warnings about meaning belong to the kind's own
- * finalizer.
+ * finalizer. Throws when a year of the span has no rows: the date line sized
+ * the span, and the rows decide whether it is one Case.
  */
 export function finalizeWide(
   accumulator: CaseAccumulator,
   name: string,
-  year: number,
   title: TitleInfo,
   spec: WideSpec,
 ): { data: WideCase; warnings: string[] } {
-  const { plan, cube } = accumulator;
+  const { plan, cube, firstYear, numYears } = accumulator;
   const warnings: string[] = [];
+
+  const years: number[] = [];
+  const missing: number[] = [];
+  for (let k = 0; k < numYears; k++) {
+    const from = k * YEAR_SLOT_HOURS;
+    const seen = accumulator.hourSeen.subarray(from, from + YEAR_SLOT_HOURS).includes(1);
+    (seen ? years : missing).push(firstYear + k);
+  }
+  if (missing.length > 0) {
+    if (years.length === 0) {
+      throw new Error(`${name}: no data rows, so there is nothing to load.`);
+    }
+    throw new Error(yearGapRefusal(`${name} has`, years, missing));
+  }
 
   const absent = plan.entities.filter((_, i) => !plan.presence[i]);
   if (absent.length > 0) {
@@ -419,8 +495,8 @@ export function finalizeWide(
         `(${absent.slice(0, 3).join(', ')}${absent.length > 3 ? ', …' : ''}).`,
     );
   }
-  const covered = realHoursSeen(accumulator.hourSeen, year, 1);
-  const real = realHours(year, 1);
+  const covered = realHoursSeen(accumulator.hourSeen, firstYear, numYears);
+  const real = realHours(firstYear, numYears);
   if (covered < real) {
     warnings.push(
       `${name}: covers ${covered.toLocaleString()} of ${real.toLocaleString()} hours; ` +
@@ -432,9 +508,9 @@ export function finalizeWide(
       `${name}: the title line does not name a quantity, so this case has no unit. Its ` +
         `series still plot, on an axis of their own.`,
     );
-  } else if (title.year !== null && title.year !== year) {
+  } else if (title.year !== null && title.year !== firstYear) {
     warnings.push(
-      `${name}: the title line says year ${title.year} but the first data row is ${year}. ` +
+      `${name}: the title line says year ${title.year} but the rows begin in ${firstYear}. ` +
         `The data rows win.`,
     );
   }
@@ -446,7 +522,8 @@ export function finalizeWide(
       presence: plan.presence.slice(),
       tou: accumulator.tou,
       hoursPresent: accumulator.hourSeen,
-      year,
+      firstYear,
+      numYears,
       title,
     },
     warnings,
@@ -455,7 +532,7 @@ export function finalizeWide(
 
 // ---------------------------------------------------------------- ingest
 
-/** `firstYear` is the merge GROUP's (see src/tables/long/pool.ts). */
+/** `span` is the merge GROUP's, as at `blocksFor` in src/tables/long/pool.ts. */
 function blocksFor(
   plan: CasePlan,
   caseIndex: number,
@@ -463,7 +540,7 @@ function blocksFor(
   nextId: () => number,
   shrink: number,
   layout: SlabLayout,
-  firstYear: number,
+  span: YearSpan,
 ): BlockMessage[] {
   // A wider export has longer rows AND a shorter slab, so the bound comes from
   // this file's rows and layout. `bytesPerRow` is the shortest sampled row, so
@@ -485,8 +562,8 @@ function blocksFor(
       skipPartialFirstRow: start !== plan.dataStart,
       activePlanes,
       layout,
-      firstYear,
-      numYears: 1,
+      firstYear: span.firstYear,
+      numYears: span.numYears,
     });
   }
   return jobs;
@@ -498,7 +575,8 @@ function blocksFor(
  * case carries a presence bitmap.
  *
  * Plans with the same `groupOf` id share ONE accumulator and become ONE table,
- * which is how a year exported in halves loads as a year:
+ * which is how a year exported in halves loads as a year, and abutting runs of
+ * years as one span:
  *
  *   * The duplicate check spans the group, because `covered` is per group.
  *   * The blit uses each FILE's column plan; members share only the axis.
@@ -567,12 +645,40 @@ export async function ingestWithWorkers<T>(
   for (const group of groups) {
     const check = checkMergeGroup(group.members.map((i) => plans[i]));
     warnings.push(...aboutPlans(check.warnings, group.members));
+    if (check.span !== undefined) {
+      group.repPlan.firstYear = check.span.firstYear;
+      group.repPlan.numYears = check.span.numYears;
+    }
     if (check.refusal === undefined) continue;
     group.refused = true;
     for (const index of group.members) {
       groupFailures.push({ index, file: plans[index].file.name, message: check.refusal });
     }
   }
+  /**
+   * A group's cube, or `null` for a refused group. A cube the browser will
+   * not allocate refuses its group's files with the arithmetic, never the
+   * batch, and stays refused on every retry.
+   */
+  function allocate(group: MergeGroup): CaseAccumulator | null {
+    if (group.refused) return null;
+    try {
+      return createAccumulator(group.plan, group.repPlan);
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+      group.refused = true;
+      const message = allocationRefusal(
+        group.label,
+        group.plan.entities.length,
+        group.repPlan.numYears,
+      );
+      for (const index of group.members) {
+        groupFailures.push({ index, file: plans[index].file.name, message });
+      }
+      return null;
+    }
+  }
+
   // One layout per file: files of different widths parse at different shapes
   // on the same workers.
   const layouts = columnPlans.map((plan) => layoutFor(budget, plan));
@@ -588,9 +694,7 @@ export async function ingestWithWorkers<T>(
     shrink: number,
     retryable: boolean,
   ): Promise<{ accumulators: (CaseAccumulator | null)[]; failures: DispatchFailure[] }> {
-    const accumulators = groups.map((group) =>
-      group.refused ? null : createAccumulator(group.plan),
-    );
+    const accumulators = groups.map(allocate);
     let id = 0;
     const jobs: BlockMessage[] = [];
     plans.forEach((plan, index) => {
@@ -603,7 +707,7 @@ export async function ingestWithWorkers<T>(
           () => id++,
           shrink,
           layouts[index],
-          groups[groupOf[index]].repPlan.year,
+          groups[groupOf[index]].repPlan,
         ),
       );
     });
@@ -668,15 +772,19 @@ export async function ingestWithWorkers<T>(
     const accumulator = accumulators[g];
     if (accumulator === null) return;
     if (!group.members.every((index) => okSet.has(index))) return;
+    // The SHAPE's finalizer, then the KIND's. The shape's refusal (a year of
+    // the span with no rows) belongs to the group's files, like a failed block.
+    let shaped: ReturnType<typeof finalizeWide>;
+    try {
+      shaped = finalizeWide(accumulator, group.label, group.repPlan.title, spec);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      for (const index of group.members) {
+        failures.push({ index, file: plans[index].file.name, message });
+      }
+      return;
+    }
     committed.push(group.members[0]);
-    // The SHAPE's finalizer, then the KIND's.
-    const shaped = finalizeWide(
-      accumulator,
-      group.label,
-      group.repPlan.year,
-      group.repPlan.title,
-      spec,
-    );
     const finalized = finalize(shaped.data, group.repPlan);
     cases.push(finalized.data);
     warnings.push(...aboutPlans([...shaped.warnings, ...finalized.warnings], group.members));
@@ -694,8 +802,8 @@ interface MergeGroup {
   /** The cube's entity axis and presence: the group's union of columns against
    * the retained list, NOT any one member's. */
   plan: ColumnPlan;
-  /** The first member with the union header, so the kind's `sourceColumns`
-   * and labels cover every member's columns. */
+  /** The first member with the union header and the group's years, so the
+   * kind's `sourceColumns` and labels cover every member's columns. */
   repPlan: CasePlan;
   refused?: boolean;
 }
@@ -721,8 +829,9 @@ function groupsOf(plans: CasePlan[], columnPlans: ColumnPlan[], groupOf: number[
   return [...byId.values()].map((members) => {
     const first = plans[members[0]];
     const label = members.map((i) => caseNameOf(plans[i].file.name)).join(' + ');
+    // A copy, so the group's years never overwrite a member's own.
     if (members.length === 1) {
-      return { members, label, plan: columnPlans[members[0]], repPlan: first };
+      return { members, label, plan: columnPlans[members[0]], repPlan: { ...first } };
     }
     // A column only one half carries is still a plane, NaN for the other half.
     const presence = columnPlans[members[0]].presence.slice();
@@ -763,7 +872,13 @@ export function unionHeader(members: readonly CasePlan[]): HeaderInfo {
   return { ...first, raw, canonical, entityNames };
 }
 
-/** Bytes one case's cube occupies: exactly what `createAccumulator` allocates. */
-export function cubeBytesFor(entityCount: number): number {
-  return entityCount * YEAR_SLOT_HOURS * Float32Array.BYTES_PER_ELEMENT;
+/** An oversized cube's refusal, worded by `cubeCost` as the pickers word
+ * their estimate. The entities are the user's lever. */
+function allocationRefusal(file: string, entityCount: number, numYears: number): string {
+  const cost = cubeCost([{ count: entityCount, one: 'entity', many: 'entities' }], numYears);
+  return (
+    `${file}: could not allocate this file's cube -- ${cost.arithmetic} in one array, which ` +
+    `this browser refused. Nothing was loaded from it; drop it again keeping fewer entities. ` +
+    `The other files in this drop are unaffected.`
+  );
 }

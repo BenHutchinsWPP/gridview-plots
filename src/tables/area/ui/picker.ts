@@ -9,8 +9,8 @@
 //   * Selection narrows the cube's metric axis itself, so the live readout is
 //     the real allocation, not an estimate.
 
-import { YEAR_SLOT_HOURS } from '../../../model/calendar';
-import { confirmLargeAllocation } from '../../../ui/confirm-allocation';
+import { cubeCost, type CubeCost } from '../../../ingest';
+import { confirmLargeAllocation, type AllocationAsk } from '../../../ui/confirm-allocation';
 import {
   CALCULATED_GROUP,
   defaultSelection,
@@ -20,23 +20,35 @@ import {
   ruleFor,
 } from '../rules';
 
-const BYTES_PER_VALUE = 4; // Float32Array
-
 /** Resolve to the retained columns, `union` unchanged on skip, or `null` when
  * a keep-everything drop declines the confirmation. */
 export function showPicker(
   union: string[],
-  caseCount: number,
+  /** The years the batch's files span, summed: one cube per file, one slot
+   * per year of its span. */
+  yearCount: number,
   entityCount: number,
   preselected: readonly string[] | undefined,
   everything: boolean,
 ): Promise<string[] | null> {
+  // Exactly what ingest allocates: retained x areas x years x hours x 4 B.
+  const costOf = (metricCount: number): CubeCost =>
+    cubeCost(
+      [
+        { count: metricCount, one: 'metric', many: 'metrics' },
+        { count: entityCount, one: 'area', many: 'areas' },
+      ],
+      yearCount,
+    );
+  const keepAll: AllocationAsk = {
+    what: `all ${union.length} columns`,
+    cost: costOf(union.length),
+    lever: 'fewer metrics',
+  };
+
   // Skip the dialog, keep the confirmation; declining loads nothing.
   if (everything) {
-    const perMetric = caseCount * YEAR_SLOT_HOURS * entityCount * BYTES_PER_VALUE;
-    return confirmLargeAllocation(union.length * perMetric, `all ${union.length} columns`).then(
-      (ok) => (ok ? union : null),
-    );
+    return confirmLargeAllocation(keepAll).then((ok) => (ok ? union : null));
   }
 
   return new Promise((resolve) => {
@@ -115,9 +127,6 @@ export function showPicker(
     confirm.textContent = 'Load with these';
     actions.append(skip, confirm);
     modal.appendChild(actions);
-
-    /** What "Keep everything" would allocate, as `paint` last computed it. */
-    let skipBytes = 0;
 
     /** Columns the selection depends on (weights, calculated operands) and
      * their dependents: shown, not enforced. */
@@ -225,16 +234,11 @@ export function showPicker(
       }
 
       const missing = requiredInputs([...chosen]).filter((weight) => !chosen.has(weight));
-      // Exactly what ingest allocates: retained x cases x hours x areas x 4.
-      const perMetric = caseCount * YEAR_SLOT_HOURS * entityCount * BYTES_PER_VALUE;
-      const bytes = chosen.size * perMetric;
       // What "keep everything" costs, stated; past `LARGE_ALLOCATION_BYTES` it
       // also needs confirmation.
-      skipBytes = union.length * perMetric;
-      skip.title = `All ${union.length} columns ≈ ${(skipBytes / (1024 * 1024)).toFixed(0)} MB`;
+      skip.title = `All ${union.length} columns: ${keepAll.cost.arithmetic}`;
       readout.textContent =
-        `${chosen.size} metric${chosen.size === 1 ? '' : 's'} × ${caseCount} case` +
-        `${caseCount === 1 ? '' : 's'} ≈ ${(bytes / (1024 * 1024)).toFixed(0)} MB` +
+        costOf(chosen.size).arithmetic +
         (missing.length > 0
           ? ` · without ${missing.join(', ')}, the columns weighted by ${
               missing.length === 1 ? 'it' : 'them'
@@ -273,7 +277,7 @@ export function showPicker(
     skip.addEventListener('click', () => {
       // Suspend this Escape handler during the confirmation.
       document.removeEventListener('keydown', onKey);
-      void confirmLargeAllocation(skipBytes, `all ${union.length} columns`).then((ok) => {
+      void confirmLargeAllocation(keepAll).then((ok) => {
         if (ok) close(union);
         else document.addEventListener('keydown', onKey);
       });

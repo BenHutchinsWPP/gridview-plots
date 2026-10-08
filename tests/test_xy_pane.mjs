@@ -12,7 +12,8 @@
 //   (f) resize redraws the standing pair and its fit; hover reaches the
 //       scatter while it is drawn and nothing after the pane leaves it.
 //   (g) the math: points only where both series have values, per-axis
-//       ranges, padded degenerate ranges, hovers naming the hour.
+//       ranges, padded degenerate ranges, hovers naming the hour, and its
+//       year when the pair's Case names one.
 
 import './test_loader.mjs';
 import assert from 'node:assert/strict';
@@ -315,6 +316,94 @@ assert.ok(
   flatPoints.every((point) => point.px === flatPoints[0].px),
   'a constant x draws one vertical line of points',
 );
+
+// The hover's date carries the pair's year when its Case names one, and
+// none for the stand-in year a line with no Case is counted under.
+{
+  const { NO_YEAR } = await import('../src/app/boxes.ts');
+  const MAR1 = 1440;
+  const at = (offset) => (v) => {
+    v[MAR1] = 1 + offset;
+    v[MAR1 + 30] = 5 + offset;
+  };
+  const pairX = seriesOf('Case 3 · Load', 'MWh', '#1f77b4', at(0));
+  const pairY = seriesOf('Case 3 · LMP', '$/MWh', '#ff7f0e', at(10));
+  const heads = (firstYear) => {
+    drawAgain(frameOf([pairX, pairY], { spanOf: () => ({ firstYear, numYears: 1 }) }));
+    const [first] = points();
+    xyPane.hover(first.px, first.py);
+    return tip.children[0].textContent;
+  };
+  assert.equal(heads(2035), '2035 Mar 1 · HE 1', 'a one-year 2035 pair names its year');
+  assert.equal(heads(NO_YEAR), 'Mar 1 · HE 1', 'a line with no year prints none');
+  drawAgain(
+    frameOf([pairX, pairY], {
+      spanOf: (s) => ({ firstYear: s === pairX ? 2035 : 2036, numYears: 1 }),
+    }),
+  );
+  const [first] = points();
+  xyPane.hover(first.px, first.py);
+  assert.equal(
+    tip.children[0].textContent,
+    'Mar 1 · HE 1 · 2035 against 2036',
+    'a pair of two years names both, X first, never one for both sides',
+  );
+  drawAgain(
+    frameOf([pairX, pairY], {
+      spanOf: (s) => ({ firstYear: s === pairX ? 2035 : NO_YEAR, numYears: 1 }),
+    }),
+  );
+  const [undated] = points();
+  xyPane.hover(undated.px, undated.py);
+  assert.equal(tip.children[0].textContent, 'Mar 1 · HE 1', 'a side with no year names neither');
+
+  // Cases of three years pair their kth years: the head names the pair's own.
+  const spanned = (offset) => {
+    const values = new Float32Array(3 * HOURS).fill(NaN);
+    for (let k = 0; k < 3; k++) values[k * HOURS + MAR1] = offset + k;
+    return values;
+  };
+  const longX = { ...pairX, values: spanned(1) };
+  const longY = { ...pairY, values: spanned(10) };
+  const headsOf = (yFirst) => {
+    drawAgain(
+      frameOf([longX, longY], {
+        spanOf: (s) => ({ firstYear: s === longX ? 2035 : yFirst, numYears: 3 }),
+      }),
+    );
+    return points().map((point) => {
+      xyPane.hover(point.px, point.py);
+      return tip.children[0].textContent;
+    });
+  };
+  assert.deepEqual(
+    headsOf(2035),
+    ['2035 Mar 1 · HE 1', '2036 Mar 1 · HE 1', '2037 Mar 1 · HE 1'],
+    'the same years: each point dated in its own year',
+  );
+  assert.deepEqual(
+    headsOf(2040),
+    [
+      'Mar 1 · HE 1 · 2035 against 2040',
+      'Mar 1 · HE 1 · 2036 against 2041',
+      'Mar 1 · HE 1 · 2037 against 2042',
+    ],
+    'different years: both, X first',
+  );
+  // The Years filter keeps 2036 of X and 2041 of Y: the pair is those two.
+  drawAgain(
+    frameOf([longX, longY], {
+      spanOf: (s) => ({ firstYear: s === longX ? 2035 : 2040, numYears: 3 }),
+      years: new Set([2036, 2041]),
+    }),
+  );
+  const [kept] = points();
+  assert.equal(points().length, 1);
+  xyPane.hover(kept.px, kept.py);
+  assert.equal(tip.children[0].textContent, 'Mar 1 · HE 1 · 2036 against 2041');
+  assert.equal(tip.children[1].children[2].textContent, '2', 'X’s 2036 value');
+  assert.equal(tip.children[2].children[2].textContent, '11', 'against Y’s 2041');
+}
 
 // Leaving the type releases the shared canvas and its hover.
 drawAgain(frameOf([xs, ys]));

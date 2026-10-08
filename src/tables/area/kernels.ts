@@ -8,8 +8,8 @@
 //      Welford, makes every min/max comparison false, and sorts to one end
 //      of a duration curve as a cliff of apparent extremes.
 //   2. **The series is built before it is filtered.** A grouping is
-//      collapsed to one 8,784-point series first, so every sort is over
-//      <= 8,784 points rather than 377,712.
+//      collapsed to one series, one plane long, first, so every sort is over
+//      one plane's points rather than every selected area's.
 //
 // Sorting, not filtering, is the interaction cost, so gathers and sorts go
 // through a caller-owned scratch buffer that is allocated once and reused.
@@ -66,12 +66,19 @@ function resolveAreas(data: AreaTable, areas: string[], metricIndex: number): nu
   return out;
 }
 
-function planeStart(data: AreaTable, areaIndex: number, metricIndex: number): number {
-  return (areaIndex * data.metrics.length + metricIndex) * YEAR_SLOT_HOURS;
+/** One plane's length: every year of the table's span. */
+export function planeLength(data: AreaTable): number {
+  return data.numYears * YEAR_SLOT_HOURS;
+}
+
+/** Where an (area, metric) plane starts: the plane holds every year of the
+ * span, so the next plane is `planeLength` on. */
+export function planeStart(data: AreaTable, areaIndex: number, metricIndex: number): number {
+  return (areaIndex * data.metrics.length + metricIndex) * planeLength(data);
 }
 
 /**
- * Build one 8,784-point series for `areas` x `metric`, dispatching on the
+ * Build one series for `areas` x `metric`, one plane long, dispatching on the
  * rule table's `series` enum. `data/area/aggregation-rules.json` is imported, not
  * re-derived -- summing a $/MWh column across areas is physically
  * meaningless and the chart would still render.
@@ -120,7 +127,7 @@ export function buildSeries(
   // weight happens to be zero.
   if (areaIndices.length === 1) {
     const start = planeStart(data, areaIndices[0], metricIndex);
-    out.set(data.cube.subarray(start, start + YEAR_SLOT_HOURS));
+    out.set(data.cube.subarray(start, start + planeLength(data)));
     return { values: out, rule, warnings };
   }
 
@@ -158,7 +165,7 @@ export function buildSeries(
     const weightAreas = resolveAreas(data, areas, weightIndex);
     if (weightAreas.length === 0) continue;
 
-    const weights = weightsOut ?? new Float32Array(YEAR_SLOT_HOURS);
+    const weights = weightsOut ?? new Float32Array(planeLength(data));
     const { zeroHours, dataHours } = weightedMeanAreas(
       data,
       areaIndices,
@@ -213,7 +220,8 @@ function combineAreas(
   divide: boolean,
 ): void {
   const { cube } = data;
-  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+  const hours = planeLength(data);
+  for (let hour = 0; hour < hours; hour++) {
     let total = 0;
     let seen = 0;
     for (let a = 0; a < areaIndices.length; a++) {
@@ -244,7 +252,8 @@ function weightedMeanAreas(
   const { cube } = data;
   let zeroHours = 0;
   let dataHours = 0;
-  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+  const hours = planeLength(data);
+  for (let hour = 0; hour < hours; hour++) {
     let weighted = 0;
     let weight = 0;
     for (let a = 0; a < areaIndices.length; a++) {
@@ -301,7 +310,7 @@ export function pooledWeightedMean(
 ): number {
   let weighted = 0;
   let total = 0;
-  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+  for (let hour = 0; hour < series.length; hour++) {
     if (mask[hour] === 0) continue;
     const value = series[hour];
     const weight = weights[hour];

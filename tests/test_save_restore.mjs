@@ -15,6 +15,9 @@ import './test_loader.mjs';
 const { createSaveRestore } = await import('../src/app/save-restore.ts');
 const { CaseStore } = await import('../src/model/case-model.ts');
 const { createLimitsStore } = await import('../src/limits/store.ts');
+const { buildManifest } = await import('../src/storage/envelope.ts');
+const { restoreBundle } = await import('../src/storage/store.ts');
+const { createCaseViews } = await import('../src/app/case-views.ts');
 
 let passed = 0;
 async function check(label, fn) {
@@ -417,6 +420,49 @@ await check('Load… closes the Contents panel first, and logs a bundle it refus
   assert.equal(calls[1], 'busy Loading…');
   assert.ok(calls.includes('logRefusedSource origin-private storage: SAMPLE stale version'));
   assert.equal(calls.at(-1), 'busy null');
+});
+
+await check('a Case spanning three years keeps its span through both restore paths', async () => {
+  const HOURS = 8784;
+  const GEN = { kind: 'generator', variant: 'Generation (MWh)' };
+  const cube = new Float32Array(2 * 3 * HOURS);
+  for (let i = 0; i < cube.length; i++) cube[i] = i;
+  const table = {
+    cube,
+    generators: ['SAMPLE_G1', 'SAMPLE_G2'],
+    presence: new Uint8Array(2).fill(1),
+    tou: new Uint8Array(3 * HOURS),
+    hoursPresent: new Uint8Array(3 * HOURS).fill(1),
+    sourceColumns: ['SAMPLE_G1', 'SAMPLE_G2'],
+    firstYear: 2035,
+    numYears: 3,
+    quantity: 'Generation (MWh)',
+  };
+  const tables = new Map([[JSON.stringify(GEN), { key: GEN, data: table }]]);
+  const { manifest, cubes } = buildManifest([{ id: 'span', name: 'SAMPLE_span', tables }], {});
+  const wire = JSON.parse(JSON.stringify(manifest));
+  const all = Buffer.concat(cubes.map((c) => Buffer.from(c.buffer, c.byteOffset, c.byteLength)));
+  const saved = restoreBundle(wire, [
+    all.buffer.slice(all.byteOffset, all.byteOffset + all.length),
+  ]);
+  for (const path of ['file', 'load']) {
+    const { store, flow } = setup({ read: () => saved, load: () => saved });
+    if (path === 'file') await flow.restoreBundleFile(file('SAMPLE.gvmb'));
+    else await flow.loadAll();
+    const [restored] = store.listCases();
+    assert.equal(restored.name, 'SAMPLE_span', path);
+    const data = [...restored.tables.values()][0].data;
+    assert.deepEqual([data.firstYear, data.numYears], [2035, 3], `${path}: the table's span`);
+    assert.ok(
+      Buffer.from(data.cube.buffer, data.cube.byteOffset, data.cube.byteLength).equals(
+        Buffer.from(cube.buffer),
+      ),
+      `${path}: every year's hours`,
+    );
+    const views = createCaseViews(store);
+    assert.deepEqual(views.spanOfCase(restored.id), { firstYear: 2035, numYears: 3 }, path);
+    assert.deepEqual(views.loadedYears(), [2035, 2036, 2037], `${path}: every year of the span`);
+  }
 });
 
 console.log(`\n${passed} save/restore checks passed.`);

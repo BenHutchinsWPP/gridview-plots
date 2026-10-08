@@ -13,12 +13,17 @@ import type { GeneratorTable } from '../tables/generator/types';
 import type { InterfaceTable } from '../tables/interface/types';
 import {
   byCaseName,
+  caseForName,
   caseLabel,
   rowsOfKind,
+  slotKey,
   slotLabel,
   type CaseStore,
   type TableRow,
+  type TableSlotKey,
 } from '../model/case-model';
+import { spanOfTable, type YearSpan } from '../model/calendar';
+import type { HeldSpan } from './batch';
 import { NO_YEAR } from './boxes';
 
 /** One loaded Area table together with the Case that owns it. */
@@ -55,30 +60,64 @@ export function createCaseViews(store: CaseStore) {
     return out.sort(byCaseName);
   }
 
-  /** A case's calendar year, for the box-plot partition: the first table that
-   * states one (the Import Dialog keeps one run's tables to one year). */
-  function yearOfCase(caseId: string): number {
-    for (const slot of ownerOf(caseId)?.tables.values() ?? []) {
-      const year = (slot.data as { year?: number } | null)?.year;
-      if (typeof year === 'number') return year;
+  /** The first table's span that states one. Every table of a Case spans
+   * the same years: an ingest batch refuses a file whose span differs from
+   * its Case's before it attaches (`keepSpans` in `./batch.ts`, through
+   * `heldSpan` below). */
+  function statedSpan(owner: { tables: Map<string, { data: unknown }> }): YearSpan | null {
+    for (const slot of owner.tables.values()) {
+      const span = spanOfTable(slot.data);
+      if (span !== null) return span;
     }
-    return NO_YEAR;
+    return null;
   }
 
-  /** The loaded Cases' distinct years, ascending: only years a table states.
-   * Not `yearOfCase`, whose fallback is a real year and would read as one. */
+  /** The span the named Case's tables state outside `replacing`, and which
+   * table states it. The Case is found as `caseIdForName` in `main.ts` finds
+   * it, so the check reads the Case the table would attach to. */
+  function heldSpan(caseName: string, replacing: readonly TableSlotKey[]): HeldSpan | null {
+    const owner = caseForName(store.listCases(), caseName);
+    if (owner === undefined) return null;
+    const skip = new Set(replacing.map(slotKey));
+    for (const [key, slot] of owner.tables) {
+      if (skip.has(key)) continue;
+      const span = spanOfTable(slot.data);
+      if (span === null) continue;
+      const kind = slot.key.kind.charAt(0).toUpperCase() + slot.key.kind.slice(1);
+      const table = slot.key.variant ? `${kind} ${slot.key.variant}` : kind;
+      return { span, holder: `${caseLabel(owner)}'s ${table} table` };
+    }
+    return null;
+  }
+
+  /** A Case's years, for the box-plot partition and every hour count. */
+  function spanOfCase(caseId: string): YearSpan {
+    const owner = ownerOf(caseId);
+    return (owner && statedSpan(owner)) ?? { firstYear: NO_YEAR, numYears: 1 };
+  }
+
+  /** Every year of the loaded Cases' spans, distinct and ascending: only years
+   * a table states. Not `spanOfCase`, whose fallback is a real year and would
+   * read as one. */
   function loadedYears(): number[] {
     const years = new Set<number>();
     for (const owner of store.listCases()) {
-      for (const slot of owner.tables.values()) {
-        const year = (slot.data as { year?: number } | null)?.year;
-        if (typeof year === 'number') {
-          years.add(year);
-          break;
-        }
-      }
+      const span = statedSpan(owner);
+      if (span === null) continue;
+      for (let y = 0; y < span.numYears; y++) years.add(span.firstYear + y);
     }
     return [...years].sort((a, b) => a - b);
+  }
+
+  /** Each loaded Case's span, for the date strip's hour count. Only Cases
+   * whose tables state one, as `loadedYears`. */
+  function loadedSpans(): YearSpan[] {
+    const spans: YearSpan[] = [];
+    for (const owner of store.listCases()) {
+      const span = statedSpan(owner);
+      if (span !== null) spans.push(span);
+    }
+    return spans;
   }
 
   /** Case names both ways, for a frozen filter chosen in another Case. A Case
@@ -112,8 +151,10 @@ export function createCaseViews(store: CaseStore) {
       }
       return names;
     },
-    yearOfCase,
+    spanOfCase,
+    heldSpan,
     loadedYears,
+    loadedSpans,
     /** A Case's label by id. A Case already gone (a row outliving it) says so
      * rather than showing its id. */
     caseLabel(caseId: string): string {

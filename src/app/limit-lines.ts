@@ -7,6 +7,7 @@
 
 import { limitLinesFor, rangeLimitsOf, summedLimitLines } from '../limits/draw';
 import type { LimitsStore } from '../limits/store';
+import type { YearSpan } from '../model/calendar';
 import type { TableRow } from '../model/case-model';
 import type { RangeLimits } from '../series/range';
 import { boundaryCoefficients, INTERFACE_GROUP_BY } from '../tables/interface/groups';
@@ -17,23 +18,32 @@ import type { CaseSeries, DrawnLimit } from '../ui/charts';
 export interface LimitSource {
   limits: LimitsStore;
   interfaceRows(): TableRow<InterfaceTable>[];
-  yearOfCase(caseId: string): number;
+  spanOfCase(caseId: string): YearSpan;
 }
 
 export function createLimitLines(source: LimitSource) {
-  /** One path's hourly "% of range" limits in one Case. */
-  function interfaceRange(caseId: string, interfaceName: string, year: number): RangeLimits {
-    return rangeLimitsOf(source.limits.limitFor(caseId, interfaceName), year);
+  /** One path's hourly "% of range" limits in one Case, over `numYears`
+   * from `year`. */
+  function interfaceRange(
+    caseId: string,
+    interfaceName: string,
+    year: number,
+    numYears: number,
+  ): RangeLimits {
+    return rangeLimitsOf(source.limits.limitFor(caseId, interfaceName), year, numYears);
   }
 
   /** A path carries its published limits; a boundary its members' summed in
-   * its directions. */
+   * its directions. Each names its Case's first year, where a time axis
+   * places it. */
   function limitLinesOf(entry: CaseSeries): DrawnLimit[] {
     const spec = entry.spec;
     if (spec === undefined || spec.source.kind !== 'interface') return [];
+    const { caseId } = spec;
+    const { firstYear, numYears } = source.spanOfCase(caseId);
+    const placed = (lines: DrawnLimit[]) => lines.map((line) => ({ ...line, firstYear }));
     if (!('entity' in spec.subject)) {
       if (spec.subject.groupBy !== INTERFACE_GROUP_BY) return [];
-      const { caseId } = spec;
       const row = source
         .interfaceRows()
         .find(
@@ -41,28 +51,32 @@ export function createLimitLines(source: LimitSource) {
             candidate.caseId === caseId && candidate.data.quantity === spec.source.quantity,
         );
       if (!row) return [];
-      const year = source.yearOfCase(caseId);
       const limits = boundaryLimits(
         row.data,
         boundaryCoefficients(spec.subject.value, spec.subject.members),
-        (member) => interfaceRange(caseId, member, year),
+        (member) => interfaceRange(caseId, member, firstYear, numYears),
       );
-      return summedLimitLines(limits, {
+      return placed(
+        summedLimitLines(limits, {
+          label: entry.name,
+          color: entry.color,
+          unit: entry.unit,
+          values: entry.values,
+        }),
+      );
+    }
+    return placed(
+      limitLinesFor(source.limits, {
+        caseId,
+        interfaceName: String(spec.subject.entity),
         label: entry.name,
         color: entry.color,
         unit: entry.unit,
+        year: firstYear,
+        numYears,
         values: entry.values,
-      });
-    }
-    return limitLinesFor(source.limits, {
-      caseId: spec.caseId,
-      interfaceName: String(spec.subject.entity),
-      label: entry.name,
-      color: entry.color,
-      unit: entry.unit,
-      year: source.yearOfCase(spec.caseId),
-      values: entry.values,
-    });
+      }),
+    );
   }
 
   return {

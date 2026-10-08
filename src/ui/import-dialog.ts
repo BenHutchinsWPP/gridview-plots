@@ -488,7 +488,14 @@ export function showImportDialog(
         // Blocking: a same-batch collision. The replace warning has its own
         // line so both can show.
         row.conflictLine.textContent = plan.slotConflict ? (plan.conflictReason ?? '') : '';
-        row.replaceLine.textContent = plan.replacesExisting ? (plan.replaceReason ?? '') : '';
+        // The span warning shares the replace line: both are non-blocking
+        // facts about what this file does to its Case.
+        row.replaceLine.textContent = [
+          plan.replacesExisting ? (plan.replaceReason ?? '') : '',
+          plan.spanReason ?? '',
+        ]
+          .filter((text) => text !== '')
+          .join(' ');
         if (plan.slotConflict) conflicts++;
         if (plan.replacesExisting) replaces++;
       });

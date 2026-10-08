@@ -25,8 +25,9 @@ export interface LongSignature {
   keys: readonly string[];
   /** Absolute source index of the column carrying the row's axis identity. */
   entityCol: number;
-  /** Noun for messages: "area", "bus", "unit". Never read as a kind token. */
-  noun: string;
+  /** Noun for messages, singular and plural: "bus"/"buses". Never read as a
+   * kind token. */
+  noun: { readonly one: string; readonly many: string };
 }
 
 /** Total key columns for a signature. Source metric `m` is column

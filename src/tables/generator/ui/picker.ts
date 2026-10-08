@@ -13,7 +13,7 @@
 // twenty times wider, so the Enter key must not be able to produce that
 // allocation. The "Keep everything" button can, which is why it names the
 // whole cost on hover rather than offering itself as the ordinary path: the
-// readout states the real arithmetic (`cubeBytesFor`, not an estimate) for
+// readout states the real arithmetic (`cubeCost`, not an estimate) for
 // both the ticked set and the union, and the confirm stays disabled until at
 // least one generator is chosen.
 //
@@ -24,7 +24,7 @@
 // Same `showWideEntityPicker` `cancelable` shape as the Bus picker: flat (no
 // `groupBy`) and capped at `MAX_ROWS`.
 
-import { cubeBytesFor } from '../wide';
+import { cubeCost, type CubeCost } from '../../../ingest';
 import { showWideEntityPicker } from '../../../ui/wide-entity-picker';
 
 /** How many rows the list renders at once. The filter box is how a selection
@@ -43,9 +43,12 @@ export function showGeneratorPicker(
   union: string[],
   coverage: Map<string, string[]>,
   caseCount: number,
+  yearCount: number,
   preselected: readonly string[] = [],
   everything: boolean,
 ): Promise<string[] | null> {
+  const costOf = (count: number): CubeCost =>
+    cubeCost([{ count, one: 'generator', many: 'generators' }], yearCount);
   return showWideEntityPicker({
     union,
     coverage,
@@ -71,18 +74,13 @@ export function showGeneratorPicker(
     mode: 'cancelable',
     everything,
     keepAllCost: (unionCount) => ({
-      bytes: cubeBytesFor(unionCount) * caseCount,
       what: `all ${unionCount.toLocaleString()} generators`,
+      cost: costOf(unionCount),
+      lever: 'fewer generators',
     }),
-    readout: (chosenCount, unionCount, cases) => {
-      const bytes = cubeBytesFor(chosenCount) * cases;
-      const allBytes = cubeBytesFor(unionCount) * cases;
-      return (
-        `${chosenCount.toLocaleString()} of ${unionCount.toLocaleString()} generator` +
-        `${unionCount === 1 ? '' : 's'} × ${cases} case${cases === 1 ? '' : 's'} = ` +
-        `${(bytes / (1024 * 1024)).toFixed(1)} MB` +
-        ` (all of them would be ${(allBytes / (1024 * 1024)).toFixed(0)} MB)`
-      );
-    },
+    readout: (chosenCount, unionCount) =>
+      `${chosenCount.toLocaleString()} of ${unionCount.toLocaleString()} generator` +
+      `${unionCount === 1 ? '' : 's'}: ${costOf(chosenCount).arithmetic}` +
+      ` (all of them would be ${(costOf(unionCount).bytes / (1024 * 1024)).toFixed(0)} MB)`,
   });
 }

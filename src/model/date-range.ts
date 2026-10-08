@@ -153,8 +153,20 @@ export function parseDay(text: string): ParsedDay {
  * at all. A walker over days skips a -1: counted as a weekday, it would cut a
  * spurious week at Mar 1 or shade a phantom day as a Monday. */
 export function weekdayOf(year: number, day: number): number {
-  const entry = buildCalendar(year)[day * 24];
+  const entry = buildCalendar(year, 1)[day * 24];
   return isPhantomDay(entry) ? -1 : getDayOfWeek(entry);
+}
+
+/** `weekdayOf` for every day of a span, slot after slot (slot × 366 + day
+ * of slot), from one calendar. */
+export function weekdaysOver(firstYear: number, numYears: number): Int8Array {
+  const calendar = buildCalendar(firstYear, numYears);
+  const out = new Int8Array(calendar.length / 24);
+  for (let d = 0; d < out.length; d++) {
+    const entry = calendar[d * 24];
+    out[d] = isPhantomDay(entry) ? -1 : getDayOfWeek(entry);
+  }
+  return out;
 }
 
 // ------------------------------------------------------------ scattered days

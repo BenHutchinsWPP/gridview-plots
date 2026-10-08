@@ -3,9 +3,11 @@
 //   - each member's own column ORDER is followed;
 //   - drop order does not change any entity's numbers;
 //   - the same entity-hour in two members is refused;
-//   - group refusals: two years, or one column spelled two ways.
+//   - members' years union into one contiguous span: 2030-2031 and 2032 are
+//     one three-year table, and a year no member covers is refused by name;
+//   - one column spelled two ways is refused.
 // Merges join the HOUR axis only, so the duplicate check stays one bit per
-// (entity, hour).
+// (entity, span hour).
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -14,9 +16,11 @@ import './test_loader.mjs';
 const { entityHashes, parseHeaderLine, buildColumnPlan } =
   await import('../src/tables/long/header.ts');
 const { BUS_LONG } = await import('../src/tables/bus/long.ts');
-const { instantiateParser, parseBytes } = await import('../src/tables/long/block.ts');
+const { instantiateParser, parseBytes, scanAxis } = await import('../src/tables/long/block.ts');
 const { createAccumulator, blitBlock, readCasePlan } = await import('../src/tables/long/pool.ts');
-const { checkMergeGroup, unionMetricNames } = await import('../src/tables/long/merge.ts');
+const { addYearRows, checkMergeGroup, unionMetricNames } =
+  await import('../src/tables/long/merge.ts');
+const { yearSpanOf } = await import('../src/ingest.ts');
 const { finalizeBusLong } = await import('../src/tables/bus/long.ts');
 const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
@@ -44,10 +48,11 @@ function half(headerLine, rows) {
   return { header: parseHeaderLine(headerLine, BUS_LONG), bytes, rows: rows.length };
 }
 
-/** Blit `members` into one accumulator, in the order given, and finalize. */
-function merge(members) {
+/** Blit `members` into one accumulator over `span`, in the order given, and
+ * finalize. */
+function merge(members, span = { firstYear: 2035, numYears: 1 }) {
   const union = { ...members[0].header, metricNames: RETAINED };
-  const accumulator = createAccumulator(buildColumnPlan(union, RETAINED), busIds.length);
+  const accumulator = createAccumulator(buildColumnPlan(union, RETAINED), busIds.length, span);
   for (const member of members) {
     const plan = buildColumnPlan(member.header, RETAINED);
     const bodyStart = member.bytes.indexOf(10) + 1;
@@ -62,8 +67,8 @@ function merge(members) {
         busIds.length,
         plan.sourceMetricCount,
         member.rows,
-        2035,
-        1,
+        span.firstYear,
+        span.numYears,
       ),
       plan,
     );
@@ -72,7 +77,7 @@ function merge(members) {
     file: { name: 'merged' },
     label: 'jan.csv + jul.csv',
     header: union,
-    year: 2035,
+    ...span,
   };
   return { accumulator, ...finalizeBusLong(accumulator, casePlan, busIds) };
 }
@@ -165,22 +170,42 @@ const JUL1 = 182 * 24;
 
 // ------------------------------------------------------------ group refusals
 {
-  const plan = async (name, headerLine, row) =>
-    readCasePlan(new File([[headerLine, row].join('\r\n') + '\r\n'], name), BUS_LONG);
+  /** A plan as `discoverEntities` leaves it: header read, rows per year
+   * scanned, its own span set. */
+  const plan = async (name, headerLine, ...rows) => {
+    const text = [headerLine, ...rows].join('\r\n') + '\r\n';
+    const read = await readCasePlan(new File([text], name), BUS_LONG);
+    const bytes = new TextEncoder().encode(text);
+    addYearRows(read.rowsByYear, scanAxis(parser, bytes, read.dataStart, bytes.length));
+    return Object.assign(read, yearSpanOf(`${name} has`, read.rowsByYear).span);
+  };
 
   const jan = await plan('jan.csv', `${KEYS},Load (MW)`, '01/01/2035,1,OffPeak,40001,GC,A1,120.25');
   const jul = await plan('jul.csv', `${KEYS},Load (MW)`, '07/01/2035,1,OnPeak,40001,GC,A1,500.5');
-  assert.deepEqual(checkMergeGroup([jan, jul]), { warnings: [] });
-  assert.deepEqual(checkMergeGroup([jan]), { warnings: [] });
+  const ONE_YEAR = { firstYear: 2035, numYears: 1 };
+  assert.deepEqual(checkMergeGroup([jan, jul]), { span: ONE_YEAR, warnings: [] });
+  assert.deepEqual(checkMergeGroup([jan]), { span: ONE_YEAR, warnings: [] });
   ok('two halves of one year, spelled the same way, merge with nothing to say');
 
-  const other = await plan(
-    'next.csv',
-    `${KEYS},Load (MW)`,
-    '07/01/2036,1,OnPeak,40001,GC,A1,500.5',
+  const next = await plan('next.csv', `${KEYS},Load (MW)`, '07/01/2036,1,OnPeak,40001,GC,A1,500.5');
+  assert.deepEqual(checkMergeGroup([next, jan]), {
+    span: { firstYear: 2035, numYears: 2 },
+    warnings: [],
+  });
+  ok('two consecutive years assigned to one study span both, whichever is dropped first');
+
+  const later = await plan('later.csv', `${KEYS},Load (MW)`, '07/01/2038,1,OnPeak,40001,GC,A1,1');
+  const gap = checkMergeGroup([jan, next, later]);
+  assert.equal(gap.span, undefined);
+  assert.equal(
+    gap.refusal,
+    '"jan.csv", "next.csv", "later.csv" were assigned to one study and together have rows for ' +
+      '2035-2036 and 2038 but none for 2037. A Case is a contiguous run of years, so the load ' +
+      "is refused rather than reading 2037 as no data. Add the missing year's rows, or load " +
+      'each run of years as its own Case. Give them different study names to load them ' +
+      'separately.',
   );
-  assert.match(checkMergeGroup([jan, other]).refusal, /different years \(2035, 2036\)/);
-  ok('two years assigned to one study are refused, not read into one calendar');
+  ok('a year inside the union that no member covers is refused, naming it');
 
   // The real export already ships `Import Flow(MWh)` with the space missing,
   // so this is not hypothetical. Merging on a guess would either split one
@@ -217,6 +242,32 @@ const JUL1 = 182 * 24;
   assert.equal(checkMergeGroup([jan, wrongUnit]).refusal, undefined);
   assert.deepEqual(unionMetricNames([jan, wrongUnit]), ['Load (MW)', 'Load (MWh)']);
   ok('a unit mismatch cannot merge into one column: the unit is IN the name');
+}
+
+// ------------------------------------------- 2030-2031 + 2032 is three years
+{
+  const early = half(`${KEYS},LMP ($/MWh),Load (MW)`, [
+    '01/01/2031,1,OffPeak,40001,OAKRIDGE,LoadArea1,31.5,120.25',
+    '01/01/2030,1,OffPeak,40001,OAKRIDGE,LoadArea1,30.5,110.25',
+  ]);
+  const late = half(`${KEYS},Load (MW),LMP ($/MWh)`, [
+    '12/31/2032,24,OnPeak,40002,PINEHOLLOW,LoadArea2,600.5,88.5',
+  ]);
+  const span = { firstYear: 2030, numYears: 3 };
+  const { data: tables, warnings } = merge([early, late], span);
+  const lmp = tables.find((t) => t.quantity === 'LMP ($/MWh)');
+  assert.deepEqual([lmp.firstYear, lmp.numYears], [2030, 3]);
+  assert.equal(lmp.cube.length, busIds.length * 3 * YEAR_SLOT_HOURS);
+  assert.deepEqual([lmp.cube[0], lmp.cube[YEAR_SLOT_HOURS]], [30.5, 31.5]);
+  // Bus 40002's plane starts at 3 x 8784; Dec 31 HE 24 of 2032 is its last hour.
+  assert.equal(lmp.cube[2 * 3 * YEAR_SLOT_HOURS - 1], 88.5);
+  assert.equal(lmp.hoursPresent.length, 3 * YEAR_SLOT_HOURS);
+  // 2030 and 2031 are non-leap and 2032 leap: 8,760 + 8,760 + 8,784 real hours.
+  assert.ok(
+    warnings.some((w) => w.includes('covers 3 of 26,304 hours')),
+    `coverage is out of the span's real hours: ${warnings}`,
+  );
+  ok('a member covering 2030-2031 and one covering 2032 make one three-year table');
 }
 
 console.log(`\n${checks} checks passed.`);

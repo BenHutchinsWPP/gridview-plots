@@ -20,7 +20,7 @@
 // `keepAll` shape: folded into named groups by `interfaceGroups`, and
 // resolving `union` unchanged rather than `null` when the user skips.
 
-import { cubeBytesFor } from '../pool';
+import { cubeCost, type CubeCost } from '../../../ingest';
 import { interfaceGroups } from '../rules';
 import { showWideEntityPicker } from '../../../ui/wide-entity-picker';
 
@@ -32,9 +32,12 @@ export function showPicker(
   union: string[],
   coverage: Map<string, string[]>,
   caseCount: number,
+  yearCount: number,
   preselected: readonly string[] = union,
   everything: boolean,
 ): Promise<string[] | null> {
+  const costOf = (count: number): CubeCost =>
+    cubeCost([{ count, one: 'interface', many: 'interfaces' }], yearCount);
   // Everything, on a first drop. On a WIDENING drop the caller narrows this
   // to what is already retained plus the paths nobody has been offered, so
   // reopening the picker does not silently re-tick a path the user removed.
@@ -59,15 +62,12 @@ export function showPicker(
     everything,
     keepAllLabel: 'Keep everything',
     keepAllCost: (unionCount) => ({
-      bytes: cubeBytesFor(unionCount) * caseCount,
       what: `all ${unionCount} interfaces`,
+      cost: costOf(unionCount),
+      lever: 'fewer interfaces',
     }),
-    readout: (chosenCount, unionCount, cases) => {
-      const bytes = cubeBytesFor(chosenCount) * cases;
-      return (
-        `${chosenCount} of ${unionCount} interface${unionCount === 1 ? '' : 's'} × ` +
-        `${cases} case${cases === 1 ? '' : 's'} ≈ ${(bytes / (1024 * 1024)).toFixed(1)} MB`
-      );
-    },
+    readout: (chosenCount, unionCount) =>
+      `${chosenCount} of ${unionCount} interface${unionCount === 1 ? '' : 's'}: ` +
+      costOf(chosenCount).arithmetic,
   });
 }

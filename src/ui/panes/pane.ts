@@ -81,6 +81,7 @@ function controlElements(el: PaneElements): Record<PaneControl, (HTMLElement | n
     download: [el.download],
     limits: [el.limits.parentElement],
     dates: [el.follow.parentElement, el.overview.parentElement],
+    overlay: [el.overlayYears.parentElement],
     box: [el.boxDim.parentElement, el.boxValues.parentElement],
     xy: [el.xySwap, el.xyFit.parentElement],
     interval: [

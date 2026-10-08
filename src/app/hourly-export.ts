@@ -13,6 +13,9 @@
 //     first pass instead would allocate before the size guard could ask.
 //   * **Long holds one series at a time**; wide holds a copy of each, because
 //     its rows are hours and every series is read for each one.
+//   * **Wide's column limit is checked twice**: before any resolve on the
+//     series count, and again once the Cases' years are known, since each
+//     year of a series is a column of its own.
 //   * Busy is set and a frame yielded before the first resolve, then again
 //     between chunks, so the progress line paints and input stays refused.
 
@@ -21,15 +24,18 @@ import { pinnedConstraint, rowSubject, type CaseNames } from '../ui/browse-model
 import type { CaseSeries } from '../ui/charts';
 import { RANGE_LABEL } from '../series/range';
 import type { SeriesFacets } from '../series/label';
-import { YEAR_SLOT_HOURS, isLeapYear } from '../model/calendar';
+import { YEAR_SLOT_HOURS, type YearSpan } from '../model/calendar';
 import {
-  WIDE_MAX_SERIES,
+  WIDE_MAX_COLUMNS,
   hourlyFileBound,
   hourlyHeader,
   hourlyNames,
   hourlyPeakBytes,
   longRows,
+  namesYears,
   utf8Bytes,
+  wideColumnCount,
+  wideColumns,
   wideRows,
   type HourlyEntry,
   type HourlyLayout,
@@ -50,8 +56,9 @@ export interface HourlyExportHost {
   resolve(ref: BrowseRowRef): CaseSeries | null;
   /** A Case's label (`caseLabel`), for a row whose table is gone. */
   caseLabel(caseId: string): string;
-  /** A Case's year: long writes Feb 29's rows only for a leap year. */
-  yearOfCase(caseId: string): number;
+  /** A Case's years: a column (wide) or run of rows (long) each, Feb 29's
+   * rows (long) only for a leap year. */
+  spanOfCase(caseId: string): YearSpan;
   /** Case names, for a frozen filter chosen in another Case. */
   readonly caseNames: CaseNames;
   /** The busy line: input is refused while it is set. */
@@ -74,39 +81,44 @@ export async function exportHourly(
   request: HourlyExportRequest,
 ): Promise<string[] | null> {
   const { layout, refs } = request;
-  if (layout === 'wide' && refs.length > WIDE_MAX_SERIES) {
-    throw new Error(`the wide layout holds at most ${WIDE_MAX_SERIES.toLocaleString()} series`);
-  }
   const total = refs.length.toLocaleString();
   host.progress(`Preparing ${total} series…`);
   await host.nextFrame();
 
   const entries: HourlyEntry[] = [];
   for (let start = 0; start < refs.length; start += CHUNK) {
-    for (const ref of refs.slice(start, start + CHUNK))
-      entries.push({
-        ...entryOf(ref, host.resolve(ref), host.caseLabel, host.caseNames),
-        leap: isLeapYear(host.yearOfCase(ref.caseId)),
-      });
+    for (const ref of refs.slice(start, start + CHUNK)) {
+      const entry = entryOf(ref, host.resolve(ref), host.caseLabel, host.caseNames);
+      entries.push({ ...entry, span: host.spanOfCase(ref.caseId) });
+    }
     host.progress(`Resolving series ${entries.length.toLocaleString()} of ${total}…`);
     await host.nextFrame();
   }
 
+  const columnCount = wideColumnCount(entries);
+  if (layout === 'wide' && columnCount > WIDE_MAX_COLUMNS) {
+    throw new Error(
+      `the wide layout holds at most ${WIDE_MAX_COLUMNS.toLocaleString()} columns, and these ` +
+        `series over their Cases' years are ${columnCount.toLocaleString()}; take the long layout`,
+    );
+  }
   const names = hourlyNames(entries);
   const header = hourlyHeader(layout, request.descriptor, entries, names, request.notes);
   const bound = hourlyFileBound(layout, utf8Bytes(header), names, entries);
   const what = `${total} hourly series (${layout})`;
-  if (!(await host.confirm(hourlyPeakBytes(layout, bound, refs.length), what))) return null;
+  if (!(await host.confirm(hourlyPeakBytes(layout, bound, columnCount), what))) return null;
   host.progress(`Writing ${what}…`);
   await host.nextFrame();
 
   const parts = [header];
   const ratio = entries.map((entry) => entry.ratio);
   if (layout === 'long') {
+    const withYears = namesYears(entries);
     for (let start = 0; start < refs.length; start += CHUNK) {
       const end = Math.min(refs.length, start + CHUNK);
       for (let i = start; i < end; i++) {
-        parts.push(longRows(names[i], valuesOf(host.resolve(refs[i])), ratio[i], entries[i].leap));
+        const values = entries[i].refusal ? null : valuesOf(host.resolve(refs[i]));
+        parts.push(longRows(names[i], values, ratio[i], entries[i].span, withYears));
       }
       host.progress(`Writing series ${end.toLocaleString()} of ${total}…`);
       await host.nextFrame();
@@ -114,17 +126,23 @@ export async function exportHourly(
     return parts;
   }
 
-  const columns: (Float32Array | null)[] = [];
+  const copies: (Float32Array | null)[] = [];
   for (let start = 0; start < refs.length; start += CHUNK) {
-    for (const ref of refs.slice(start, start + CHUNK)) {
-      columns.push(valuesOf(host.resolve(ref))?.slice() ?? null);
+    for (let i = start; i < Math.min(refs.length, start + CHUNK); i++) {
+      copies.push(entries[i].refusal ? null : (valuesOf(host.resolve(refs[i]))?.slice() ?? null));
     }
-    host.progress(`Reading series ${columns.length.toLocaleString()} of ${total}…`);
+    host.progress(`Reading series ${copies.length.toLocaleString()} of ${total}…`);
     await host.nextFrame();
   }
+  const layoutColumns = wideColumns(entries, names);
+  const columns = layoutColumns.map(
+    ({ series, year }) =>
+      copies[series]?.subarray(year * YEAR_SLOT_HOURS, (year + 1) * YEAR_SLOT_HOURS) ?? null,
+  );
+  const columnRatio = layoutColumns.map(({ series }) => ratio[series]);
   for (let from = 0; from < YEAR_SLOT_HOURS; from += HOUR_CHUNK) {
     const to = Math.min(YEAR_SLOT_HOURS, from + HOUR_CHUNK);
-    parts.push(wideRows(columns, ratio, from, to));
+    parts.push(wideRows(columns, columnRatio, from, to));
     host.progress(`Writing hour ${to.toLocaleString()} of ${YEAR_SLOT_HOURS.toLocaleString()}…`);
     await host.nextFrame();
   }
@@ -143,7 +161,7 @@ function entryOf(
   series: CaseSeries | null,
   caseLabelOf: (caseId: string) => string,
   caseNames: CaseNames,
-): Omit<HourlyEntry, 'leap'> {
+): Omit<HourlyEntry, 'span'> {
   const ratio = ref.perUnit === true;
   if (series?.facets) {
     return {

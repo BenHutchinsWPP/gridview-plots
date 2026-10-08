@@ -6,6 +6,8 @@
 //   * Entities with missing/empty column values get '(blank)'.
 //   * presence === 0 planes are skipped.
 //   * Arithmetic is exact across hours.
+//   * A plane is the table's span, every year of it: a multi-year cube sums
+//     each year, and an output of one year's length is refused.
 
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
@@ -67,7 +69,7 @@ function makeLookup(rows) {
     for (let h = 0; h < HOURS; h++) cube[i * HOURS + h] = fillVal;
   }
 
-  const result = bucketedReduce(cube, presence, generators, lookup, 'FuelType');
+  const result = bucketedReduce(cube, HOURS, presence, generators, lookup, 'FuelType');
   const labels = result.buckets.map((b) => b.label);
 
   // Gas, Solar are dictionary sorted enum labels, followed by (blank) and (unlisted)
@@ -106,13 +108,31 @@ function makeLookup(rows) {
   }
 
   const out = new Float32Array(HOURS);
-  const count = reduceSingleBucket(cube, presence, generators, lookup, 'FuelType', 'Solar', out);
+  const count = reduceSingleBucket(
+    cube,
+    HOURS,
+    presence,
+    generators,
+    lookup,
+    'FuelType',
+    'Solar',
+    out,
+  );
   assert.equal(count, 2);
   assert.equal(out[0], 20);
   assert.equal(out[HOURS - 1], 20);
   ok('reduceSingleBucket accumulates matching planes into caller output buffer');
 
-  const countZero = reduceSingleBucket(cube, presence, generators, lookup, 'FuelType', 'Wind', out);
+  const countZero = reduceSingleBucket(
+    cube,
+    HOURS,
+    presence,
+    generators,
+    lookup,
+    'FuelType',
+    'Wind',
+    out,
+  );
   assert.equal(countZero, 0);
   assert.equal(out[0], 0);
   ok('reduceSingleBucket returns 0 when no entity matches the target label');
@@ -130,7 +150,7 @@ function makeLookup(rows) {
   cube[1 * HOURS + 1] = 20;
 
   const out = new Float32Array(HOURS);
-  reduceSingleBucket(cube, presence, generators, lookup, 'FuelType', 'Solar', out);
+  reduceSingleBucket(cube, HOURS, presence, generators, lookup, 'FuelType', 'Solar', out);
   // At h=0: G1 is 10, G2 is NaN -> 10 (not NaN)
   assert.equal(out[0], 10);
   // At h=1: G1 is NaN, G2 is 20 -> 20 (not NaN)
@@ -139,7 +159,7 @@ function makeLookup(rows) {
   assert.ok(Number.isNaN(out[2]));
   ok('reduceSingleBucket avoids NaN poisoning while keeping hours with no data as NaN');
 
-  const result = bucketedReduce(cube, presence, generators, lookup, 'FuelType');
+  const result = bucketedReduce(cube, HOURS, presence, generators, lookup, 'FuelType');
   const solar = result.buckets.find((b) => b.label === 'Solar');
   assert.equal(solar.series[0], 10);
   assert.equal(solar.series[1], 20);
@@ -171,6 +191,7 @@ function makeLookup(rows) {
   // names that this study lacks contribute nothing.
   const count = reduceMembers(
     cube,
+    HOURS,
     presence,
     generators,
     new Set(['G1', 'G2', 'G3', 'SYN-BIGGER-STUDY']),
@@ -183,6 +204,7 @@ function makeLookup(rows) {
 
   const none = reduceMembers(
     cube,
+    HOURS,
     presence,
     generators,
     new Set(['NOPE']),
@@ -213,6 +235,7 @@ function makeLookup(rows) {
   const out = new Float32Array(HOURS);
   const count = reduceSignedMembers(
     cube,
+    HOURS,
     presence,
     paths,
     new Map([
@@ -232,6 +255,7 @@ function makeLookup(rows) {
   const zeroed = new Float32Array(HOURS);
   const zeroCount = reduceSignedMembers(
     cube,
+    HOURS,
     presence,
     paths,
     new Map([
@@ -252,6 +276,7 @@ function makeLookup(rows) {
   const partial = new Float32Array(HOURS);
   reduceSignedMembers(
     holed,
+    HOURS,
     presence,
     paths,
     new Map([
@@ -264,9 +289,80 @@ function makeLookup(rows) {
   assert.equal(partial[1], -30, 'and the rest is both');
   ok('a NaN hour is skipped rather than poisoning the signed sum');
 
-  const none = reduceSignedMembers(cube, presence, paths, new Map(), new Float32Array(HOURS));
+  const none = reduceSignedMembers(
+    cube,
+    HOURS,
+    presence,
+    paths,
+    new Map(),
+    new Float32Array(HOURS),
+  );
   assert.equal(none, 0);
   ok('an empty coefficient map is a count of zero, not an error');
+}
+
+// ------------------------------------------------- a multi-year plane
+//
+// A table spanning three years holds `3 x 8,784` hours per entity, one run
+// per entity. Each year carries its own value, so a reduce that read only the
+// first slot (or strode by one slot) would give another answer.
+{
+  const { reduceMembers, reduceSignedMembers } = await import('../src/lookups/reduce.ts');
+  const YEARS = 3;
+  const PLANE = YEARS * HOURS;
+  const lookup = makeLookup(['G1,101,AREA_AV,Solar,100', 'G2,102,AREA_AV,Solar,100']);
+  const generators = ['G1', 'G2'];
+  const presence = Uint8Array.from([1, 1]);
+  const cube = new Float32Array(generators.length * PLANE);
+  // G1 is 1, 2, 3 in its three years; G2 is 10, 20, 30.
+  for (let g = 0; g < generators.length; g++) {
+    for (let y = 0; y < YEARS; y++) {
+      cube.fill((y + 1) * (g === 0 ? 1 : 10), g * PLANE + y * HOURS, g * PLANE + (y + 1) * HOURS);
+    }
+  }
+  const sumOf = (series) => series.reduce((total, value) => total + value, 0);
+  // (11 + 22 + 33) x 8,784; year one alone would be 11 x 8,784.
+  const whole = 66 * HOURS;
+
+  const out = new Float32Array(PLANE);
+  reduceSingleBucket(cube, PLANE, presence, generators, lookup, 'FuelType', 'Solar', out);
+  assert.deepEqual([out[0], out[HOURS], out[PLANE - 1]], [11, 22, 33], 'each year its own sum');
+  assert.equal(sumOf(out), whole);
+
+  const [solar] = bucketedReduce(cube, PLANE, presence, generators, lookup, 'FuelType').buckets;
+  assert.equal(solar.series.length, PLANE, 'a bucket series is one plane long');
+  assert.equal(sumOf(solar.series), whole);
+
+  reduceMembers(cube, PLANE, presence, generators, new Set(generators), out);
+  assert.equal(sumOf(out), whole);
+
+  reduceSignedMembers(
+    cube,
+    PLANE,
+    presence,
+    generators,
+    new Map([
+      ['G1', 1],
+      ['G2', -1],
+    ]),
+    out,
+  );
+  assert.deepEqual([out[0], out[HOURS], out[PLANE - 1]], [-9, -18, -27]);
+
+  assert.throws(
+    () =>
+      reduceMembers(
+        cube,
+        PLANE,
+        presence,
+        generators,
+        new Set(generators),
+        new Float32Array(HOURS),
+      ),
+    /output of 8784 h for planes of 26352 h/,
+    'one year of output for a three-year plane is refused, not summed partly',
+  );
+  ok('a group-by over a three-year table sums every year, one plane per entity');
 }
 
 console.log(`\n${checks} checks passed.`);

@@ -10,7 +10,7 @@
 // Like the ingest engines, this holds no app state and reaches no store or
 // DOM: `main.ts` hands in what a render reads, including the line pools.
 
-import { mostRealHours } from '../model/calendar';
+import { mostRealHours, type YearSpan } from '../model/calendar';
 import type { Filters } from '../model/types';
 import type { SeriesPool } from '../series/pool';
 import type { AreaQuery, BoxDim } from '../tables/area/types';
@@ -41,13 +41,33 @@ export function drawContextOf(
   };
 }
 
-/** The filters with the dates cleared, one object per filter state: a year
- * overview draws the whole year under every other filter. */
-export function datesCleared(filters: () => Filters): () => Filters {
+/** The filters with the dates cleared: what a pane drawn over the whole year
+ * shows under every other filter, the Years filter included. */
+export function datesCleared(filters: Filters): Filters {
+  return Object.freeze({ ...filters, dates: null });
+}
+
+/** The hour filters a pane's Figure caption names, as `FigureShot.shown`
+ * says it was drawn: a whole-year pane shows no dates filter, and an overlay
+ * names its kept years already, so the Years filter would say them twice. */
+export function figureFilters(
+  filters: Filters,
+  shown: { wholeYear: boolean; yearsOverlaid?: boolean },
+): Filters {
+  return Object.freeze({
+    ...filters,
+    ...(shown.wholeYear ? { dates: null } : {}),
+    ...(shown.yearsOverlaid ? { years: null } : {}),
+  });
+}
+
+/** `datesCleared` read live, one object per filter state: a year overview
+ * draws every year the Years filter keeps, whatever the dates filter keeps. */
+export function datesClearedOf(filters: () => Filters): () => Filters {
   let held: { of: Filters; filters: Filters } | null = null;
   return () => {
     const of = filters();
-    if (held?.of !== of) held = { of, filters: Object.freeze({ ...of, dates: null }) };
+    if (held?.of !== of) held = { of, filters: datesCleared(of) };
     return held.filters;
   };
 }
@@ -99,8 +119,9 @@ export interface FrameInput<B> {
   /** The drawn set again with the dates cleared, in buffers of its own. */
   overview: LineSource;
   limitLines(series: readonly CaseSeries[]): DrawnLimit[];
-  yearOfCase(caseId: string): number;
-  boxScratch: Float32Array;
+  spanOfCase(caseId: string): YearSpan;
+  /** One reused buffer of at least `hours` values, for the box partition. */
+  boxScratch(hours: number): Float32Array;
   /** Every browse tab, loaded or not. Called once, after the series. */
   declareTabs(): readonly DeclaredTab<B>[];
   freshness: BrowseFreshness;
@@ -154,15 +175,15 @@ export function computeFrame<B>(input: FrameInput<B>): Frame<B> {
   const boxesOn = (dim: BoxDim): BoxGroup[] => {
     let groups = cut.get(dim);
     if (!groups)
-      cut.set(dim, (groups = computeBoxes(series, dim, input.yearOfCase, input.boxScratch)));
+      cut.set(dim, (groups = computeBoxes(series, dim, input.spanOfCase, input.boxScratch)));
     return groups;
   };
   // Resolved once and only when a pane asks: a year overview, or a time pane
   // that does not follow the dates.
   let wholeYearLines: CaseSeries[] | null = null;
   const wholeYear = capped ? undefined : () => (wholeYearLines ??= input.overview.resolve(draws));
-  const yearOf = (line: CaseSeries): number =>
-    line.spec?.caseId ? input.yearOfCase(line.spec.caseId) : NO_YEAR;
+  const spanOf = (line: CaseSeries): YearSpan =>
+    line.spec?.caseId ? input.spanOfCase(line.spec.caseId) : { firstYear: NO_YEAR, numYears: 1 };
   const charts: ChartsInput = {
     boxDims: query.boxDims,
     limits: input.limitLines(series),
@@ -171,7 +192,8 @@ export function computeFrame<B>(input: FrameInput<B>): Frame<B> {
     refusal: capped ?? undefined,
     hasCases: input.hasCases,
     dates: query.filters.dates,
-    yearOf,
+    years: query.filters.years,
+    spanOf,
     overview: wholeYear,
     overviewLimits: wholeYear && (() => input.limitLines(wholeYear())),
   };
@@ -183,11 +205,9 @@ export function computeFrame<B>(input: FrameInput<B>): Frame<B> {
   let keptHours = 0;
   for (const entry of series) keptHours = Math.max(keptHours, entry.n);
   const drawn = series.filter((entry) => entry.values !== null);
-  const years =
-    drawn.length > 0 ? drawn.map(yearOf) : query.cases.map((id) => input.yearOfCase(id));
-  const ofHours = mostRealHours(
-    (years.length > 0 ? years : [NO_YEAR]).map((firstYear) => ({ firstYear, numYears: 1 })),
-  );
+  const spans =
+    drawn.length > 0 ? drawn.map(spanOf) : query.cases.map((id) => input.spanOfCase(id));
+  const ofHours = mostRealHours(spans.length > 0 ? spans : [{ firstYear: NO_YEAR, numYears: 1 }]);
 
   return {
     series,

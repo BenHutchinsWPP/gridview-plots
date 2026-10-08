@@ -15,8 +15,9 @@ import type { SeriesFacets } from '../series/label';
 import { within } from './dom';
 import { CASE_COLORS } from './shell';
 import { figureLines, type FigureCapture } from '../figure/build';
+import type { YearSpan } from '../model/calendar';
 import { sameSet, type DateSet } from '../model/date-range';
-import type { PaneElements, PaneFrame } from './panes/adapter';
+import type { FigureShot, PaneElements, PaneFrame } from './panes/adapter';
 import { createPane, type AdapterFactories, type ChartPane } from './panes/pane';
 import { createDurationAdapter, createStackedAdapter, createTimeAdapter } from './panes/line';
 import { createBoxAdapter } from './panes/box';
@@ -59,7 +60,8 @@ export interface CaseSeries {
   color: string;
   /** Lines of different units get different y scales. */
   unit: string;
-  /** 8,784 values (the year slot), NaN where filtered out or missing; null when refused. */
+  /** One 8,784-hour slot per year of the line's Case, NaN where filtered
+   * out or missing; null when refused. */
   values: Float32Array | null;
   /** Shown in place of a chart. */
   refusal?: string;
@@ -115,10 +117,14 @@ export interface DrawnLimit {
   color: string;
   /** The bounded series' unit, so both share a y scale. */
   unit: string;
-  /** 8,784 values (the year slot), NaN where unbounded or filtered; already masked. */
+  /** One 8,784-hour slot per year of the bounded line's Case, NaN where
+   * unbounded or filtered; already masked. */
   values: Float32Array;
   /** A boundary's members' limits summed (`summedLimitLines`). */
   summed?: boolean;
+  /** The first year of the bounded line's Case: where a time axis places
+   * `values`. Absent, they start at the axis origin. */
+  firstYear?: number;
   /** Bounds the drawer's click-preview, so a figure leaves it out with it. */
   preview?: boolean;
 }
@@ -148,8 +154,11 @@ export interface ChartsInput {
   hasCases: boolean;
   /** The rail's dates, the window a year overview draws. */
   dates: DateSet | null;
-  /** A drawn line's calendar year, for the interval pane's weeks. */
-  yearOf?: (series: CaseSeries) => number;
+  /** The years the filters keep, absolute; null keeps every year. */
+  years?: ReadonlySet<number> | null;
+  /** A drawn line's Case's years, for the interval pane's weeks and the
+   * figure's hour count. */
+  spanOf?: (series: CaseSeries) => YearSpan;
   /** The drawn lines with the dates cleared, for a year overview. Asked only
    * when a pane shows one: it is a second resolve of every line. */
   overview?: () => readonly CaseSeries[];
@@ -174,6 +183,10 @@ export interface Charts {
   /** Put back saved interval settings; a value this build does not know,
    * or a pane with none saved, takes the default. */
   setIntervals(saved: readonly PaneInterval[] | undefined): void;
+  /** Each pane's "overlay years", by pane, for a bundle. */
+  overlayYears(): boolean[];
+  /** Put back saved "overlay years"; a pane with none saved is unticked. */
+  setOverlayYears(saved: readonly boolean[] | undefined): void;
 }
 
 /** One pane's interval settings, as a bundle carries them. */
@@ -247,6 +260,12 @@ const OVERVIEW_CHECK_HOOKS = [
   '[data-el="overview-check-2"]',
   '[data-el="overview-check-3"]',
   '[data-el="overview-check-4"]',
+];
+const OVERLAY_YEARS_CHECK_HOOKS = [
+  '[data-el="overlay-years-check-1"]',
+  '[data-el="overlay-years-check-2"]',
+  '[data-el="overlay-years-check-3"]',
+  '[data-el="overlay-years-check-4"]',
 ];
 /** The strip a time pane's overview shows under its body. */
 const OVERVIEW_HOOKS = [
@@ -336,11 +355,10 @@ export function createCharts(
   onBoxDimChange: (pane: number, dim: string) => void,
   options?: {
     /** A pane's Figure button: the pane as drawn at the click. */
-    /** `wholeYear`: a time pane not following the dates, so the figure
-     * shows every date. */
-    onFigure?: (capture: FigureCapture, shown: { wholeYear: boolean }) => void;
+    /** How the pane was drawn, as `FigureShot.shown`. */
+    onFigure?: (capture: FigureCapture, shown: FigureShot['shown']) => void;
     /** A drag-zoom with "follow dates" ticked, or a drag on a year overview. */
-    onDatesChange?: (dates: DateSet) => void;
+    onDatesChange?: (dates: DateSet | null) => void;
   },
 ): Charts {
   const currentLayout: SlotType[] = [...DEFAULT_SLOTS];
@@ -356,6 +374,7 @@ export function createCharts(
     follow: within<HTMLInputElement>(root, FOLLOW_DATES_CHECK_HOOKS[i]),
     overview: within<HTMLInputElement>(root, OVERVIEW_CHECK_HOOKS[i]),
     overviewHost: within(root, OVERVIEW_HOOKS[i]),
+    overlayYears: within<HTMLInputElement>(root, OVERLAY_YEARS_CHECK_HOOKS[i]),
     boxDim: within<HTMLSelectElement>(root, BOX_DIM_SELECT_HOOKS[i]),
     boxValues: within<HTMLInputElement>(root, BOX_VALUES_CHECK_HOOKS[i]),
     xySwap: within<HTMLButtonElement>(root, XY_SWAP_HOOKS[i]),
@@ -367,10 +386,12 @@ export function createCharts(
   }));
   const paneBodies = paneElements.map((elements) => elements.body);
   let lastInput: ChartsInput | null = null;
+  /** The lines the last rebuild drew, for the Figure buttons after a resize. */
+  let lastDrawable: CaseSeries[] = [];
 
   /** A new range from a pane, dropped when it is the one already applied, or
    * the zoom and the dates would re-trigger each other. */
-  function datesFromPane(dates: DateSet): void {
+  function datesFromPane(dates: DateSet | null): void {
     if (!lastInput || sameSet(dates, lastInput.dates)) return;
     options?.onDatesChange?.(dates);
   }
@@ -443,6 +464,7 @@ export function createCharts(
     // Each pane's controls depend on the layout and the drawn count, so they
     // are recomputed on every rebuild.
     for (const pane of panes) pane.showControls(frame);
+    lastDrawable = drawable;
     for (const pane of panes) pane.render(frame);
     updateFigureButtons(drawable);
   }
@@ -453,6 +475,8 @@ export function createCharts(
     frame = requestAnimationFrame(() => {
       frame = 0;
       for (const pane of panes) pane.resize();
+      // A pane can refuse, or draw again, at a new size.
+      updateFigureButtons(lastDrawable);
     });
   });
   observer.observe(within(root, CHART_AREA_HOOK));
@@ -483,6 +507,15 @@ export function createCharts(
     },
     setIntervals(saved) {
       paneElements.forEach((elements, i) => restoreIntervalSettings(elements, saved?.[i]));
+      if (lastInput) rebuild(lastInput);
+    },
+    overlayYears() {
+      return paneElements.map((elements) => elements.overlayYears.checked);
+    },
+    setOverlayYears(saved) {
+      paneElements.forEach((elements, i) => {
+        elements.overlayYears.checked = saved?.[i] === true;
+      });
       if (lastInput) rebuild(lastInput);
     },
     setLayout(newLayout: readonly SlotType[]) {

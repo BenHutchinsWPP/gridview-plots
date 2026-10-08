@@ -20,7 +20,7 @@ const BUS_LONG_ENTITY_COL = 3;
 export const BUS_LONG: LongSignature = {
   keys: BUS_LONG_KEYS,
   entityCol: BUS_LONG_ENTITY_COL,
-  noun: 'bus',
+  noun: { one: 'bus', many: 'buses' },
 };
 
 // ------------------------------------------------------------------- ingest
@@ -59,11 +59,12 @@ export const finalizeBusLong: Finalize<BusLongResult> = (
     tou: accumulator.tou,
     hoursPresent: accumulator.hourSeen,
     sourceColumns: Array.from(buses),
-    year: plan.year,
+    firstYear: accumulator.firstYear,
+    numYears: accumulator.numYears,
     quantity: plane.quantity,
   }));
 
-  return { data, warnings: coverageWarnings(accumulator, plan.label, plan.year) };
+  return { data, warnings: coverageWarnings(accumulator, plan.label) };
 };
 
 /** Bus as a long-shape kind. No `retention` note: bus quantities combine by

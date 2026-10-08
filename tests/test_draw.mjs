@@ -47,6 +47,7 @@ function ok(label) {
 }
 
 const NO_FILTERS = {
+  years: null,
   dates: null,
   hoursOfDay: null,
   daysOfWeek: null,
@@ -93,7 +94,8 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     names: ['ALDER', 'BIRCH', 'CEDAR'],
     tou: new Uint8Array(H),
     sourceColumns: [101, 102, 103],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
     quantity: 'Unserved Load (MWh)',
   };
   setBusMembership(
@@ -137,7 +139,8 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     interfaces: ['P01', 'P02'],
     tou: new Uint8Array(H),
     sourceColumns: ['P01', 'P02'],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
     quantity: 'Power Flow (MW)',
     unit: 'MW',
   };
@@ -224,6 +227,84 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
 }
 
 {
+  // % of range over a two-year span: the monthly limits repeat in each year,
+  // so every year is divided by its limit. P01 is 100 in year one and 300 in
+  // year two; P02 7 and 21. Year one alone would read 50% in both years.
+  const { rangeLimitsOf } = await import('../src/limits/draw.ts');
+  const YEARS = 2;
+  const cube = new Float32Array(2 * YEARS * H);
+  [
+    [100, 300],
+    [7, 21],
+  ].forEach((levels, index) =>
+    levels.forEach((level, year) =>
+      cube.fill(level, (index * YEARS + year) * H, (index * YEARS + year + 1) * H),
+    ),
+  );
+  const iface = {
+    cube,
+    presence: new Uint8Array(2).fill(1),
+    interfaces: ['P01', 'P02'],
+    tou: new Uint8Array(YEARS * H),
+    sourceColumns: ['P01', 'P02'],
+    firstYear: 2035,
+    numYears: YEARS,
+    quantity: 'Power Flow (MW)',
+    unit: 'MW',
+  };
+  setInterfaceMembership(
+    new Map([
+      [
+        'Both',
+        [
+          { name: 'P01', direction: 'forward' },
+          { name: 'P02', direction: 'forward' },
+        ],
+      ],
+    ]),
+  );
+  const monthly = (value) => ({ max: new Float32Array(12).fill(value) });
+  const limits = { P01: monthly(200), P02: monthly(14) };
+  const asked = [];
+  const ranged = context({
+    interface: [row('interface:Power Flow (MW)', iface)],
+    interfaceRange: (_caseId, name, year, numYears) => {
+      asked.push([name, year, numYears]);
+      return rangeLimitsOf(limits[name], year, numYears);
+    },
+  });
+  const base = {
+    kind: 'interface',
+    caseId: 'case-1',
+    slotKey: 'interface:Power Flow (MW)',
+    variable: iface.quantity,
+    unit: 'MW',
+    axisIndex: -1,
+    perUnit: true,
+  };
+  const [pathPct, groupPct] = resolveDraws(ranged, [
+    pin({ ...base, id: 'span-path', entity: 'P01' }),
+    pin({
+      ...base,
+      id: 'span-group',
+      entity: 'Both',
+      groupBy: INTERFACE_GROUP_BY,
+      groupValue: 'Both',
+    }),
+  ]);
+  assert.deepEqual(asked[0], ['P01', 2035, YEARS], 'the limits span the table');
+  assert.equal(pathPct.values.length, YEARS * H);
+  assert.equal(pathPct.values[5], 50, 'year one: 100 over 200');
+  assert.equal(pathPct.values[H + 5], 150, 'year two: 300 over the same 200');
+  assert.ok(pathPct.detail.endsWith('% of limit'), pathPct.detail);
+  assert.ok(Math.abs(groupPct.values[5] - 50) < 1e-3, 'year one: 107 over 214');
+  assert.ok(Math.abs(groupPct.values[H + 5] - 150) < 1e-3, 'year two: 321 over 214');
+  assert.ok(groupPct.detail.endsWith('% of summed limits'), groupPct.detail);
+  ok('a two-year path and group draw as a % of their limits in every year');
+  clearInterfaceGroups();
+}
+
+{
   // One Area slot, two metrics of one area: plane (area 0, metric m).
   const area = {
     ...planes(2, [300, 120]),
@@ -232,7 +313,8 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     presence: new Uint8Array(2).fill(1),
     tou: new Uint8Array(H),
     sourceColumns: [],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
   };
   const owner = { id: 'case-1', name: 'Winter', color: '#000', data: area };
   const metric = (variable) => ({
@@ -256,12 +338,84 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
 }
 
 {
+  // A two-year Area and Bus line: the drawn values and stats are the whole
+  // span, year two differing from year one.
+  const twoYears = (count, byYear) => {
+    const cube = new Float32Array(count * 2 * H);
+    byYear.forEach((levels, index) =>
+      levels.forEach((level, year) =>
+        cube.fill(level, (index * 2 + year) * H, (index * 2 + year + 1) * H),
+      ),
+    );
+    return { cube, presence: new Uint8Array(count).fill(1) };
+  };
+  const area = {
+    ...twoYears(2, [
+      [300, 500],
+      [120, 140],
+    ]),
+    areas: ['SAMPLE_NORTH'],
+    metrics: ['Generation (MWh)', 'Load (MWh)'],
+    tou: new Uint8Array(2 * H),
+    sourceColumns: [],
+    firstYear: 2036,
+    numYears: 2,
+  };
+  const bus = {
+    ...twoYears(1, [[10, 30]]),
+    buses: Int32Array.from([101]),
+    names: ['ALDER'],
+    tou: new Uint8Array(2 * H),
+    sourceColumns: [101],
+    firstYear: 2036,
+    numYears: 2,
+    quantity: 'Unserved Load (MWh)',
+  };
+  const [load, alder] = resolveDraws(
+    context({
+      area: [{ id: 'case-1', name: 'Winter', color: '#000', data: area }],
+      bus: [row('bus', bus)],
+    }),
+    [
+      pin({
+        id: 'span-load',
+        kind: 'area',
+        caseId: 'case-1',
+        slotKey: 'area ',
+        entity: 'SAMPLE_NORTH',
+        variable: 'Load (MWh)',
+        unit: 'MWh',
+        axisIndex: 0,
+      }),
+      pin({
+        id: 'span-bus',
+        kind: 'bus',
+        caseId: 'case-1',
+        slotKey: 'bus',
+        entity: '101',
+        variable: bus.quantity,
+        unit: 'MWh',
+        axisIndex: 0,
+      }),
+    ],
+  );
+  assert.equal(load.values.length, 2 * H);
+  assert.equal(load.values[H + 5], 140, "the Load plane's second year");
+  assert.equal(load.stats.max, 140);
+  assert.equal(alder.values[2 * H - 1], 30);
+  const real = (10 * H + 30 * (H - 24)) / (2 * H - 24);
+  assert.ok(Math.abs(alder.stats.mean - real) < 1e-9, 'the mean of every real hour');
+  ok('a two-year Area and Bus line draw and summarise every year');
+}
+
+{
   const gen = {
     ...planes(1, [40]),
     generators: ['SAMPLE_UNIT_1'],
     tou: new Uint8Array(H),
     sourceColumns: ['SAMPLE_UNIT_1'],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
     quantity: 'Generation (MW)',
   };
   const slotKey = 'generator Generation (MW)';
@@ -308,20 +462,69 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
   // The pool holds only what the last resolve drew: cycling pins through
   // variables would otherwise keep one buffer set per step until the Case goes.
   const lines = createSeriesPool();
-  const first = lines.for('a');
-  lines.for('b');
+  const first = lines.for(H, 'a');
+  lines.for(H, 'b');
   lines.sweep();
-  assert.equal(lines.for('a'), first, 'a key asked for since the last sweep is kept');
+  assert.equal(lines.for(H, 'a'), first, 'a key asked for since the last sweep is kept');
   lines.sweep();
   lines.sweep();
-  assert.notEqual(lines.for('a'), first, 'a key not asked for is dropped at the sweep');
+  assert.notEqual(lines.for(H, 'a'), first, 'a key not asked for is dropped at the sweep');
 
   const ctx = context({});
-  const stale = ctx.lines.for('stale');
+  const stale = ctx.lines.for(H, 'stale');
   resolveDraws(ctx, []); // the render that drew it
   resolveDraws(ctx, []); // the render that did not
-  assert.notEqual(ctx.lines.for('stale'), stale, 'resolving an empty set frees every buffer');
+  assert.notEqual(ctx.lines.for(H, 'stale'), stale, 'resolving an empty set frees every buffer');
   ok('the line pool holds only what the last resolve drew');
+}
+
+{
+  // A set is one plane of its table long, every year of the span. A key whose
+  // table now spans another number of years gets a new set rather than one
+  // read past its end, and two Cases of different spans in one draw each get
+  // their own length.
+  const lines = createSeriesPool();
+  const one = lines.for(H, 'a');
+  assert.equal(lines.for(H, 'a'), one, 'the same length reuses the set');
+  const two = lines.for(2 * H, 'a');
+  assert.notEqual(two, one, 'another length replaces it');
+  for (const buffer of Object.values(two)) assert.equal(buffer.length, 2 * H);
+
+  const busTable = (numYears) => ({
+    cube: new Float32Array(numYears * H).fill(10),
+    presence: Uint8Array.of(1),
+    buses: Int32Array.of(101),
+    names: ['ALDER'],
+    tou: new Uint8Array(numYears * H),
+    sourceColumns: [101],
+    firstYear: 2035,
+    numYears,
+    quantity: 'Unserved Load (MWh)',
+  });
+  const busRow = (caseId, numYears) => ({
+    key: rowKeyOf(caseId, 'bus'),
+    caseId,
+    slotKey: 'bus',
+    label: caseId,
+    data: busTable(numYears),
+  });
+  const ref = (caseId) => ({
+    id: `${caseId} | bus | 101`,
+    kind: 'bus',
+    caseId,
+    slotKey: 'bus',
+    entity: 101,
+    variable: 'Unserved Load (MWh)',
+    unit: 'MWh',
+    axisIndex: 0,
+  });
+  const [single, span] = resolveDraws(
+    context({ bus: [busRow('case-1', 1), busRow('case-2', 2)] }),
+    [pin(ref('case-1')), pin(ref('case-2'))],
+  );
+  assert.equal(single.values.length, H, 'a one-year Case draws one slot');
+  assert.equal(span.values.length, 2 * H, 'a two-year Case draws both years');
+  ok('a line buffer is its own table plane long, whatever span another Case has');
 }
 
 {
@@ -337,7 +540,8 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     presence: new Uint8Array(4).fill(1),
     tou: new Uint8Array(H),
     sourceColumns: ['Name', ...metrics],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
   };
   const ref = {
     id: 'north',
@@ -393,7 +597,8 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     presence: new Uint8Array(2).fill(1),
     tou: new Uint8Array(H),
     sourceColumns: [],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
   };
   const bus = {
     ...varying(2, [10, -20]),
@@ -401,7 +606,8 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     names: ['ALDER', 'BIRCH'],
     tou: new Uint8Array(H),
     sourceColumns: [101, 102],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
     quantity: 'Unserved Load (MWh)',
   };
   const iface = {
@@ -409,7 +615,8 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     interfaces: ['P01'],
     tou: new Uint8Array(H),
     sourceColumns: ['P01'],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
     quantity: 'Power Flow (MW)',
     unit: 'MW',
   };
@@ -418,7 +625,8 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     generators: ['SAMPLE_UNIT_1'],
     tou: new Uint8Array(H),
     sourceColumns: ['SAMPLE_UNIT_1'],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
     quantity: 'Generation (MW)',
   };
   const ctx = context({
@@ -484,7 +692,7 @@ const pin = (ref) => ({ ref, color: '#000', dashed: false });
     {
       resolve: (ref) => resolveDraw(exportCtx, pin(ref)),
       // Every table here states 2035: long writes no Feb 29 rows for it.
-      yearOfCase: () => 2035,
+      spanOfCase: () => ({ firstYear: 2035, numYears: 1 }),
       progress: () => {},
       nextFrame: async () => {},
       confirm: async () => true,

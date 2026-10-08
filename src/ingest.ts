@@ -1,11 +1,20 @@
 // src/ingest.ts
 //
-// Ingest helpers that are the same for every table kind: CSV line hygiene,
-// the date-to-slot-day rule, the SIMD gate, the worker count, the dispatch loop,
-// and the failure attribution that makes partial import safe. Nothing here
-// knows what a column MEANS.
+// Ingest helpers that are the same for every table kind and both shapes: CSV
+// line hygiene, the date-to-slot-day rule, a Case's year span and how a
+// refusal names it, what a cube costs and how every picker and refusal words
+// it, the SIMD gate, the worker count, the dispatch loop, and the failure
+// attribution that makes partial import safe. Nothing here knows what a column
+// MEANS.
 
-import { isLeapYear, SLOT_MONTH_LENGTHS, SLOT_MONTH_STARTS } from './model/calendar';
+import {
+  isLeapYear,
+  SLOT_MONTH_LENGTHS,
+  SLOT_MONTH_STARTS,
+  YEAR_SLOT_HOURS,
+  type YearSpan,
+} from './model/calendar';
+import { dayLabel } from './model/date-range';
 
 // ---------------------------------------------------------------- CSV text
 
@@ -37,6 +46,128 @@ export function dayOfYear(year: number, month: number, day: number): number {
   if (day > SLOT_MONTH_LENGTHS[month - 1]) return -1;
   if (month === 2 && day === 29 && !isLeapYear(year)) return -1;
   return SLOT_MONTH_STARTS[month - 1] + day - 1;
+}
+
+// ---------------------------------------------------------------- year span
+
+/** The most years a Case can span: both parsers place a row by a one-byte
+ * offset from the first. */
+export const MAX_CASE_YEARS = 256;
+
+/** "2030", "2030-2032", "2030-2031, 2033 and 2036": consecutive years as runs. */
+export function yearRuns(years: readonly number[]): string {
+  const runs: string[] = [];
+  for (let i = 0; i < years.length;) {
+    let j = i;
+    while (j + 1 < years.length && years[j + 1] === years[j] + 1) j++;
+    runs.push(j === i ? `${years[i]}` : `${years[i]}-${years[j]}`);
+    i = j + 1;
+  }
+  return runs.length === 1
+    ? runs[0]
+    : `${runs.slice(0, -1).join(', ')} and ${runs[runs.length - 1]}`;
+}
+
+/** The refusal for years inside a Case's span that no row is dated in, so
+ * both shapes word a gap the same way. `who` opens the sentence ("x.csv has"
+ * or "… together have"); both lists ascend. */
+export function yearGapRefusal(
+  who: string,
+  years: readonly number[],
+  missing: readonly number[],
+): string {
+  const gap = yearRuns(missing);
+  return (
+    `${who} rows for ${yearRuns(years)} but none for ${gap}. A Case is a contiguous run ` +
+    `of years, so the load is refused rather than reading ${gap} as no data. Add the ` +
+    `missing year's rows, or load each run of years as its own Case.`
+  );
+}
+
+/**
+ * The span of years `rowsByYear` covers, or why it is not one Case. A Case is
+ * a contiguous run: a year inside it with no rows is refused, naming the
+ * years, rather than read as a year of no data.
+ */
+export function yearSpanOf(
+  who: string,
+  rowsByYear: ReadonlyMap<number, number>,
+): { span: YearSpan; refusal?: undefined } | { span?: undefined; refusal: string } {
+  const years = [...rowsByYear.keys()].filter((y) => rowsByYear.get(y)! > 0).sort((a, b) => a - b);
+  if (years.length === 0) {
+    return {
+      refusal:
+        `${who} no row with a Date this reader can read (M/D/YYYY), so the Case's years are ` +
+        `unknown and the load is refused.`,
+    };
+  }
+  const firstYear = years[0];
+  const numYears = years[years.length - 1] - firstYear + 1;
+  if (numYears > MAX_CASE_YEARS) {
+    return {
+      refusal:
+        `${who} rows dated ${firstYear} to ${firstYear + numYears - 1}, ${numYears} years. A Case ` +
+        `spans at most ${MAX_CASE_YEARS} years, so the load is refused.`,
+    };
+  }
+  const missing: number[] = [];
+  for (let y = firstYear; y < firstYear + numYears; y++) if (!rowsByYear.get(y)) missing.push(y);
+  if (missing.length > 0) return { refusal: yearGapRefusal(who, years, missing) };
+  return { span: { firstYear, numYears } };
+}
+
+/** "1420 of 2036 (Feb 29, hour ending 5)": a span hour as its year's slot
+ * hour, and as the file would date it. */
+export function spanHourLabel(firstYear: number, spanHour: number): string {
+  const hour = spanHour % YEAR_SLOT_HOURS;
+  const year = firstYear + (spanHour - hour) / YEAR_SLOT_HOURS;
+  return `${hour} of ${year} (${dayLabel(Math.floor(hour / 24))}, hour ending ${(hour % 24) + 1})`;
+}
+
+/** "2034" or "2034-2036": a span as a refusal names it. */
+export function spanLabel(span: YearSpan): string {
+  const last = span.firstYear + span.numYears - 1;
+  return last === span.firstYear ? `${span.firstYear}` : `${span.firstYear}-${last}`;
+}
+
+// ---------------------------------------------------------------- cube cost
+
+/** One factor of a cube's size other than its hours: a count and its noun. */
+export interface CubeFactor {
+  count: number;
+  one: string;
+  many: string;
+}
+
+/** What a cube asks for, and the product worded. */
+export interface CubeCost {
+  bytes: number;
+  /** "3 metrics × 1,200 buses × 2 years × 8,784 h × 4 B = 241 MB". */
+  arithmetic: string;
+}
+
+/**
+ * The Float32 cube `factors` × `years` slots of 8,784 hours allocates. Every
+ * picker, confirmation and allocation refusal words its number through this,
+ * so the figure a picker shows is the product the refusal names. `years` is
+ * summed over the cubes a batch builds, one per file.
+ */
+export function cubeCost(factors: readonly CubeFactor[], years: number): CubeCost {
+  const terms = [...factors, { count: years, one: 'year', many: 'years' }];
+  const bytes =
+    terms.reduce((product, term) => product * term.count, 1) *
+    YEAR_SLOT_HOURS *
+    Float32Array.BYTES_PER_ELEMENT;
+  const megabytes = bytes / (1024 * 1024);
+  const words = terms.map(
+    (term) => `${term.count.toLocaleString()} ${term.count === 1 ? term.one : term.many}`,
+  );
+  return {
+    bytes,
+    arithmetic:
+      `${words.join(' × ')} × ${YEAR_SLOT_HOURS.toLocaleString()} h × ` +
+      `${Float32Array.BYTES_PER_ELEMENT} B = ${megabytes.toFixed(megabytes < 10 ? 1 : 0)} MB`,
+  };
 }
 
 // ---------------------------------------------------------------- feature gate

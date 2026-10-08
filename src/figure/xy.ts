@@ -9,9 +9,11 @@
 //
 // The fit is the pane's own `fitLine` over the same pairs, so the figure
 // cannot state a different equation from the app. Points on one 300 dpi
-// output pixel are one mark: more would only lengthen the file.
+// output pixel are one mark: more would only lengthen the file. The caption
+// says which years were paired, since two Cases of different years pair by
+// position and their spans alone would not say so.
 
-import { fitCaption, fitLine } from '../ui/panes/xy';
+import { fitCaption, fitLine, yearsText } from '../ui/panes/xy';
 import { fullLabel, type SeriesFacets } from '../series/label';
 import { niceScale, type FigureCapture, type FigureLine, type PaneRenderer } from './build';
 import { line as svgLine, rect } from './svg';
@@ -81,8 +83,16 @@ export function xyPane(
     return niceScale(low, high, Math.max(3, Math.min(8, Math.round(plotWidth / X_TICK_ROOM_PT))));
   };
 
+  const paired = capture.xy.years;
+  const years = !paired
+    ? null
+    : paired.x.every((year, k) => year === paired.y[k])
+      ? `paired by hour, ${yearsText(paired.x)}`
+      : `paired by hour, ${yearsText(paired.x)} against ${yearsText(paired.y)}`;
+
   return {
     lead: (what) => `X-Y scatter of ${what}`,
+    years,
     xTitle: xyAxisTitle(xLine),
     yAxis: {
       title: xyAxisTitle(yLine),

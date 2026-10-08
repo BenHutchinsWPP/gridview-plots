@@ -20,6 +20,7 @@ const { serializeLimits, deserializeLimits } = await import('../src/limits/envel
 const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 const { summedLimits } = await import('../src/tables/interface/limits.ts');
 const { CaseStore, caseForName } = await import('../src/model/case-model.ts');
+const { createLimitLines } = await import('../src/app/limit-lines.ts');
 
 let passed = 0;
 /** A FRESH store per check, so no check can leak a limits table into the
@@ -173,6 +174,22 @@ check('twelve months become 8,784 slot hours as a STEP, with no interpolation', 
   assert.equal(plain.upper[1440], 102);
 });
 
+check('a multi-year series takes its limits in every year, never only its first', () => {
+  const byMonth = new Float32Array(12);
+  for (let m = 0; m < 12; m++) byMonth[m] = 100 + m;
+  store.setSharedLimits({
+    source: 'shared.csv',
+    byInterface: new Map([['PATH_A', { max: byMonth }]]),
+  });
+  const [line] = limitLinesFor(
+    store,
+    drawn({ numYears: 3, values: new Float32Array(3 * YEAR_SLOT_HOURS) }),
+  );
+  assert.equal(line.values.length, 3 * YEAR_SLOT_HOURS);
+  assert.equal(line.values[2 * YEAR_SLOT_HOURS], 100, 'January of the third year');
+  assert.equal(line.values[3 * YEAR_SLOT_HOURS - 1], 111, 'December of the third year');
+});
+
 check("the limit borrows the series' colour exactly, and names its side", () => {
   store.setSharedLimits(table('shared.csv', 'PATH_A', { max: 100, min: -50 }));
   const lines = limitLinesFor(store, drawn());
@@ -316,10 +333,13 @@ check("a boundary sums its members' limits from the table its Case reads", () =>
   store.setCaseLimits('case-1', both('mine.csv', [250, -90], [70, -20]));
   store.setCaseLimits('case-3', table('partial.csv', 'PATH_A', { max: 250, min: -90 }));
   const members = (caseId) =>
-    summedLimits([
-      { sign: 1, limits: rangeLimitsOf(store.limitFor(caseId, 'PATH_A'), 2035) },
-      { sign: -1, limits: rangeLimitsOf(store.limitFor(caseId, 'PATH_B'), 2035) },
-    ]);
+    summedLimits(
+      [
+        { sign: 1, limits: rangeLimitsOf(store.limitFor(caseId, 'PATH_A'), 2035) },
+        { sign: -1, limits: rangeLimitsOf(store.limitFor(caseId, 'PATH_B'), 2035) },
+      ],
+      YEAR_SLOT_HOURS,
+    );
   const own = members('case-1');
   assert.equal(own.upper[0], 250 + 20, "PATH_A's MAX plus reversed PATH_B's −MIN");
   assert.equal(own.lower[0], -90 - 70);
@@ -356,10 +376,13 @@ check("a boundary's limit lines are its members' limits summed and swapped", () 
       ['PATH_B', { max: new Float32Array(12).fill(60), min: new Float32Array(12).fill(-30) }],
     ]),
   });
-  const limits = summedLimits([
-    { sign: 1, limits: rangeLimitsOf(store.limitFor('case-1', 'PATH_A'), 2035) },
-    { sign: -1, limits: rangeLimitsOf(store.limitFor('case-1', 'PATH_B'), 2035) },
-  ]);
+  const limits = summedLimits(
+    [
+      { sign: 1, limits: rangeLimitsOf(store.limitFor('case-1', 'PATH_A'), 2035) },
+      { sign: -1, limits: rangeLimitsOf(store.limitFor('case-1', 'PATH_B'), 2035) },
+    ],
+    YEAR_SLOT_HOURS,
+  );
   const values = new Float32Array(YEAR_SLOT_HOURS).fill(5);
   values[3] = NaN; // a filtered hour
   const lines = summedLimitLines(limits, {
@@ -381,10 +404,13 @@ check("a boundary's limit lines are its members' limits summed and swapped", () 
 });
 
 check('a boundary side no member rates draws no line, and nothing in another unit', () => {
-  const limits = summedLimits([
-    { sign: 1, limits: { upper: 100 } },
-    { sign: 1, limits: { upper: 50, lower: -10 } },
-  ]);
+  const limits = summedLimits(
+    [
+      { sign: 1, limits: { upper: 100 } },
+      { sign: 1, limits: { upper: 50, lower: -10 } },
+    ],
+    YEAR_SLOT_HOURS,
+  );
   const subject = {
     label: 'West',
     color: '#000',
@@ -400,6 +426,26 @@ check('a boundary side no member rates draws no line, and nothing in another uni
   assert.deepEqual(summedLimitLines(limits, { ...subject, unit: '$' }), []);
   assert.deepEqual(summedLimitLines(limits, { ...subject, values: null }), []);
   assert.deepEqual(summedLimitLines({}, subject), []);
+});
+
+check("a drawn limit names its Case's first year, where a time axis places it", () => {
+  store.setSharedLimits(table('shared.csv', 'PATH_A', { max: 100 }));
+  const { limitLines } = createLimitLines({
+    limits: store,
+    interfaceRows: () => [],
+    spanOfCase: () => ({ firstYear: 2036, numYears: 3 }),
+  });
+  const [line] = limitLines([
+    {
+      name: 'Run A · PATH_A',
+      color: '#1f77b4',
+      unit: 'MW',
+      values: new Float32Array(3 * YEAR_SLOT_HOURS),
+      spec: { caseId: 'case-1', source: { kind: 'interface' }, subject: { entity: 'PATH_A' } },
+    },
+  ]);
+  assert.equal(line.firstYear, 2036);
+  assert.equal(line.values.length, 3 * YEAR_SLOT_HOURS);
 });
 
 console.log(`\n${passed} checks passed`);

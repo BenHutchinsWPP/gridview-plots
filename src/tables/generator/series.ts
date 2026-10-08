@@ -176,6 +176,7 @@ export function resolveGeneratorSeries(
       // as it narrows a column bucket.
       const count = reduceSingleBucket(
         data.cube,
+        data.numYears * YEAR_SLOT_HOURS,
         data.presence,
         data.generators,
         undefined,
@@ -206,6 +207,7 @@ export function resolveGeneratorSeries(
         : unitsInGroup(spec.subject.value);
       const count = reduceMembers(
         data.cube,
+        data.numYears * YEAR_SLOT_HOURS,
         data.presence,
         data.generators,
         new Set(names),
@@ -240,6 +242,7 @@ export function resolveGeneratorSeries(
 
       const count = reduceSingleBucket(
         data.cube,
+        data.numYears * YEAR_SLOT_HOURS,
         data.presence,
         data.generators,
         lookup,
@@ -274,7 +277,7 @@ export function resolveGeneratorSeries(
     warnings = built.warnings;
   }
 
-  buildMask(filters, buildCalendar(data.year), data.tou, buffers.mask);
+  buildMask(filters, buildCalendar(data.firstYear, data.numYears), data.tou, buffers.mask);
   let outUnit = unit;
   let rangeText: string | undefined;
   if (spec.perUnit) {
@@ -292,7 +295,7 @@ export function resolveGeneratorSeries(
     rangeText = rangeLabel(normalizeToRange(buffers.series, caps, PERCENT, buffers.mask));
   }
 
-  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+  for (let hour = 0; hour < buffers.series.length; hour++) {
     buffers.display[hour] = buffers.mask[hour] === 1 ? buffers.series[hour] : NaN;
   }
 

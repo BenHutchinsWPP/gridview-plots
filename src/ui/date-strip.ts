@@ -23,6 +23,7 @@ import {
   SLOT_MONTH_LENGTHS,
   SLOT_MONTH_STARTS,
   YEAR_SLOT_DAYS,
+  type YearSpan,
 } from '../model/calendar';
 import {
   addRun,
@@ -46,10 +47,31 @@ import {
 /** Feb 29's day of the slot. */
 const FEB_29 = SLOT_MONTH_STARTS[1] + 28;
 
+/** The real hours `set` (every day when null) holds in the years of `span`
+ * that `kept` keeps (every year when null): a non-leap year's Feb 29 holds
+ * none. */
+function hoursIn(set: DateSet | null, span: YearSpan, kept: ReadonlySet<number> | null): number {
+  const days = set === null ? YEAR_SLOT_DAYS : setDays(set);
+  const feb29 = set === null || hasDay(set, FEB_29);
+  let hours = 0;
+  for (let y = span.firstYear; y < span.firstYear + span.numYears; y++) {
+    if (kept !== null && !kept.has(y)) continue;
+    hours += (days - (feb29 && !isLeapYear(y) ? 1 : 0)) * 24;
+  }
+  return hours;
+}
+
 export interface DateStrip {
-  /** `years` are the loaded Cases' distinct years: weekends are shaded only
-   * when there is exactly one, since a date's weekday is its year's. */
-  render(dates: DateSet | null, years: readonly number[]): void;
+  /** `spans` are the loaded Cases' spans. Their distinct years name a
+   * hovered day's weekday in each, since a date's weekday is its year's; the
+   * hour count is the largest Case's, every year of its span.
+   * `keptYears` is the Years filter: the count takes only those years, out of
+   * the whole span, as the status sentence's does. */
+  render(
+    dates: DateSet | null,
+    spans: readonly YearSpan[],
+    keptYears?: ReadonlySet<number> | null,
+  ): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -151,8 +173,13 @@ export function createDateStrip(
     names.push(name);
     const row = el('div', 'ds-days', strip);
     for (let i = 0; i < SLOT_MONTH_LENGTHS[m]; i++) {
-      const cell = el('div', 'ds-day', row);
-      cell.dataset.day = String(SLOT_MONTH_STARTS[m] + i);
+      // Day-of-month marks, not weekends, orient the eye: a date's weekday
+      // differs between the loaded years, its day of the month never does.
+      const date = i + 1;
+      const day = SLOT_MONTH_STARTS[m] + i;
+      const mark = date % 10 === 0 ? ' ds-mark-10' : date % 5 === 0 ? ' ds-mark-5' : '';
+      const cell = el('div', `ds-day${mark}${day === FEB_29 ? ' ds-feb29' : ''}`, row);
+      cell.dataset.day = String(day);
       cells.push(cell);
     }
   }
@@ -160,8 +187,6 @@ export function createDateStrip(
   const readout = el('div', 'ds-readout', host);
   const summary = el('span', '', readout);
   const hover = el('span', '', readout);
-  const yearNote = el('p', 'ds-note', host);
-  yearNote.hidden = true;
 
   // --------------------------------------------------------------- state
   let committed: DateSet | null = null;
@@ -173,6 +198,8 @@ export function createDateStrip(
    * never leaves its day toggles that day; one that moves adds a run. */
   let adding: { base: DateSet | null; start: number; moved: boolean } | null = null;
   let years: readonly number[] = [];
+  let spans: readonly YearSpan[] = [];
+  let kept: ReadonlySet<number> | null = null;
   let hovered: number | null = null;
 
   function commit(set: DateSet | null): void {
@@ -303,7 +330,8 @@ export function createDateStrip(
     }
     cells[day].classList.add('ds-hover');
     // Feb 29 is a day of the strip in every year, but a weekday only in a
-    // leap year.
+    // leap year. Kept short: the readout's line is one rail wide, and a
+    // longer run of years ends in an ellipsis rather than a third line.
     const weekdayIn = (year: number): string | undefined => DAY_NAMES[weekdayOf(year, day)];
     hover.textContent =
       years.length === 0
@@ -314,9 +342,7 @@ export function createDateStrip(
             : `${dayLabel(day)} · not a day in ${years[0]}`
           : `${dayLabel(day)} · ` +
             years
-              .map((year) =>
-                weekdayIn(year) ? `${weekdayIn(year)} in ${year}` : `none in ${year}`,
-              )
+              .map((year) => (weekdayIn(year) ? `${weekdayIn(year)} ${year}` : `none in ${year}`))
               .join(', ');
   }
 
@@ -350,17 +376,18 @@ export function createDateStrip(
     next.disabled = !set || sameSet(stepSet(set, 1), set);
 
     // Out of the loaded Cases' real hours (`mostRealHours`), with no Case the
-    // non-leap year a yearless series takes. A Feb 29 no loaded year has is
-    // neither a day nor any hours.
-    const spans = (years.length > 0 ? years : [NO_YEAR]).map((firstYear) => ({
-      firstYear,
-      numYears: 1,
-    }));
-    const ofHours = mostRealHours(spans);
+    // non-leap year a yearless series takes. A Feb 29 no kept year has is
+    // neither a day nor any hours. The chosen dates fall in every kept year of
+    // a span, so a Case's hours are theirs in each of those years; the Years
+    // filter shrinks the count, never the whole it is out of.
+    const counted = spans.length > 0 ? spans : [{ firstYear: NO_YEAR, numYears: 1 }];
+    const ofHours = mostRealHours(counted);
+    const keptLoaded = years.filter((year) => kept?.has(year) ?? true);
     const phantomFeb29 =
-      set !== null && !spans.some((span) => isLeapYear(span.firstYear)) && hasDay(set, FEB_29);
+      set !== null && !keptLoaded.some((year) => isLeapYear(year)) && hasDay(set, FEB_29);
     const days = set ? setDays(set) - (phantomFeb29 ? 1 : 0) : YEAR_SLOT_DAYS;
-    const hours = set ? days * 24 : ofHours;
+    const hours =
+      set || kept ? Math.max(...counted.map((span) => hoursIn(set, span, kept))) : ofHours;
     const bold = document.createElement('b');
     bold.textContent = set
       ? `${days} day${days === 1 ? '' : 's'}${set.length > 1 ? ` in ${set.length} runs` : ''}`
@@ -371,27 +398,17 @@ export function createDateStrip(
     );
   }
 
-  function shade(): void {
-    const one = years.length === 1 ? years[0] : null;
-    cells.forEach((cell, day) => {
-      const weekday = one === null ? -1 : weekdayOf(one, day);
-      cell.classList.toggle('ds-weekend', weekday >= 5);
-    });
-    yearNote.textContent =
-      years.length > 1
-        ? `No weekends shaded: ${years.join(' and ')} put them on different dates. Hover a day for its weekday in each year.`
-        : '';
-    yearNote.hidden = years.length <= 1;
-  }
-
   return {
-    render(dates, loadedYears) {
+    render(dates, loadedSpans, keptYears = null) {
       committed = dates;
+      kept = keptYears;
       if (!dragging) shown = dates;
-      if (loadedYears.join() !== years.join()) {
-        years = [...loadedYears];
-        shade();
+      spans = loadedSpans;
+      const loadedYears = new Set<number>();
+      for (const span of loadedSpans) {
+        for (let y = 0; y < span.numYears; y++) loadedYears.add(span.firstYear + y);
       }
+      years = [...loadedYears].sort((a, b) => a - b);
       paint();
     },
   };

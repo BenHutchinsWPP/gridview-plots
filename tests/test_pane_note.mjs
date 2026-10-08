@@ -79,7 +79,7 @@ const QUANTILES = {
 };
 /** Enough for every canvas type to draw. */
 const DRAWN = {
-  yearOf: () => 2031,
+  spanOf: () => ({ firstYear: 2031, numYears: 1 }),
   boxes: () => [
     { label: 'SAMPLE group', boxes: [LOAD, FLOW].map((s) => ({ ...s, quantiles: QUANTILES })) },
   ],
@@ -140,6 +140,38 @@ assert.deepEqual(
   ).map((text) => text.startsWith('whole year · dates ')),
   [true],
   'a time pane showing the whole year says so, since the rail says otherwise',
+);
+/** The unfollowed time pane's note over a three-year axis. */
+function unfollowedNote(years) {
+  const span = { firstYear: 2035, numYears: 3 };
+  const values = new Float32Array(3 * HOURS).fill(1);
+  const spanning = { ...LOAD, values, n: values.length };
+  return notesOf(
+    line.createTimeAdapter,
+    {
+      ...frameOf([spanning], {
+        dates: [{ start: 10, end: 12 }],
+        overview: true,
+        years,
+        spanOf: () => span,
+        spanOfCase: () => span,
+      }),
+      wholeYear: () => [spanning],
+    },
+    (host) => {
+      host.controls.follow.checked = false;
+    },
+  );
+}
+assert.deepEqual(
+  unfollowedNote(new Set([2035, 2036, 2038])).map((text) => text.split(' · dates ')[0]),
+  ['years 2035–2036, 2038'],
+  'with a Years filter, the unfollowed pane names the years it draws',
+);
+assert.deepEqual(
+  unfollowedNote(null).map((text) => text.split(' · dates ')[0]),
+  ['every year'],
+  'and says every year only when no Years filter is set',
 );
 assert.deepEqual(
   notesOf(createXyAdapter, pair),

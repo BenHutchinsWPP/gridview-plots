@@ -20,6 +20,7 @@ export function createGeneratorRetainGate(): RetainGate {
       batch.union,
       batch.coverage,
       batch.fileCount,
+      batch.yearCount,
       state.retainedColumns ?? [],
       batch.everything,
     ),

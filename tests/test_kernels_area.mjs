@@ -67,7 +67,8 @@ function makeCase(metrics, entityCount, fill, absent = []) {
     presence,
     tou: new Uint8Array(HOURS),
     sourceColumns: metrics,
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
   };
 }
 
@@ -145,7 +146,7 @@ function maskOf(hours) {
   assert.equal(ruleFor('Load (MWh)').series, 'SUM');
   // area a, hour h -> 100*(a+1) + h
   const data = makeCase(metrics, 3, (area, _metric, hour) => 100 * (area + 1) + hour);
-  const out = createScratch();
+  const out = createScratch(HOURS);
   const series = buildSeries(data, 'Load (MWh)', areas.slice(0, 3), out);
   assert.equal(series.refusal, undefined);
   // hour 0: 100 + 200 + 300; hour 5: 105 + 205 + 305
@@ -164,7 +165,7 @@ function maskOf(hours) {
     if (hour === 1 && area === 1) return NaN; // one area missing
     return 10 * (area + 1);
   });
-  const series = buildSeries(data, 'Load (MWh)', areas.slice(0, 2), createScratch());
+  const series = buildSeries(data, 'Load (MWh)', areas.slice(0, 2), createScratch(HOURS));
   assert.ok(Number.isNaN(series.values[0]), 'an hour with no data at all must be NaN, not 0');
   assert.equal(series.values[1], 10, 'a partial hour sums what is there');
   assert.equal(series.values[2], 30);
@@ -177,7 +178,7 @@ function maskOf(hours) {
   const metric = 'Simple Average LMP($/MWh)';
   assert.equal(ruleFor(metric).series, 'MEAN', 'this column is unweighted by definition');
   const data = makeCase([metric], 3, (area) => [10, 20, 60][area]);
-  const series = buildSeries(data, metric, areas.slice(0, 3), createScratch());
+  const series = buildSeries(data, metric, areas.slice(0, 3), createScratch(HOURS));
   assert.equal(series.values[0], 30, '(10 + 20 + 60) / 3');
   ok('MEAN is the plain unweighted mean of the member areas');
 }
@@ -203,7 +204,7 @@ function maskOf(hours) {
     return hour === 0 ? weights[area] : 0;
   });
 
-  const series = buildSeries(data, price, areas.slice(0, 3), createScratch());
+  const series = buildSeries(data, price, areas.slice(0, 3), createScratch(HOURS));
   assert.equal(series.refusal, undefined);
   assert.equal(series.weightColumn, weight);
   close(series.values[0], 140 / 6, 1e-5, 'weighted mean');
@@ -238,7 +239,7 @@ function maskOf(hours) {
       }),
       price,
       areas.slice(0, 3),
-      createScratch(),
+      createScratch(HOURS),
     );
   const clean = build(-1);
   assert.deepEqual(clean.warnings, [], 'a non-leap Case raises no zero-weight warning');
@@ -263,7 +264,7 @@ function maskOf(hours) {
     if (metric === 1) return 0;
     return [1, 3][area];
   });
-  const series = buildSeries(data, price, areas.slice(0, 2), createScratch());
+  const series = buildSeries(data, price, areas.slice(0, 2), createScratch(HOURS));
   assert.equal(series.weightColumn, rule.fallbackWeight);
   ok('a weight zero in every real hour of a non-leap Case still falls through to its fallback');
 }
@@ -274,7 +275,7 @@ function maskOf(hours) {
   const price = 'Avg LMP Weighted by Load ($/MWh)';
   const values = [10, 20, 30];
   const data = makeCase([price], 3, (area) => values[area]);
-  const series = buildSeries(data, price, areas.slice(0, 3), createScratch());
+  const series = buildSeries(data, price, areas.slice(0, 3), createScratch(HOURS));
 
   assert.notEqual(series.values, null, 'it plots rather than refusing');
   close(series.values[0], 20, 1e-5, 'the plain mean of 10, 20, 30');
@@ -299,7 +300,7 @@ function maskOf(hours) {
     if (metric === 1) return 0; // primary weight: identically zero
     return [1, 3][area]; // fallback weight
   });
-  const series = buildSeries(data, price, areas.slice(0, 2), createScratch());
+  const series = buildSeries(data, price, areas.slice(0, 2), createScratch(HOURS));
   assert.equal(series.weightColumn, rule.fallbackWeight);
   close(series.values[0], (4 * 1 + 8 * 3) / 4, 1e-5, 'fallback-weighted mean');
   ok('an identically-zero primary weight falls through to the declared fallback weight');
@@ -311,7 +312,7 @@ function maskOf(hours) {
   const price = 'Avg LMP Weighted by Load ($/MWh)';
   const metrics = [price, 'Load (MWh)'];
   const data = makeCase(metrics, 1, (_area, metric) => (metric === 0 ? 33 : 0));
-  const series = buildSeries(data, price, [areas[0]], createScratch());
+  const series = buildSeries(data, price, [areas[0]], createScratch(HOURS));
   assert.equal(series.values[0], 33, 'one area is its own series');
   ok('a single-area selection returns the stored plane, zero weight or not');
 }
@@ -324,7 +325,7 @@ function maskOf(hours) {
     [0, 0],
     [1, 0],
   ]);
-  const series = buildSeries(data, 'Load (MWh)', areas.slice(0, 2), createScratch());
+  const series = buildSeries(data, 'Load (MWh)', areas.slice(0, 2), createScratch(HOURS));
   assert.equal(series.values, null);
   assert.ok(series.refusal.includes('no data'));
   ok('an absent (case, metric) pair is refused via the presence bitmap, not read as NaN');
@@ -335,9 +336,9 @@ function maskOf(hours) {
   // never had — that distinction is the point of carrying sourceColumns.
   const data = makeCase(['Load (MWh)'], 1, () => 1);
   data.sourceColumns = ['Load (MWh)', 'CO2 Amt'];
-  const dropped = buildSeries(data, 'CO2 Amt', [areas[0]], createScratch());
+  const dropped = buildSeries(data, 'CO2 Amt', [areas[0]], createScratch(HOURS));
   assert.ok(dropped.refusal.includes('not retained'), dropped.refusal);
-  const never = buildSeries(data, 'SO2 Amt', [areas[0]], createScratch());
+  const never = buildSeries(data, 'SO2 Amt', [areas[0]], createScratch(HOURS));
   assert.ok(!never.refusal.includes('not retained'), never.refusal);
   ok('"dropped at load" and "never in this study" produce different refusals');
 
@@ -347,7 +348,7 @@ function maskOf(hours) {
     data,
     'SO2 Amt',
     [areas[0]],
-    createScratch(),
+    createScratch(HOURS),
     undefined,
     'Winter Peak',
   );
@@ -393,7 +394,13 @@ function maskOf(hours) {
         : generation[area],
   );
 
-  const built = buildSeries(data, RATIO, areas.slice(0, 2), createScratch(), createScratch());
+  const built = buildSeries(
+    data,
+    RATIO,
+    areas.slice(0, 2),
+    createScratch(HOURS),
+    createScratch(HOURS),
+  );
   assert.equal(built.weightColumn, 'Installed Capacity (MW)');
   close(built.values[0], 140 / 1100, 1e-6, 'grouping ratio must be Sum(gen)/Sum(capacity)');
   assert.ok(
@@ -407,7 +414,7 @@ function maskOf(hours) {
   const hazard = ruleFor('Import Flow(MWh)');
   assert.equal(hazard.intraGroupHazard, true);
   const data = makeCase(['Import Flow(MWh)'], 2, () => 7);
-  const series = buildSeries(data, 'Import Flow(MWh)', areas.slice(0, 2), createScratch());
+  const series = buildSeries(data, 'Import Flow(MWh)', areas.slice(0, 2), createScratch(HOURS));
   assert.ok(
     series.warnings.some((w) => w.includes('double-counts')),
     'summing a tie flow across both sides double-counts and must say so',
@@ -420,8 +427,8 @@ function maskOf(hours) {
 {
   const metrics = ['Load (MWh)'];
   const data = makeCase(metrics, 1, (_area, _metric, hour) => (hour === 3 ? NaN : hour));
-  const series = buildSeries(data, 'Load (MWh)', [areas[0]], createScratch());
-  const scratch = createScratch();
+  const series = buildSeries(data, 'Load (MWh)', [areas[0]], createScratch(HOURS));
+  const scratch = createScratch(HOURS);
   const n = applyMask(series.values, maskOf([1, 3, 5, 7]), scratch);
   assert.equal(n, 3, 'the NaN hour must be dropped, not gathered');
   assert.deepEqual(Array.from(scratch.subarray(0, n)), [1, 5, 7]);
@@ -433,7 +440,7 @@ function maskOf(hours) {
 {
   // Hand-sorted: 1..9. n = 9, so p25 sits at index 2 exactly, median at 4,
   // p75 at 6 — no interpolation needed, which is what makes it checkable.
-  const buffer = createScratch();
+  const buffer = createScratch(HOURS);
   const source = [7, 2, 9, 4, 1, 8, 3, 6, 5];
   source.forEach((value, index) => (buffer[index] = value));
   const q = quantiles(buffer, source.length);
@@ -451,7 +458,7 @@ function maskOf(hours) {
 
 {
   // Interpolated case: 1..4, p25 = 1.75, median = 2.5, p75 = 3.25.
-  const buffer = createScratch();
+  const buffer = createScratch(HOURS);
   [4, 1, 3, 2].forEach((value, index) => (buffer[index] = value));
   const q = quantiles(buffer, 4);
   close(q.p25, 1.75, 1e-12, 'p25');
@@ -464,7 +471,7 @@ function maskOf(hours) {
   // The all-zero / sparse column shape: p25 = median = p75 = 0 and every
   // real event flagged an outlier. Correct, useless, and looks broken, so it
   // has to be detectable.
-  const buffer = createScratch();
+  const buffer = createScratch(HOURS);
   for (let i = 0; i < 100; i++) buffer[i] = 0;
   buffer[99] = 500;
   const q = quantiles(buffer, 100);
@@ -479,7 +486,7 @@ function maskOf(hours) {
 }
 
 {
-  const buffer = createScratch();
+  const buffer = createScratch(HOURS);
   for (let i = 0; i < 8; i++) buffer[i] = 0;
   assert.equal(isAllZero(buffer, 8), true);
   buffer[3] = -0.000001; // real solver noise: a GridView export carries values this small
@@ -489,7 +496,7 @@ function maskOf(hours) {
 }
 
 {
-  const buffer = createScratch();
+  const buffer = createScratch(HOURS);
   [3, 1, 2].forEach((value, index) => (buffer[index] = value));
   const view = sortAsc(buffer, 3);
   assert.equal(view.length, 3, 'sortAsc returns a view of exactly n elements');
@@ -511,10 +518,10 @@ function maskOf(hours) {
     if (metric === 0) return hour === 0 ? 10 : 100;
     return hour === 0 ? 1 : 99;
   });
-  const series = buildSeries(data, price, areas.slice(0, 2), createScratch());
+  const series = buildSeries(data, price, areas.slice(0, 2), createScratch(HOURS));
   const mask = maskOf([0, 1]);
 
-  const gathered = createScratch();
+  const gathered = createScratch(HOURS);
   const n = applyMask(series.values, mask, gathered);
   const plain = stats(gathered, n).mean;
   const pooled = pooledWeightedMean(series.values, series.weights, mask);
@@ -537,6 +544,68 @@ function maskOf(hours) {
     'a pooled average over zero total weight is undefined, not 0',
   );
   ok('pooledWeightedMean over zero total weight is NaN, not 0');
+}
+
+// ---------------------------------------------------------------- a span
+//
+// A three-year table's plane is every year of the span. Values differ by
+// year, so a kernel walking year one alone answers differently.
+
+{
+  const YEARS = 3;
+  const PLANE = YEARS * HOURS;
+  const price = 'Avg LMP Weighted by Load ($/MWh)';
+  const weight = 'Load (MWh)';
+  const metrics = [price, weight];
+  // Year y (0..2): area prices 10, 20, 30 plus 100·y; weights 1, 2, 3 in
+  // years 0 and 1, then 3, 2, 1 in year 2.
+  const value = (area, metric, year) =>
+    metric === 0 ? [10, 20, 30][area] + 100 * year : year < 2 ? area + 1 : 3 - area;
+  const cube = new Float32Array(areas.length * metrics.length * PLANE).fill(NaN);
+  const presence = new Uint8Array(areas.length * metrics.length);
+  for (let area = 0; area < 3; area++) {
+    for (let metric = 0; metric < metrics.length; metric++) {
+      presence[area * metrics.length + metric] = 1;
+      const base = (area * metrics.length + metric) * PLANE;
+      for (let hour = 0; hour < PLANE; hour++) {
+        cube[base + hour] = value(area, metric, Math.floor(hour / HOURS));
+      }
+    }
+  }
+  const data = {
+    cube,
+    areas,
+    metrics,
+    presence,
+    tou: new Uint8Array(PLANE),
+    sourceColumns: metrics,
+    firstYear: 2035,
+    numYears: YEARS,
+  };
+
+  const out = createScratch(PLANE);
+  const weightsOut = createScratch(PLANE);
+  const series = buildSeries(data, price, areas.slice(0, 3), out, weightsOut);
+  assert.equal(series.weightColumn, weight);
+  // Years 0 and 1 weight 1, 2, 3: (10 + 40 + 90) / 6 + 100·y. Year 2 weights
+  // 3, 2, 1: (30 + 40 + 30) / 6 + 200.
+  close(series.values[0], 140 / 6, 1e-4, 'year one, weighted');
+  close(series.values[HOURS + 5], 140 / 6 + 100, 1e-4, 'year two, weighted');
+  close(series.values[PLANE - 1], 100 / 6 + 200, 1e-4, "the last year's weights, not year one's");
+  assert.equal(series.weights[PLANE - 1], 6);
+
+  const mask = new Uint8Array(PLANE).fill(1);
+  const pooled = pooledWeightedMean(series.values, series.weights, mask);
+  close(pooled, (140 / 6 + (140 / 6 + 100) + (100 / 6 + 200)) / 3, 1e-3, 'pooled over the span');
+  ok('a weighted mean over a three-year span weights each year by its own hours');
+
+  const load = buildSeries(data, weight, areas.slice(0, 3), createScratch(PLANE));
+  const n = applyMask(load.values, mask, createScratch(PLANE));
+  assert.equal(n, PLANE);
+  assert.equal(stats(load.values, n).sum, 6 * PLANE, 'a sum of 6 in every hour of every year');
+  const single = buildSeries(data, price, [areas[2]], createScratch(PLANE));
+  assert.equal(single.values[PLANE - 1], 230, "one area's plane copied to its last year");
+  ok('a summed series and a single plane cover every year of the span');
 }
 
 console.log(`\n${checks} checks passed`);

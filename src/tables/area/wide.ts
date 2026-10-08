@@ -3,8 +3,9 @@
 // The Area kind's adapter onto the WIDE shape reader. A single-metric Area
 // export is shape W (areas across the columns); multi-metric ones are shape L
 // (`long.ts`). Both finalize into the same `AreaTable`: at one metric the
-// cube index `(area * numMetrics + metric) * 8784 + hour` is exactly the wide
-// cube's, so the wide cube is adopted, not copied. Nothing here teaches
+// cube index `((area * numMetrics + metric) * numYears + year) * 8784 + hour`
+// is exactly the wide cube's `(area * numYears + year) * 8784 + hour`, so the
+// wide cube is adopted, not copied. Nothing here teaches
 // `src/tables/wide/` anything about areas.
 
 import {
@@ -63,20 +64,23 @@ const finalizeArea: Finalize<AreaTable> = (wide: WideCase) => {
       tou: wide.tou,
       hoursPresent: wide.hoursPresent,
       sourceColumns: [metric],
-      year: wide.year,
+      firstYear: wide.firstYear,
+      numYears: wide.numYears,
     },
     warnings: [],
   };
 };
 
+/** Exposed for the ingest tests, which hand it to the shape's ingest. */
+export { finalizeArea };
+
 /** Exposed for the ingest test. */
 export function finalizeCase(
   accumulator: Parameters<typeof finalizeWide>[0],
   name: string,
-  year: number,
   title: WideCase['title'],
 ): { data: AreaTable; warnings: string[] } {
-  const shaped = finalizeWide(accumulator, name, year, title, AREA_WIDE_SPEC);
+  const shaped = finalizeWide(accumulator, name, title, AREA_WIDE_SPEC);
   const finalized = finalizeArea(shaped.data, null as unknown as CasePlan);
   return { data: finalized.data, warnings: [...shaped.warnings, ...finalized.warnings] };
 }

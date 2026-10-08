@@ -43,15 +43,19 @@ export function rankScopedRows<D extends { cube: Float32Array }>(input: {
   rowCounts: readonly number[];
   /** Row `i`'s axis index, counted across all tables in order. */
   axisIndexOf: (row: number) => number;
-  /** One table's presence and where an entity's 8,784 values begin. */
+  /** One table's presence and where an entity's plane (its span's hours)
+   * begins. */
   planesOf: (data: D) => { presence: Uint8Array; planeStart: (axisIndex: number) => number };
-  scratch: Float32Array;
+  /** Reused across rows; replaced once by a longer one when a table's plane
+   * (its mask's length) outruns it, so tables of different spans share it. */
+  scratch?: Float32Array;
   /** Rankings already computed, reused while a table's inputs hold still. */
   memo?: RankMemo;
   /** Row `i`'s limits for "% of range"; `{}` divides by its own peak. */
   rangeOf?: (row: number) => RangeLimits;
 }): Float64Array {
-  const { tables, rowCounts, axisIndexOf, planesOf, scratch, memo, rangeOf } = input;
+  const { tables, rowCounts, axisIndexOf, planesOf, memo, rangeOf } = input;
+  let scratch = input.scratch;
   const total = rowCounts.reduce((sum, count) => sum + count, 0);
   const ranked = new Float64Array(total * RANKED_FIELDS);
   let at = 0;
@@ -61,6 +65,7 @@ export function rankScopedRows<D extends { cube: Float32Array }>(input: {
     const axisIndexes = new Int32Array(count);
     for (let i = 0; i < count; i++) axisIndexes[i] = axisIndexOf(at + i);
 
+    if (!scratch || scratch.length < table.mask.length) scratch = createScratch(table.mask.length);
     const planes = planesOf(table.data);
     const starts = planeStartsFor(axisIndexes, planes.presence, planes.planeStart);
 
@@ -109,8 +114,9 @@ function rankInRange(
   ranked: Float64Array,
   row: number,
 ): void {
-  planeScratch ??= createScratch();
-  if (start >= 0) normalizedCopy(cube.subarray(start), limits, planeScratch);
+  // One plane is the mask's length, every year of the table's span.
+  if (planeScratch?.length !== mask.length) planeScratch = createScratch(mask.length);
+  if (start >= 0) normalizedCopy(cube.subarray(start, start + mask.length), limits, planeScratch);
   rankedStats(
     planeScratch,
     Int32Array.of(start < 0 ? -1 : 0),

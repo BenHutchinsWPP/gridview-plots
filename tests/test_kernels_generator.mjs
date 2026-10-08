@@ -53,21 +53,24 @@ function makeCase({
   sourceColumns = generators,
   quantity = 'Generation (MWh)',
   year = 2035,
+  years = 1,
 } = {}) {
-  const cube = new Float32Array(generators.length * HOURS).fill(NaN);
+  const plane = years * HOURS;
+  const cube = new Float32Array(generators.length * plane).fill(NaN);
   const presence = new Uint8Array(generators.length);
   generators.forEach((name, index) => {
     if (absent.includes(name)) return;
     presence[index] = 1;
-    for (let hour = 0; hour < HOURS; hour++) cube[index * HOURS + hour] = fill(index, hour);
+    for (let hour = 0; hour < plane; hour++) cube[index * plane + hour] = fill(index, hour);
   });
   return {
     cube,
     generators,
     presence,
-    tou: new Uint8Array(HOURS),
+    tou: new Uint8Array(plane),
     sourceColumns,
-    year,
+    firstYear: year,
+    numYears: years,
     quantity,
   };
 }
@@ -76,14 +79,14 @@ function makeCase({
 
 {
   const data = makeCase({ generators: ['G1 PV', 'G2 WT', 'G3 BA'], absent: ['G3 BA'] });
-  const out = createScratch();
+  const out = createScratch(HOURS);
 
   const built = buildSeries(data, 'G2 WT', out);
   assert.ok(built.values, 'a carried generator builds');
   assert.equal(built.values[0], 1000, 'the stored plane IS the series');
   assert.equal(built.values[HOURS - 1], 1000 + HOURS - 1);
   assert.equal(built.values, out, 'the caller-owned buffer is written, not a fresh one');
-  assert.equal(planeStart(2), 2 * HOURS);
+  assert.equal(planeStart(data, 2), 2 * HOURS);
   ok('a retained generator builds straight out of its cube plane');
 
   assert.equal(hasData(data, 2), false, 'presence says G3 BA is absent');
@@ -110,13 +113,13 @@ function makeCase({
 // ------------------------------------------------------- masking and stats
 
 {
-  const series = createScratch();
+  const series = createScratch(HOURS);
   const mask = new Uint8Array(HOURS);
   for (let hour = 0; hour < HOURS; hour++) {
     series[hour] = hour % 5 === 0 ? NaN : hour;
     mask[hour] = hour % 2 === 0 ? 1 : 0;
   }
-  const gathered = createScratch();
+  const gathered = createScratch(HOURS);
   const kept = applyMask(series, mask, gathered);
   assert.ok(kept > 0);
   for (let i = 0; i < kept; i++) assert.ok(!Number.isNaN(gathered[i]), 'no NaN survives the mask');
@@ -249,6 +252,32 @@ function makeCase({
     );
   }
   ok('nothing under src/tables/wide/ imports a kind');
+}
+
+// ---------------------------------------------------------------- a span
+//
+// Three years per unit, as in test_kernels_bus.mjs.
+
+{
+  const YEARS = 3;
+  const PLANE = YEARS * HOURS;
+  const data = makeCase({
+    generators: ['G1 PV', 'G2 WT'],
+    years: YEARS,
+    fill: (i, h) => (i + 1) * (1 + Math.floor(h / HOURS)),
+  });
+  assert.equal(planeStart(data, 1), PLANE);
+  const out = createScratch(PLANE);
+  const built = buildSeries(data, 'G2 WT', out);
+  assert.equal(built.values[0], 2);
+  assert.equal(built.values[PLANE - 1], 6, 'the last year of the second plane');
+  const mask = new Uint8Array(PLANE).fill(1);
+  const gathered = createScratch(PLANE);
+  const n = applyMask(built.values, mask, gathered);
+  assert.equal(n, PLANE);
+  assert.equal(stats(gathered, n).sum, (2 + 4 + 6) * HOURS);
+  assert.ok(Math.abs(stats(gathered, n).mean - 4) < 1e-9, 'the mean of every year, not year one');
+  ok('a generator plane over a three-year span is copied and summed whole');
 }
 
 console.log(`\n${checks} checks passed.`);

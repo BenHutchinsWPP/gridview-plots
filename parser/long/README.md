@@ -24,15 +24,17 @@ the exports or arena layout change.
   whole, so it costs about 5% of ingest. Inferring the axis from the first
   rows assumes the first hour lists every area once. On a shuffled export
   that returns a partial axis and says nothing.
-- **Row order carries no meaning.** `parse_block` emits a row list with each
-  row's own `(area, year, hour)`, and the main thread scatters it into the
-  cube. That costs about 10% of ingest compared with copying contiguous hour
-  runs, and it buys correct loads of sorted or shuffled exports. Do not add an
-  ordering counter: a live one invites refusing files this parser reads
-  correctly.
-- **Duplicates are refused.** `blitBlock` keeps one bit per (area, hour) and
-  refuses a second row for the same cell, instead of letting whichever worker
-  finished last win.
+- **Row order carries no meaning.** `parse_block(len, firstYear, numYears)`
+  emits a row list with each row's own area, year (`rowYear`, a u8 offset
+  from `firstYear`) and hour within that year's slot, and the main thread
+  scatters it into the cube. That costs about 10% of ingest compared with
+  copying contiguous hour runs, and it buys correct loads of sorted or
+  shuffled exports. Do not add an ordering counter: a live one invites
+  refusing files this parser reads correctly. A row dated outside the span
+  is counted, and JS refuses the load.
+- **Duplicates are refused.** `blitBlock` keeps one bit per (area, hour of
+  the span) and refuses a second row for the same cell, instead of letting
+  whichever worker finished last win.
 - **Hour arithmetic lives only here.** `dayOfYear` in
   `src/ingest.ts` mirrors `date_to_day` for the tests' reference
   parser only. Keep it field-for-field identical.

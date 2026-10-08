@@ -77,7 +77,7 @@ const QUANTILES = {
 /** What a box pane cuts the two lines into, and what the interval pane
  * reads the year from: enough for every canvas type to draw. */
 const DRAWN = {
-  yearOf: () => 2031,
+  spanOf: () => ({ firstYear: 2031, numYears: 1 }),
   boxes: () => [
     {
       label: 'SAMPLE group',

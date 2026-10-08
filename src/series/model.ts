@@ -11,7 +11,6 @@
 //     kinds imports none of them.
 
 import type { TableKind } from '../model/case-model';
-import { YEAR_SLOT_HOURS } from '../model/calendar';
 import { createScratch, quantiles } from '../kernels';
 import type { LookupVariant, LookupTable } from '../lookups/types';
 import { lookupFor } from '../lookups/store';
@@ -70,12 +69,13 @@ export interface SeriesBuffers {
   gathered: Float32Array;
 }
 
-export function createSeriesBuffers(): SeriesBuffers {
+/** Every buffer one plane long: `hours` is the table's `numYears` × 8,784. */
+export function createSeriesBuffers(hours: number): SeriesBuffers {
   return {
-    series: createScratch(),
-    display: createScratch(),
-    mask: new Uint8Array(YEAR_SLOT_HOURS),
-    gathered: createScratch(),
+    series: createScratch(hours),
+    display: createScratch(hours),
+    mask: new Uint8Array(hours),
+    gathered: createScratch(hours),
   };
 }
 

@@ -43,9 +43,11 @@ export interface LimitSubject {
   label: string;
   color: string;
   unit: string;
-  /** The Case's own calendar year: which hours fall in which month is a
-   * property of the year the run covers, never of a year shared app-wide. */
+  /** The Case's own first year: which hours fall in which month is a
+   * property of the years the run covers, never of a year shared app-wide. */
   year: number;
+  /** The Case's years from `year`; the limits repeat in each. */
+  numYears?: number;
   /** The series' own hours. Read ONLY for its NaNs -- see the masking note in
    * this file's header. */
   values: Float32Array | null;
@@ -56,7 +58,7 @@ export interface LimitSubject {
 export function limitLinesFor(store: LimitsStore, subject: LimitSubject): LimitLine[] {
   const limit = store.limitFor(subject.caseId, subject.interfaceName);
   if (limit === undefined) return [];
-  const { upper, lower } = rangeLimitsOf(limit, subject.year);
+  const { upper, lower } = rangeLimitsOf(limit, subject.year, subject.numYears);
   return linesOf({ max: upper, min: lower }, subject, '');
 }
 
@@ -68,7 +70,7 @@ export function limitLinesFor(store: LimitsStore, subject: LimitSubject): LimitL
  */
 export function summedLimitLines(
   limits: RangeLimits,
-  subject: Omit<LimitSubject, 'caseId' | 'interfaceName' | 'year'>,
+  subject: Omit<LimitSubject, 'caseId' | 'interfaceName' | 'year' | 'numYears'>,
 ): LimitLine[] {
   return linesOf({ max: limits.upper, min: limits.lower }, subject, 'summed ');
 }
@@ -112,12 +114,18 @@ function linesOf(
 /**
  * One interface's limits as hourly "% of range" divisors: MAX is the upper
  * side, MIN the lower, each hour taking its own month's value in the Case's
- * calendar year (Feb 29 is February's; a phantom one is NaN). A month with no limit is NaN, which the normalizer fills
+ * calendar (Feb 29 is February's; a phantom one is NaN). A month with no limit is NaN, which the normalizer fills
  * with the series' peak for that month's hours alone. No row: no limits.
+ * Over a span of `numYears` the twelve limits repeat in every year, so the
+ * divisors are as long as the table's plane.
  */
-export function rangeLimitsOf(limit: InterfaceLimit | undefined, year: number): RangeLimits {
+export function rangeLimitsOf(
+  limit: InterfaceLimit | undefined,
+  year: number,
+  numYears = 1,
+): RangeLimits {
   if (limit === undefined) return {};
-  const calendar = buildCalendar(year);
+  const calendar = buildCalendar(year, numYears);
   const hourly = (months: Float32Array | undefined): Float32Array | undefined => {
     if (months === undefined) return undefined;
     const values = new Float32Array(calendar.length);

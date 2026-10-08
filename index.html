@@ -146,6 +146,12 @@
       <details data-el="filters-section" class="rail-section rail-collapsible" open>
         <summary class="rail-section-title">FILTERS <span data-el="filters-on" class="rail-section-on"></span></summary>
 
+        <!-- The loaded years, shown only when there are two: src/ui/filter-rail.ts. -->
+        <div data-el="year-group" class="filter-group" hidden>
+          <label class="filter-label">Years<button type="button" class="filter-clear" data-filter="years" title="Clear the years">clear</button></label>
+          <div data-el="year-chips" class="chip-grid"></div>
+        </div>
+
         <!-- One run of days, the same hours in every Case: src/ui/date-strip.ts. -->
         <div class="filter-group">
           <label class="filter-label">Months &amp; days<button type="button" class="filter-clear" data-filter="dates" title="Clear the dates">clear</button></label>
@@ -167,7 +173,9 @@
           <div data-el="season-chips" class="chip-grid"></div>
         </div>
 
-        <div class="filter-group">
+        <!-- Hidden to give the rail its room: TOU went unused. It still
+             renders and filters, so removing `hidden` brings it back. -->
+        <div class="filter-group" hidden>
           <label class="filter-label">TOU<button type="button" class="filter-clear" data-filter="tou" title="Clear the tou filter">clear</button></label>
           <div data-el="tou-chips" class="chip-grid"></div>
         </div>
@@ -215,9 +223,11 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-1" checked /> limits</label>
           <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-1" checked /> follow dates</label>
           <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-1" /> overview</label>
+          <label class="pane-control" style="display: none;" title="Each year on one Jan–Dec axis, in shades of its series colour"><input type="checkbox" data-el="overlay-years-check-1" /> overlay years</label>
           <label class="pane-control" style="display: none;" title="Group the boxes by">
             <select data-el="box-dim-select-1" aria-label="Boxes by">
               <option value="case">case</option>
+              <option value="year">year</option>
               <option value="month">month</option>
               <option value="hourOfDay">hour of day</option>
               <option value="dayOfWeek">day of week</option>
@@ -268,9 +278,11 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-2" checked /> limits</label>
           <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-2" checked /> follow dates</label>
           <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-2" /> overview</label>
+          <label class="pane-control" style="display: none;" title="Each year on one Jan–Dec axis, in shades of its series colour"><input type="checkbox" data-el="overlay-years-check-2" /> overlay years</label>
           <label class="pane-control" style="display: none;" title="Group the boxes by">
             <select data-el="box-dim-select-2" aria-label="Boxes by">
               <option value="case">case</option>
+              <option value="year">year</option>
               <option value="month">month</option>
               <option value="hourOfDay">hour of day</option>
               <option value="dayOfWeek">day of week</option>
@@ -321,9 +333,11 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-3" checked /> limits</label>
           <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-3" checked /> follow dates</label>
           <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-3" /> overview</label>
+          <label class="pane-control" style="display: none;" title="Each year on one Jan–Dec axis, in shades of its series colour"><input type="checkbox" data-el="overlay-years-check-3" /> overlay years</label>
           <label class="pane-control" style="display: none;" title="Group the boxes by">
             <select data-el="box-dim-select-3" aria-label="Boxes by">
               <option value="case">case</option>
+              <option value="year">year</option>
               <option value="month">month</option>
               <option value="hourOfDay">hour of day</option>
               <option value="dayOfWeek">day of week</option>
@@ -374,9 +388,11 @@
           <label class="pane-control" style="display: none;"><input type="checkbox" data-el="limits-check-4" checked /> limits</label>
           <label class="pane-control" style="display: none;" title="Ticked, the chart shows the dates and a drag-zoom sets them. Unticked, it shows the whole year with the dates as a band"><input type="checkbox" data-el="follow-dates-check-4" checked /> follow dates</label>
           <label class="pane-control" style="display: none;" title="The whole year under the chart, with the dates as a window to drag"><input type="checkbox" data-el="overview-check-4" /> overview</label>
+          <label class="pane-control" style="display: none;" title="Each year on one Jan–Dec axis, in shades of its series colour"><input type="checkbox" data-el="overlay-years-check-4" /> overlay years</label>
           <label class="pane-control" style="display: none;" title="Group the boxes by">
             <select data-el="box-dim-select-4" aria-label="Boxes by">
               <option value="case">case</option>
+              <option value="year">year</option>
               <option value="month">month</option>
               <option value="hourOfDay">hour of day</option>
               <option value="dayOfWeek">day of week</option>

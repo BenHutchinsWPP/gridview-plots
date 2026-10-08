@@ -14,6 +14,8 @@ import { parseHeaderLine } from './tables/long/header';
 import { AREA_LONG } from './tables/area/long';
 import { LONG_KEY_START, type LongSignature } from './tables/long/signature';
 import {
+  DATE_LINE_INDEX,
+  parseDateLine,
   parseHeaderLine as parseWideHeaderLine,
   parseTitleLine,
   PREAMBLE_LINES,
@@ -22,6 +24,7 @@ import {
 // noun. Each kind states both in the registry; this module knows only the
 // matching rules.
 import { LONG_SIGNATURES, MEMBERSHIP_HEADERS, WIDE_ENTITIES } from './tables/registry';
+import type { YearSpan } from './model/calendar';
 import type { TableKind } from './model/case-model';
 import { READABLE_MAGICS } from './storage/store';
 import { stripBOM, stripCR } from './ingest';
@@ -75,6 +78,10 @@ export interface DetectResult {
   /** For a `groupings` verdict: every kind whose editor writes exactly this
    * header. More than one is asked about, never picked. */
   writtenBy?: readonly TableKind[];
+  /** The years a wide export's date line states, so the Import Dialog can
+   * say a file's years differ from its Case's. A hint: ingest reads the
+   * header again, refuses the mismatch, and the parser checks every row. */
+  years?: YearSpan;
 }
 
 // Bundle magics come from `READABLE_MAGICS` in src/storage/store.ts, including
@@ -309,6 +316,11 @@ export function classify(headBytes: Uint8Array, filename: string): DetectResult 
   );
 
   const bomNote = hadBOM ? BOM_NOTE : '';
+  const dates = interfaceShapeOk ? parseDateLine(lines[DATE_LINE_INDEX] ?? '') : null;
+  const stated: { years?: YearSpan } =
+    dates !== null && dates.lastYear >= dates.firstYear
+      ? { years: { firstYear: dates.firstYear, numYears: dates.lastYear - dates.firstYear + 1 } }
+      : {};
 
   // Two positive SHAPE matches on one file (a hand-built fixture) is refused,
   // never resolved by check order, whatever the title word says.
@@ -365,6 +377,7 @@ export function classify(headBytes: Uint8Array, filename: string): DetectResult 
     return {
       kind: 'area',
       shape: 'W',
+      ...stated,
       // Not a slot variant: one Case holds one Area table. Reported so the
       // dialog can say which metric was read.
       quantity: quantity || undefined,
@@ -386,6 +399,7 @@ export function classify(headBytes: Uint8Array, filename: string): DetectResult 
     return {
       kind: wideKind.kind,
       shape: 'W',
+      ...stated,
       confidence: quantity ? 'high' : 'low',
       variant: quantity || undefined,
       quantity: quantity || undefined,
@@ -407,6 +421,7 @@ export function classify(headBytes: Uint8Array, filename: string): DetectResult 
       return {
         kind: 'interface',
         shape: 'W',
+        ...stated,
         confidence: 'high',
         quantity,
         reason:
@@ -418,6 +433,7 @@ export function classify(headBytes: Uint8Array, filename: string): DetectResult 
     return {
       kind: 'interface',
       shape: 'W',
+      ...stated,
       // Legitimate: two such files on one Case collide on the same slot key,
       // which the Import Dialog resolves.
       confidence: 'low',

@@ -26,7 +26,13 @@ import type { LimitTable } from '../limits/types';
 import { parseLookupCsv, type LookupRows } from '../lookups/parse';
 import { schemaFor } from '../lookups/schema';
 import { VARIANT_OF } from '../lookups/types';
-import { realHours, realHoursSeen, YEAR_SLOT_HOURS } from '../model/calendar';
+import {
+  realHours,
+  realHoursSeen,
+  spanOfTable,
+  YEAR_SLOT_HOURS,
+  type YearSpan,
+} from '../model/calendar';
 import { byCaseName, caseForName, caseLabel, type Case, type TableKind } from '../model/case-model';
 import type { GroupingsMappingChoice } from '../ui/groupings-mapping';
 import type { ImportDecision } from '../ui/import-dialog';
@@ -111,9 +117,9 @@ function errorText(error: unknown): string {
 }
 
 /**
- * How many of its year's real hours each of a Case's occupied slots covers,
- * for the Import Dialog's replace warning. Reads `hoursPresent` and `year`
- * structurally, so a new kind gets the warning by carrying the fields. `null`
+ * How many of its span's real hours each of a Case's occupied slots covers,
+ * for the Import Dialog's replace warning. Reads `hoursPresent`, `firstYear`
+ * and `numYears` structurally, so a new kind gets the warning by carrying the fields. `null`
  * means unknown (an older bundle), and the dialog then says nothing about
  * coverage.
  */
@@ -122,19 +128,38 @@ export function hoursCoveredBySlot(entry: {
 }): Record<string, SlotCoverage | null> {
   const out: Record<string, SlotCoverage | null> = {};
   for (const [slot, table] of entry.tables) {
-    const data = table.data as { hoursPresent?: Uint8Array; year?: number } | null;
+    const data = table.data as {
+      hoursPresent?: Uint8Array;
+      firstYear?: number;
+      numYears?: number;
+    } | null;
     const hours = data?.hoursPresent;
-    const year = data?.year;
+    const firstYear = data?.firstYear;
+    const numYears = data?.numYears;
     if (
       !(hours instanceof Uint8Array) ||
-      hours.length !== YEAR_SLOT_HOURS ||
-      typeof year !== 'number'
+      typeof firstYear !== 'number' ||
+      typeof numYears !== 'number' ||
+      hours.length !== numYears * YEAR_SLOT_HOURS
     ) {
       out[slot] = null;
       continue;
     }
-    out[slot] = { covers: realHoursSeen(hours, year, 1), of: realHours(year, 1) };
+    out[slot] = {
+      covers: realHoursSeen(hours, firstYear, numYears),
+      of: realHours(firstYear, numYears),
+    };
   }
+  return out;
+}
+
+/** The years each of a Case's occupied slots spans, for the Import Dialog's
+ * span warning; `null` is unknown. */
+export function spansBySlot(entry: {
+  tables: Map<string, { data: unknown }>;
+}): Record<string, YearSpan | null> {
+  const out: Record<string, YearSpan | null> = {};
+  for (const [slot, table] of entry.tables) out[slot] = spanOfTable(table.data);
   return out;
 }
 
@@ -266,6 +291,7 @@ export function createDropLoad(host: DropHost): DropLoad {
           ...(entry.displayName ? { displayName: entry.displayName } : {}),
           occupiedSlots: [...entry.tables.keys()],
           slotHours: hoursCoveredBySlot(entry),
+          slotSpans: spansBySlot(entry),
         })),
       limitFiles.map((entry) => entry.classified),
     );

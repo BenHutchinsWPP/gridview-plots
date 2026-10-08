@@ -15,6 +15,11 @@
 // Allocating a scratch array inside a render path is how the cost of a sort
 // gets multiplied for no reason, which is what this pool exists to avoid.
 //
+// **A set is one plane long, its table's.** A key whose table now spans
+// another number of years gets a new set, never the old one read past its end
+// or partly reused, so two Cases of different spans in one draw each get
+// their own length.
+//
 // **Held only while drawn.** A key carries the quantity and "% of range", so
 // switching pins through variables mints a new set per step; without `sweep`
 // every set ever drawn stays held until its Case goes.
@@ -26,9 +31,11 @@ import { createSeriesBuffers, type SeriesBuffers } from './model';
 const SEP = '\u0000';
 
 export interface SeriesPool {
-  /** The buffers for one line, allocated on first ask. `parts` are joined into
-   * the key, so the caller decides what makes two lines different. */
-  for(...parts: (string | number)[]): SeriesBuffers;
+  /** The buffers for one line, `hours` long (the table's plane length),
+   * allocated on first ask or when the held set's length differs. `parts` are
+   * joined into the key, so the caller decides what makes two lines
+   * different. */
+  for(hours: number, ...parts: (string | number)[]): SeriesBuffers;
   /** Every buffer belonging to one table, dropped when that table is. */
   dropSlot(caseId: string, slotKey: string): void;
   /** Every buffer belonging to one Case, whatever slot it sat in. */
@@ -45,12 +52,12 @@ export function createSeriesPool(): SeriesPool {
     for (const id of held.keys()) if (id.startsWith(prefix)) held.delete(id);
   };
   return {
-    for(...parts) {
+    for(hours, ...parts) {
       const id = parts.join(SEP);
       asked.add(id);
       let existing = held.get(id);
-      if (!existing) {
-        existing = createSeriesBuffers();
+      if (!existing || existing.series.length !== hours) {
+        existing = createSeriesBuffers(hours);
         held.set(id, existing);
       }
       return existing;
@@ -76,9 +83,12 @@ export function createSeriesPool(): SeriesPool {
  * every drawn line.
  */
 export function createScratchPool(): SeriesPool {
-  const only = createSeriesBuffers();
+  let only: SeriesBuffers | undefined;
   return {
-    for: () => only,
+    for(hours) {
+      if (!only || only.series.length !== hours) only = createSeriesBuffers(hours);
+      return only;
+    },
     dropSlot() {},
     dropCase() {},
     sweep() {},

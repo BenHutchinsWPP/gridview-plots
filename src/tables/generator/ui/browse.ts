@@ -26,7 +26,7 @@
 // "% of range" (`perUnit`) divides each series by `src/series/range.ts`
 // before its stats are taken; this tab supplies only the caps.
 
-import { RANKED, RANKED_FIELDS, createScratch, type RankMemo } from '../../../kernels';
+import { RANKED, RANKED_FIELDS, createScratch, fitScratch, type RankMemo } from '../../../kernels';
 import { cellValue } from '../../../lookups/merge';
 import { GENERATOR_LIST } from '../../../lookups/schema';
 import type { LookupColumn, LookupTable } from '../../../lookups/types';
@@ -46,7 +46,7 @@ import {
   type BrowseTab,
 } from '../../../ui/browse-model';
 import { CASE_GROUP_BY } from '../../../series/model';
-import { applyMask, planeStart, quantiles, stats } from '../kernels';
+import { applyMask, planeLength, planeStart, quantiles, stats } from '../kernels';
 import { spatialOf, spatialRefusal, unitOf, type SpatialRule } from '../rules';
 import {
   bucketLabelFor,
@@ -356,9 +356,10 @@ function groupTabRows(ctx: GeneratorTabCtx): BrowseTab {
     };
   }
 
-  const seriesScratch = scratch ?? createScratch();
-  const gatheredScratch = createScratch();
-  const rangeScratch = createScratch();
+  const longest = Math.max(0, ...tables.map((table) => planeLength(table.data)));
+  const seriesScratch = fitScratch(scratch, longest);
+  const gatheredScratch = createScratch(longest);
+  const rangeScratch = createScratch(longest);
   // A group narrowed by the area scope or keep-set freezes its membership,
   // as a narrowed attribute bucket does.
   const narrowed = keep !== undefined || areas !== null;
@@ -385,20 +386,23 @@ function groupTabRows(ctx: GeneratorTabCtx): BrowseTab {
       });
       if (scopedMembers.length === 0) continue;
 
+      const hours = planeLength(table.data);
+      const summed = seriesScratch.subarray(0, hours);
       const contributing = reduceMembers(
         table.data.cube,
+        hours,
         table.data.presence,
         table.data.generators,
         new Set(scopedMembers),
-        seriesScratch,
+        summed,
       );
       if (contributing === 0) continue;
 
-      let series = seriesScratch;
+      let series = summed;
       if (isPerUnit) {
         // The caps of the members just summed, so capacity the sum skipped
         // is not divided by -- the rule a group-by bucket follows.
-        series = normalizedCopy(seriesScratch, capsOfSummed(scopedMembers), rangeScratch);
+        series = normalizedCopy(summed, capsOfSummed(scopedMembers), rangeScratch);
       }
       const n = applyMask(series, table.mask, gatheredScratch);
       const s = stats(gatheredScratch, n);
@@ -499,8 +503,9 @@ function groupByRows(ctx: GeneratorTabCtx, groupBy: string): BrowseTab | undefin
       p25: number;
       p75: number;
     }[] = [];
-    const gatheredScratch = createScratch();
-    const rangeScratch = createScratch();
+    const longest = Math.max(0, ...tables.map((table) => planeLength(table.data)));
+    const gatheredScratch = createScratch(longest);
+    const rangeScratch = createScratch(longest);
 
     for (const table of tables) {
       // A Case bucket: every unit answers with the table's case name.
@@ -531,6 +536,7 @@ function groupByRows(ctx: GeneratorTabCtx, groupBy: string): BrowseTab | undefin
 
       const { buckets } = bucketedReduce(
         table.data.cube,
+        planeLength(table.data),
         table.data.presence,
         table.data.generators,
         list,
@@ -749,8 +755,11 @@ function ungroupedRows(ctx: GeneratorTabCtx): BrowseTab {
     tables,
     rowCounts,
     axisIndexOf: (row) => refs[row].axisIndex,
-    planesOf: (data) => ({ presence: data.presence, planeStart }),
-    scratch: inputScratch ?? createScratch(),
+    planesOf: (data) => ({
+      presence: data.presence,
+      planeStart: (axisIndex) => planeStart(data, axisIndex),
+    }),
+    scratch: inputScratch,
     memo,
     ...(isPerUnit
       ? { rangeOf: (row: number) => capsFor(joinedRows[row] < 0 ? [] : [joinedRows[row]]) }

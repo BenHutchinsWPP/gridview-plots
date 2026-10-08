@@ -33,13 +33,17 @@ export function hasData(data: GeneratorTable, generatorIndex: number): boolean {
   return data.presence[generatorIndex] === 1;
 }
 
-/** Where a generator's 8,784-point plane starts in the cube. */
-export function planeStart(generatorIndex: number): number {
-  return generatorIndex * YEAR_SLOT_HOURS;
+export function planeLength(data: GeneratorTable): number {
+  return data.numYears * YEAR_SLOT_HOURS;
+}
+
+/** Where a generator's plane, every year of the span, starts in the cube. */
+export function planeStart(data: GeneratorTable, generatorIndex: number): number {
+  return generatorIndex * planeLength(data);
 }
 
 /**
- * Copy one generator's 8,784-point plane into `out`.
+ * Copy one generator's plane into `out`.
  *
  * The stored plane IS the series in this build (rule 3), so the only outcomes
  * are the plane or a refusal that names why it is not there -- not carried by
@@ -69,7 +73,7 @@ export function buildSeries(
     return refuse(`${caseLabel} has no data for "${name}".`);
   }
 
-  const start = planeStart(index);
-  out.set(data.cube.subarray(start, start + YEAR_SLOT_HOURS));
+  const start = planeStart(data, index);
+  out.set(data.cube.subarray(start, start + planeLength(data)));
   return { values: out, warnings: [] };
 }

@@ -34,10 +34,14 @@ export interface FigureInterval {
   readonly band: boolean;
   /** The period picked out in the pane, by label. */
   readonly picked: string | null;
-  /** Each slot day's weekday in the series' year, 0 = Monday, -1 for a
-   * phantom Feb 29, as the pane reads them: a non-leap year's slot holds a
-   * day with no weekday, so they cannot be counted on from Jan 1. */
+  /** Each slot day's weekday over the series' span, slot after slot, 0 =
+   * Monday, -1 for a phantom Feb 29, as the pane reads them: a non-leap
+   * year's slot holds a day with no weekday, so they cannot be counted on
+   * from Jan 1. */
   readonly weekdays: readonly number[];
+  /** The first slot's year, which period labels carry; absent for a line
+   * with no year to print. */
+  readonly firstYear?: number;
 }
 
 const KEY_PT = 8;
@@ -64,7 +68,7 @@ export function intervalPane(
   if (at < 0 || !spec) throw new Error('an interval figure needs its series and its settings');
   const values = capture.lines[0].values ?? [];
   const weekday = (day: number): number => spec.weekdays[day];
-  const periods = cutPeriods(values, spec.length, weekday);
+  const periods = cutPeriods(values, spec.length, weekday, spec.firstYear);
   const span = axisHours(spec.length);
   const summary = periodSummary(periods, span);
   const colours = periods.map((_, i) => hex(periodColour(spec.colour, periods, i, weekday)));

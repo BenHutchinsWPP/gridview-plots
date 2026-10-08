@@ -43,13 +43,18 @@ const drop = (name, caseName, variant) => ({
   variant,
 });
 
-/** A host that records every attach and every progress line. */
-function recordingHost() {
+/** A host that records every attach and every progress line. `held` maps
+ * a Case name to the span its loaded tables state, outside any slot. */
+function recordingHost(held = {}) {
   const attached = [];
   const busy = [];
   return {
     attached,
     busy,
+    heldSpan(caseName) {
+      const span = held[caseName];
+      return span ? { span, holder: `${caseName}'s Area table` } : null;
+    },
     setBusy(message) {
       busy.push(message);
     },
@@ -79,7 +84,8 @@ function wideReader({ unreadable = [], failedPlans = [], simd = true } = {}) {
         preamble: [],
         title: {},
         dataStart: 0,
-        year: 2030,
+        firstYear: 2030,
+        numYears: 1,
       };
     },
     async ingest(plans, retained, onProgress, groupOf) {
@@ -351,6 +357,8 @@ function longReader({ unreadable = [], scanFailed = [], simd = true } = {}) {
         header: { metricNames: ['Load', 'LMP', 'Other'] },
         entities: ['1001', '1002'],
         rowsPerBlock: [],
+        firstYear: 2030,
+        numYears: 1,
       };
     },
     async discoverEntities(plans, onProgress) {
@@ -367,7 +375,7 @@ function longReader({ unreadable = [], scanFailed = [], simd = true } = {}) {
   };
 }
 
-const AREA_SIG = { keys: ['Name'], entityCol: 3, noun: 'area' };
+const AREA_SIG = { keys: ['Name'], entityCol: 3, noun: { one: 'area', many: 'areas' } };
 
 function areaLongBatch(reader, overrides = {}) {
   const parsed = { count: 0 };
@@ -447,15 +455,20 @@ await checkAsync('the area picker sees the axis it is about to allocate', async 
   let sawAxisCount;
   const { batch } = areaLongBatch(longReader(), {
     axis: () => ['A1', 'A2', 'A3', 'A4'],
-    async retained(union, fileCount, axisCount) {
-      sawAxisCount = { union, fileCount, axisCount };
+    async retained(union, fileCount, axisCount, yearCount) {
+      sawAxisCount = { union, fileCount, axisCount, yearCount };
       return ['Load'];
     },
   });
   await createAreaLongIngest(host, batch)([drop('a.csv', 'S'), drop('b.csv', 'S')]);
   // The picker states the size of the coming allocation, so it has to be asked
   // AFTER the scan and with the real numbers.
-  assert.deepEqual(sawAxisCount, { union: ['Load', 'LMP'], fileCount: 2, axisCount: 4 });
+  assert.deepEqual(sawAxisCount, {
+    union: ['Load', 'LMP'],
+    fileCount: 2,
+    axisCount: 4,
+    yearCount: 2,
+  });
 });
 
 await checkAsync('one long file becomes one table per retained metric', async () => {
@@ -489,15 +502,16 @@ await checkAsync('one long file becomes one table per retained metric', async ()
   // A first drop has nothing remembered, so the picker is opened -- once, with
   // the entity count and the file count the allocation will actually use.
   const notes = await run([drop('a.csv', 'S')], 'bus', {
-    sig: { keys: ['BusID'], entityCol: 3, noun: 'bus' },
+    sig: { keys: ['BusID'], entityCol: 3, noun: { one: 'bus', many: 'buses' } },
   });
   assert.equal(notes.length, 0, notes.join(' / '));
   assert.deepEqual(picked, [
     {
       union: ['Load', 'LMP'],
-      noun: 'bus',
+      noun: { one: 'bus', many: 'buses' },
       entityCount: 2,
       fileCount: 1,
+      yearCount: 1,
       preselected: [],
       everything: false,
     },
@@ -511,6 +525,9 @@ await checkAsync('one long file becomes one table per retained metric', async ()
       { kind: 'bus', variant: 'LMP' },
     ],
   );
+  // The plural is the kind's own word, never a guessed suffix.
+  assert.ok(host.busy.includes('Parsing buses…'), host.busy.join(' / '));
+  assert.ok(!host.busy.some((line) => /buss\b/.test(line)), host.busy.join(' / '));
 });
 
 /** The bus/generator long wiring, with the picker and the parse scripted. */
@@ -553,7 +570,7 @@ function entityLongRun(
   return { run, state };
 }
 
-const BUS_LONG = { sig: { keys: ['BusID'], entityCol: 3, noun: 'bus' } };
+const BUS_LONG = { sig: { keys: ['BusID'], entityCol: 3, noun: { one: 'bus', many: 'buses' } } };
 
 await checkAsync('a cancelled metric picker loads nothing and keeps no metric set', async () => {
   const host = recordingHost();
@@ -586,7 +603,7 @@ await checkAsync('each kind remembers its own metric choice', async () => {
   const { run, state } = entityLongRun(host, { answers: [['Load'], ['Load']] });
   await run([drop('a.csv', 'S')], 'bus', BUS_LONG);
   await run([drop('b.csv', 'S')], 'generator', {
-    sig: { keys: ['UnitName'], entityCol: 3, noun: 'generator' },
+    sig: { keys: ['UnitName'], entityCol: 3, noun: { one: 'unit', many: 'units' } },
   });
   // One state across both kinds would have the generator drop measured against
   // the bus drop's answer.
@@ -655,7 +672,7 @@ function mergingWideReader({ failedPlans = [], warnings = [] } = {}) {
     hasSimd: () => true,
     NO_SIMD_MESSAGE: 'no simd',
     async readCasePlan(file) {
-      return { file, header: { entityNames: ['E1', 'E9'] } };
+      return { file, header: { entityNames: ['E1', 'E9'] }, firstYear: 2030, numYears: 1 };
     },
     async ingest(plans, retained, onProgress, groupOf) {
       const firsts = [];
@@ -807,6 +824,7 @@ await checkAsync('a stop is kept apart from a refusal, with the files it stopped
       setBusy() {},
       caseIdForName: (name) => name,
       attach() {},
+      heldSpan: () => null,
     },
     {
       reader: longReader(),

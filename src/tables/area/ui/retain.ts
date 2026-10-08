@@ -17,7 +17,7 @@ export function createAreaRetainGate(): RetainGate {
   return createRetainGate('area', (batch, state) =>
     showPicker(
       batch.union,
-      batch.fileCount,
+      batch.yearCount,
       batch.axisCount,
       widenedPreselection(batch, state, undefined),
       batch.everything,

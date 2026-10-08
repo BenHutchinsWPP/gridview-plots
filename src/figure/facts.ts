@@ -18,6 +18,7 @@
 //   | Weighted mean         | footnote             | line under the row      |
 //   | Axis side (2 scales)  | —                    | legend column           |
 //   | Warning               | footnote             | footnote + row marker   |
+//   | Years, past one       | caption              | caption, first–last     |
 //
 // Pane-neutral and kind-neutral: it reads facets, which every kind builds.
 
@@ -69,13 +70,17 @@ export interface FigureNaming {
   readonly cases: readonly string[];
   readonly quantities: readonly string[];
   readonly keys: readonly string[];
+  /** The years the lines cover, `2035–2037`, when more than one; else null. */
+  readonly years: string | null;
 }
 
-/** The quantity without a trailing ` (unit)`: the axis title states the unit
- * once, or states a divisor in its place. */
+/** The quantity without a trailing `(unit)`: the axis title states the unit
+ * once, or states a divisor in its place. The group is matched with any
+ * spacing and trimmed, as the unit was read from it (`LMP($/MWh)`); a group
+ * that is not the unit (`Load (net)`) is part of the name and stays. */
 function bareQuantity(variable: string, unit: string): string {
-  const suffix = ` (${unit})`;
-  return unit && variable.endsWith(suffix) ? variable.slice(0, -suffix.length) : variable;
+  const last = /\s*\(([^()]*)\)\s*$/.exec(variable);
+  return unit && last && last[1].trim() === unit ? variable.slice(0, last.index) : variable;
 }
 
 function filterText(facets: SeriesFacets | undefined): string {
@@ -91,6 +96,20 @@ function sharedValue(values: readonly string[]): string | null {
 
 function distinct(values: readonly string[]): number {
   return new Set(values).size;
+}
+
+/** First to last year over every line that names its years, when that is
+ * more than one year: a Case of several, or Cases of different years. */
+function coveredYears(lines: readonly FactLine[]): string | null {
+  let first = Infinity;
+  let last = -Infinity;
+  for (const line of lines) {
+    const years = line.facets?.years;
+    if (!years) continue;
+    first = Math.min(first, years.firstYear);
+    last = Math.max(last, years.firstYear + years.numYears - 1);
+  }
+  return last > first ? `${first}–${last}` : null;
 }
 
 /** The footnote marks, in the order a report reader expects them. */
@@ -205,6 +224,7 @@ export function placeFacts(lines: readonly FactLine[]): PlacedFacts {
     cases,
     quantities,
     keys,
+    years: coveredYears(lines),
   };
   return { context, yTitles, columns, underRow, notes, naming };
 }

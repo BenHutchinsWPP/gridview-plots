@@ -125,13 +125,12 @@ try {
 
   // --- 3. the real case-plan readers accept them ---------------------------
   //
-  // The multi-year files, their anomalies and the year-split pair are left
-  // out: a case plan carries one year, read off the first data row, and a
-  // span has several.
+  // A wide plan's years are its date line's; a long plan's are left to the
+  // axis scan.
 
   {
     const plan = await areaWide.readCasePlan(fileOf('area-wide.csv'));
-    assert.equal(plan.year, 2034);
+    assert.deepEqual([plan.firstYear, plan.numYears], [2034, 1]);
     assert.deepEqual(
       plan.header.entityNames.map((name) => name.trim()),
       [
@@ -151,7 +150,7 @@ try {
     // never read with its first data row as the header.
     const keyed = await busWide.readCasePlan(fileOf('bus-wide.csv'));
     assert.ok(keyed.header.entityNames.length > 0);
-    assert.equal(keyed.year, 2034);
+    assert.deepEqual([keyed.firstYear, keyed.numYears], [2034, 1]);
     await assert.rejects(
       () => busWide.readCasePlan(fileOf('bus-wide-no-id.csv')),
       /id row/,
@@ -162,7 +161,13 @@ try {
   {
     const plan = await generatorWide.readCasePlan(fileOf('generator-wide.csv'));
     assert.ok(plan.header.entityNames.length > 0);
-    assert.equal(plan.year, 2034);
+    assert.deepEqual([plan.firstYear, plan.numYears], [2034, 1]);
+  }
+  {
+    // The title names only the first year; the date line spans the run.
+    const plan = await areaWide.readCasePlan(fileOf('area-wide-multiyear.csv'));
+    assert.deepEqual([plan.firstYear, plan.numYears], [2034, 3]);
+    assert.equal(plan.title.year, 2034);
   }
   for (const [name, sig] of [
     ['area-long.csv', areaLong.AREA_LONG],
@@ -170,7 +175,9 @@ try {
     ['generator-long.csv', generatorLong.GENERATOR_LONG],
   ]) {
     const plan = await longPool.readCasePlan(fileOf(name), sig);
-    assert.equal(plan.year, 2034, `${name}: the year comes off the first data row`);
+    // Rows come in any order, so the first row's year says nothing about the
+    // span: the years are left to the axis scan, which reads every row's.
+    assert.equal(plan.numYears, 0, `${name}: no year is guessed off the first data row`);
     assert.ok(
       plan.header.metricNames.length > 0,
       `${name}: a long export's metrics start after its key columns`,
@@ -240,12 +247,22 @@ try {
     assert.equal(differing.length, 1, 'exactly one hour disagrees, so the refusal names it');
   });
 
-  property('two files whose dates are in different calendar years', () => {
-    const yearOf = (name) => textOf(dirA, name).split('\r\n')[5].split(',')[0].split('/')[2];
-    assert.notEqual(
-      yearOf('area-wide-conflict-year-a.csv'),
-      yearOf('area-wide-conflict-year-b.csv'),
-    );
+  property('a same-study pair whose years leave a gap', () => {
+    const yearsIn = (name) =>
+      new Set(
+        textOf(dirA, name)
+          .trim()
+          .split('\r\n')
+          .slice(5)
+          .map((row) => Number(row.split(',')[0].split('/')[2])),
+      );
+    const a = yearsIn('area-wide-conflict-year-a.csv');
+    const b = yearsIn('area-wide-conflict-year-b.csv');
+    assert.equal(a.size, 1, '-a.csv is one year');
+    assert.equal(b.size, 1, '-b.csv is one year');
+    const [ya] = a;
+    const [yb] = b;
+    assert.equal(yb, ya + 2, 'one year lies between them, in neither file');
   });
 
   property('a BOM on line 1, header padding, trailing comma padding', () => {

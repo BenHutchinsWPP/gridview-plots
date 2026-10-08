@@ -211,7 +211,7 @@ ok('a layout that collides with Date/Hour/TOU is refused at instantiate, by name
 {
   const busHeader = parseHeaderLine(header, BUS_LONG);
   const plan = buildColumnPlan(busHeader, busHeader.metricNames);
-  const accumulator = createAccumulator(plan, busIds.length);
+  const accumulator = createAccumulator(plan, busIds.length, { firstYear: 2036, numYears: 1 });
   const payload = parseBytes(
     parser,
     bytes,
@@ -293,7 +293,7 @@ ok('a layout that collides with Date/Hour/TOU is refused at instantiate, by name
   });
   const parsed = parseHeaderLine(genHeader, GENERATOR_LONG);
   const plan = buildColumnPlan(parsed, parsed.metricNames);
-  const accumulator = createAccumulator(plan, units.length);
+  const accumulator = createAccumulator(plan, units.length, { firstYear: 2036, numYears: 1 });
   blitBlock(
     accumulator,
     parseBytes(
@@ -311,7 +311,7 @@ ok('a layout that collides with Date/Hour/TOU is refused at instantiate, by name
   );
   const { data: tables } = finalizeGeneratorLong(
     accumulator,
-    { file: { name: 'gens.csv' }, label: 'gens.csv', header: parsed, year: 2036 },
+    { file: { name: 'gens.csv' }, label: 'gens.csv', header: parsed, firstYear: 2036, numYears: 1 },
     units,
   );
   assert.deepEqual(

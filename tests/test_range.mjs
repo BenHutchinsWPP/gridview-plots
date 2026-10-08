@@ -6,11 +6,14 @@
 //     the hours a filter keeps.
 //   * A per-hour limit falls back to the peak only for the hours it lacks.
 //   * The label names which divisor each side used, over the shown hours.
+//   * A multi-year series is divided over every year, and a per-hour limit
+//     of another length is refused rather than read for year one.
 
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
 
-const { normalizeToRange, rangeLabel, PERCENT } = await import('../src/series/range.ts');
+const { normalizedCopy, normalizeToRange, rangeLabel, PERCENT } =
+  await import('../src/series/range.ts');
 const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
 const checks = [];
@@ -105,6 +108,34 @@ ok('a max cap of 0 is no limit, and NaN hours stay NaN', () => {
   assert.equal(series[0], 1, 'a ratio when no scale is given');
   assert.ok(Number.isNaN(series[3]));
   assert.equal(rangeLabel(use), '% of peak');
+});
+
+ok('a three-year series divides every year by its peak over all three', () => {
+  const H = YEAR_SLOT_HOURS;
+  // Each year its own level, the peak in year three: year one alone would
+  // make 10 read as 100%.
+  const series = Float32Array.from({ length: 3 * H }, (_, hour) => 10 * (1 + Math.floor(hour / H)));
+  const copy = normalizedCopy(series, {}, new Float32Array(3 * H));
+  assert.equal(copy.length, 3 * H, 'the copy is the whole series');
+  assert.deepEqual([copy[0], copy[H], copy[3 * H - 1]], [1 / 3, 2 / 3, 1].map(Math.fround));
+  const use = normalizeToRange(series, {}, PERCENT);
+  assert.equal(series[0], Math.fround((10 / 30) * PERCENT));
+  assert.equal(series[3 * H - 1], PERCENT, 'year three reached');
+  assert.equal(rangeLabel(use), '% of peak');
+});
+
+ok('a one-year limit against a three-year series is refused', () => {
+  const H = YEAR_SLOT_HOURS;
+  const series = new Float32Array(3 * H).fill(10);
+  assert.throws(
+    () => normalizeToRange(series, { upper: new Float32Array(H).fill(100) }),
+    /upper limit of 8784 h against a series of 26352 h/,
+  );
+  // A limit for every hour of the span divides every year.
+  const upper = Float32Array.from({ length: 3 * H }, (_, hour) => (hour < 2 * H ? 100 : 20));
+  normalizeToRange(series, { upper }, PERCENT);
+  assert.equal(series[0], 10);
+  assert.equal(series[3 * H - 1], 50);
 });
 
 let failed = 0;

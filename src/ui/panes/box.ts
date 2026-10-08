@@ -5,6 +5,7 @@
 // dimension (`ChartsInput.boxes`); its hover dims every box but the one under
 // the pointer and tags each y axis with the value at the pointer's height.
 
+import { niceScale } from '../../figure/build';
 import { scaleOf, scalesOf } from '../../series/scales';
 import type { BoxGroup, ChartsInput, Quantiles } from '../charts';
 import { clip, emptyPaneText, formatNumber } from '../chart-format';
@@ -147,11 +148,16 @@ export function createBoxAdapter(host: PaneHost): PaneAdapter {
         range.set(scaleOf(box.unit), seen);
       }
     }
-    for (const seen of range.values()) {
-      if (seen.low === seen.high) {
-        seen.low -= 1;
-        seen.high += 1;
-      }
+    // The Figure's scale, so a box at the data's extreme sits off the frame
+    // and the pane's ticks are the Figure's.
+    const ticks = new Map<string, { at: number; label: string }[]>();
+    for (const [scale, seen] of range) {
+      const nice = niceScale(seen.low, seen.high, 4);
+      range.set(scale, { low: nice.min, high: nice.max });
+      ticks.set(
+        scale,
+        nice.ticks.map((at, i) => ({ at, label: nice.labels[i] })),
+      );
     }
 
     const AXIS_LABEL = 16;
@@ -171,9 +177,8 @@ export function createBoxAdapter(host: PaneHost): PaneAdapter {
     units.slice(0, 2).forEach(({ scale, label }, index) => {
       const seen = range.get(scale);
       if (!seen) return;
-      for (let tick = 0; tick <= 4; tick++) {
-        const value = seen.low + ((seen.high - seen.low) * tick) / 4;
-        const py = y(value, scale);
+      for (const tick of ticks.get(scale) ?? []) {
+        const py = y(tick.at, scale);
         if (index === 0) {
           context.strokeStyle = '#e8e8e8';
           context.beginPath();
@@ -181,10 +186,10 @@ export function createBoxAdapter(host: PaneHost): PaneAdapter {
           context.lineTo(marginLeft + plotWidth, py);
           context.stroke();
           context.textAlign = 'right';
-          context.fillText(formatNumber(value), marginLeft - 6, py + 3);
+          context.fillText(tick.label, marginLeft - 6, py + 3);
           context.textAlign = 'left';
         } else {
-          context.fillText(formatNumber(value), marginLeft + plotWidth + 6, py + 3);
+          context.fillText(tick.label, marginLeft + plotWidth + 6, py + 3);
         }
       }
 

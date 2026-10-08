@@ -115,8 +115,32 @@ on a nine-year file.
   `tests/test_figure.mjs`.
 - Hour is hour-ending 1-24, converted with `hour - 1`. A new kind's parsing
   must state its convention and prove it with a fixture.
+- **A Case is a contiguous run of years**, `firstYear` to
+  `firstYear + numYears - 1`, one slot each. A year inside the run with no
+  rows is refused, naming the year, never read as a year of no data. A long
+  file's years come from the axis scan, never its first row, because rows
+  are unordered. A wide file's come from the preamble's date line, which
+  sizes the table before a row is read and which the parser holds every row
+  to; only a file without one takes its first row's year. Asserted by
+  `tests/test_long_span.mjs` and `tests/test_wide_span.mjs`.
 - One row per (entity, hour). A duplicate is refused with a coverage map,
-  never resolved by last-writer-wins.
+  never resolved by last-writer-wins. Files merged into one table join their
+  years into one contiguous run, and a doubled (entity, hour) across them is
+  refused the same way. A union that skips a year is refused, naming it
+  (`tests/test_long_span.mjs`, `tests/test_wide_span.mjs`).
+- **Every table of a Case states the same span.** A file with another span
+  is refused before it attaches, unless it replaces every table holding the
+  old one; that includes a long file after its metric picker
+  (`keepSpans` in `src/app/batch.ts`). The rule lives in ingest, not the
+  Import Dialog, because a long file's years are known only after its scan;
+  the dialog only warns of a wide file's. Asserted by
+  `tests/test_case_span.mjs`.
+- **One plane's span is contiguous in the cube**:
+  `(plane × numYears + yearOff) × 8,784 + slotHour`, a plane being an entity,
+  or an entity-metric pair in a long table. Every kernel reads a plane with
+  one `subarray`, so a layout that put the year outside the plane would read
+  one entity's first year followed by the next entity's. Asserted by
+  `tests/test_long_span.mjs` and `tests/test_wide_span.mjs`.
 - Every failure a parser can see is counted and reported, and the load is
   refused rather than returning a plausible wrong number.
 
@@ -166,10 +190,14 @@ Bundles are `.gvmb`. The OPFS migration from the legacy blob is one-way:
 old blobs are upgraded in memory, never written back, never deleted (it may be
 the user's only copy).
 
-**A v4 table entry carries `firstYear`/`numYears` beside `year` and 8,784 hours
-per plane.** A v3 (or legacy) entry has no `numYears`: `savedHoursOnSlot` inserts
-a blank Feb 29 inside every plane, never padding the end, which would put every
-hour after Feb 28 a day off. v3 is read, never written. Asserted by
+**A v4 table entry carries `firstYear`/`numYears` beside `year` and
+`numYears` × 8,784 hours per plane**, years in order inside each plane.
+`year` is still written, as `firstYear`, so a one-year entry is exactly what
+an older v4 build wrote, and that build refuses a longer one on its cube
+length rather than reading its first year as the whole. A v3 (or legacy)
+entry has no `numYears`: `savedHoursOnSlot` inserts a blank Feb 29 inside
+every plane, never padding the end, which would put every hour after Feb 28
+a day off. v3 is read, never written. Asserted by
 `tests/test_storage.mjs`.
 
 **Anything a bundle saves against a Case names it by its index in the
@@ -182,6 +210,9 @@ restore paths adopt limits by the Cases made.
 
 A pin's `perUnit` field and the `p.u.` token in its row id are wire format:
 renaming either orphans every saved "% of range" pin.
+A pane's `boxDims` values (`BOX_DIMS`, `year` among them) are wire format:
+renaming one orphans every pane saved on it, and a name this build does not
+know starts that pane by Case rather than refusing the bundle.
 A filter context entry's `chosenOn` is wire format too: it is what keeps a
 switched group pin from reading its "Max ≥ 500" as a fact about the new
 variable. Its `case` holds the Case's NAME, not its id, so it needs no remap
@@ -190,12 +221,22 @@ The Contents inventory's session-input keys (`limits (shared)`,
 `groups:<kind>`, the lookup variants) are wire format as well. A restore
 replaces a session row only when the bundle carried that input and it was
 adopted, so the strip never names a file whose content was not taken up.
+A manifest's `overlayYears`, one boolean per pane, is wire format: a bundle
+without it restores every pane unticked. Asserted by `tests/test_storage.mjs`.
 
 **An hourly download's rows are the 8,784-hour slot**, so the same date is the
-same row in every year and Case. Wide always writes Feb 29, blank for a
-non-leap series; long writes a non-leap series no Feb 29 rows. `HourOfYear` is
-the 0-based slot hour (Mar 1 HE 1 is 1440 in every year), never the real hour
-of the year. Asserted by `tests/test_hourly_csv.mjs`.
+same row in every year and Case. Wide writes one column per series and year
+of its Case, and always writes Feb 29, blank in a non-leap year's column;
+long writes a series year after year, a non-leap year with no Feb 29 rows.
+`HourOfYear` is the 0-based slot hour (Mar 1 HE 1 is 1440 in every year),
+never the real hour of the year. **A file names years only when it holds more
+than one** (a multi-year Case, or Cases of different years): each wide header
+ends in its year (`ALDER [MW] 2036`) and long gains a `Year` column after
+`Series`. A file of one year is the one-year layout byte for byte. The chart
+pane's download is the same wide layout over the years its window touches;
+under "overlay years", over the slot hours its window covers.
+All of it is wire format: spreadsheets are built on these columns. Asserted
+by `tests/test_hourly_csv.mjs` and `tests/test_time_span.mjs`.
 
 ### UI
 
@@ -274,6 +315,23 @@ of the year. Asserted by `tests/test_hourly_csv.mjs`.
 - **`src/figure/` imports no table kind and never branches on kind.** A
   figure names a line from its facets; a fact only a kind knows reaches it as
   a facet (`figureSubject`). Asserted by `tests/test_rot_guards.mjs`.
+- **The time axis is slot positions from a first year**: x = yearOffset ×
+  8,784 + slot hour, so every Case lines up by date and a non-leap Feb 29 is
+  a one-day gap, never closed. Its labels and ticks are integer arithmetic on
+  the slot (`axisHour` in `src/ui/chart-format.ts`), never a `Date`, whose
+  timezone shifts a row by a day. A Figure of a time or stacked pane is
+  drawn on the pane's axis, its origin and all. Asserted by
+  `tests/test_time_ticks.mjs`, `tests/test_time_span.mjs` and
+  `tests/test_rot_guards.mjs`.
+- **"Overlay years" keeps a series' colour and makes its years shades of
+  it** (`shade` in `src/ui/palette.ts`), the ramp centred on the base colour,
+  one rule for pane and figure: the Figure takes each line's colour from the
+  capture rather than shading again. The legend lists series, the hover
+  lists series × year, and the Figure's key is a row per series followed by
+  its year ramp. Its axis is one slot with no year, and its hours footnote
+  counts each year's hours out of the drawn years' real hours. Asserted by
+  `tests/test_palette.mjs`, `tests/test_time_span.mjs` and
+  `tests/test_figure.mjs`.
 - **The SVG is the one drawing path**, written for Word: presentation
   attributes only, text on an explicit baseline, data cropped by the builder
   rather than `clipPath`, Aptos first. Asserted by `tests/test_figure.mjs`.
@@ -294,6 +352,9 @@ of the year. Asserted by `tests/test_hourly_csv.mjs`.
   A pane tears the old type down before the new one draws and routes input to
   the drawn type only, so a rule written as a branch on type in `charts.ts`
   is a second owner for it. Asserted by `tests/test_panes.mjs`.
+- **Every chart type draws a Case over its whole span**, never its first
+  year as the run, so no pane refuses a Case for spanning years. Asserted by
+  `tests/test_panes.mjs`.
 - **A pane's Figure button reads the pane's refusal banner**, after the
   panes paint, instead of restating each pane's refusal rules. A pane that
   refuses without `banner(body, 'refusal', …)` would still offer a figure.

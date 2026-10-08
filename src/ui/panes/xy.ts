@@ -6,17 +6,35 @@
 // exactly two series or refuses: plotting the first two of five would
 // misstate what was compared. `fitLine` is exported for its own test and the
 // print figure, since the arithmetic is the half that can be silently wrong.
+//
+// Cases of several years pair by position: the kth year each side keeps
+// under the Years filter against the other's kth, hour by hour within the
+// slot, so 2034 can be read against 2035. Rejected: pairing only the years
+// both sides share, which would leave two Cases of different years nothing
+// to compare. Different counts of kept years have no pairing and refuse.
 
+import { YEAR_SLOT_HOURS, realHours } from '../../model/calendar';
+import { NO_YEAR } from '../../app/boxes';
 import { scalesOf } from '../../series/scales';
-import type { CaseSeries } from '../charts';
+import type { CaseSeries, ChartsInput } from '../charts';
 import { clip, formatNumber, hourLabel } from '../chart-format';
-import { figureShot, pinnedOf, type PaneAdapter, type PaneFrame, type PaneHost } from './adapter';
+import {
+  figureShot,
+  hasYear,
+  pinnedOf,
+  type PaneAdapter,
+  type PaneFrame,
+  type PaneHost,
+} from './adapter';
 
 /** One plotted pair, with its canvas position for hover hit-testing. */
 interface XyPoint {
   x: number;
   y: number;
+  /** The hour within the year slot. */
   hour: number;
+  /** Which kept year of each side the pair is from, from 0. */
+  k: number;
   px: number;
   py: number;
 }
@@ -29,6 +47,84 @@ interface XyGeometry {
   plotHeight: number;
   x: { name: string; color: string };
   y: { name: string; color: string };
+  /** Each side's year by kept position `k`; undefined for a line with no
+   * Case year. */
+  xYears: (number | undefined)[];
+  yYears: (number | undefined)[];
+}
+
+/** One year slot a side keeps under the Years filter. */
+interface KeptSlot {
+  slot: number;
+  year: number | undefined;
+}
+
+/** The year slots of `series` the Years filter keeps, in order. A line with
+ * no Case year keeps every slot it holds. */
+function keptSlots(series: CaseSeries, input: ChartsInput): KeptSlot[] {
+  const slots = Math.max(1, Math.ceil((series.values?.length ?? 0) / YEAR_SLOT_HOURS));
+  const first = input.spanOf?.(series).firstYear;
+  const kept: KeptSlot[] = [];
+  for (let slot = 0; slot < slots; slot++) {
+    const year = hasYear(first) ? first + slot : undefined;
+    if (year !== undefined && input.years && !input.years.has(year)) continue;
+    kept.push({ slot, year });
+  }
+  return kept;
+}
+
+/** The kept slots' years, leaving out a slot with none. */
+function datedYears(kept: readonly KeptSlot[]): number[] {
+  return kept.flatMap((k) => (k.year === undefined ? [] : [k.year]));
+}
+
+/** Years as a reader writes them: runs as `2034–2036`, the rest listed. */
+export function yearsText(years: readonly number[]): string {
+  const runs: string[] = [];
+  for (let i = 0; i < years.length;) {
+    let j = i;
+    while (j + 1 < years.length && years[j + 1] === years[j] + 1) j++;
+    runs.push(j > i ? `${years[i]}–${years[j]}` : String(years[i]));
+    i = j + 1;
+  }
+  if (runs.length <= 1) return runs[0] ?? '';
+  return `${runs.slice(0, -1).join(', ')} and ${runs[runs.length - 1]}`;
+}
+
+/** Each side's kept slots, or why the two cannot be paired. */
+type Pairing = { ok: true; x: KeptSlot[]; y: KeptSlot[] } | { ok: false; reason: string };
+
+function pairingOf(xs: CaseSeries, ys: CaseSeries, input: ChartsInput): Pairing {
+  const x = keptSlots(xs, input);
+  const y = keptSlots(ys, input);
+  if (x.length === y.length) return { ok: true, x, y };
+  const side = (series: CaseSeries, kept: KeptSlot[]): string => {
+    if (kept.length === 0) return `${series.name} keeps no year`;
+    const years = datedYears(kept);
+    if (years.length < kept.length) {
+      return `${series.name} holds ${kept.length === 1 ? 'one undated year' : `${kept.length} undated years`}`;
+    }
+    const whole = Math.max(1, Math.ceil((series.values?.length ?? 0) / YEAR_SLOT_HOURS));
+    return `${series.name} ${kept.length < whole ? 'keeps' : 'spans'} ${yearsText(years)}`;
+  };
+  return {
+    ok: false,
+    reason:
+      `${side(xs, x)} and ${side(ys, y)}, so there is no hour-by-hour pairing. ` +
+      'Filter Years to the years both should pair on.',
+  };
+}
+
+/** The pane's hover head: the slot date, with the year when both sides of
+ * the pair name the same one, and both years, X first, when they differ. */
+export function pairHourLabel(
+  hour: number,
+  xYear: number | undefined,
+  yYear: number | undefined,
+): string {
+  if (xYear === undefined || yYear === undefined) return hourLabel(hour);
+  if (xYear === yYear) return hourLabel(hour, xYear);
+  return `${hourLabel(hour)} · ${xYear} against ${yYear}`;
 }
 
 /** Point alpha: a year of pairs overplots, and alpha shows density. */
@@ -109,6 +205,27 @@ export function fitCaption(fit: XyFit): string {
   );
 }
 
+/** Both sides' kept years in pairing order, or none when a side has no
+ * Case year to name. */
+function pairYears(pairing: Extract<Pairing, { ok: true }>): {
+  years?: { x: number[]; y: number[] };
+} {
+  const x = datedYears(pairing.x);
+  const y = datedYears(pairing.y);
+  return x.length === pairing.x.length && y.length === pairing.y.length ? { years: { x, y } } : {};
+}
+
+/** `values`' kept slots, end to end. */
+function keptValues(values: ArrayLike<number>, kept: readonly KeptSlot[]): Float32Array {
+  const out = new Float32Array(kept.length * YEAR_SLOT_HOURS).fill(NaN);
+  kept.forEach(({ slot }, k) => {
+    const from = slot * YEAR_SLOT_HOURS;
+    const to = Math.min(values.length, from + YEAR_SLOT_HOURS);
+    for (let h = from; h < to; h++) out[k * YEAR_SLOT_HOURS + h - from] = values[h];
+  });
+  return out;
+}
+
 export function createXyAdapter(host: PaneHost): PaneAdapter {
   const { body, canvas, tip } = host;
   const { xySwap, xyFit } = host.controls;
@@ -175,7 +292,11 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
     const point = hits[best];
     const head = document.createElement('div');
     head.className = 'chart-tip-x';
-    head.textContent = hourLabel(point.hour);
+    head.textContent = pairHourLabel(
+      point.hour,
+      geometry.xYears[point.k],
+      geometry.yYears[point.k],
+    );
 
     const rows = [geometry.x, geometry.y].map((axis, side) => {
       const row = document.createElement('div');
@@ -202,6 +323,9 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
   }
 
   function draw(xs: CaseSeries, ys: CaseSeries, fit = false): void {
+    if (!frame) return;
+    const pairing = pairingOf(xs, ys, frame.input);
+    if (!pairing.ok) return;
     body.querySelectorAll('.pane-banner').forEach((node) => node.remove());
     const { width, height } = host.size();
     const ratio = window.devicePixelRatio || 1;
@@ -224,18 +348,22 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
     let yLow = Infinity;
     let yHigh = -Infinity;
     if (xv && yv) {
-      const hours = Math.min(xv.length, yv.length);
-      for (let hour = 0; hour < hours; hour++) {
-        const x = xv[hour];
-        const y = yv[hour];
-        // A pair needs both sides; NaN on either leaves no point.
-        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-        xLow = Math.min(xLow, x);
-        xHigh = Math.max(xHigh, x);
-        yLow = Math.min(yLow, y);
-        yHigh = Math.max(yHigh, y);
-        points.push({ x, y, hour, px: 0, py: 0 });
-      }
+      pairing.x.forEach((xSlot, k) => {
+        const xFrom = xSlot.slot * YEAR_SLOT_HOURS;
+        const yFrom = pairing.y[k].slot * YEAR_SLOT_HOURS;
+        const hours = Math.min(YEAR_SLOT_HOURS, xv.length - xFrom, yv.length - yFrom);
+        for (let hour = 0; hour < hours; hour++) {
+          const x = xv[xFrom + hour];
+          const y = yv[yFrom + hour];
+          // A pair needs both sides; NaN on either leaves no point.
+          if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+          xLow = Math.min(xLow, x);
+          xHigh = Math.max(xHigh, x);
+          yLow = Math.min(yLow, y);
+          yHigh = Math.max(yHigh, y);
+          points.push({ x, y, hour, k, px: 0, py: 0 });
+        }
+      });
     }
     if (points.length === 0) {
       geometry = null;
@@ -364,15 +492,20 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
       plotHeight,
       x: { name: xs.name, color: xs.color },
       y: { name: ys.name, color: ys.color },
+      xYears: pairing.x.map((slot) => slot.year),
+      yYears: pairing.y.map((slot) => slot.year),
     };
     hits = points;
   }
 
   return {
     surface: 'canvas',
-    // The swap and fit need exactly two series; a scatter has no zoom and no
-    // hour axis to download.
-    controls: (shown) => (shown.drawable.length === 2 ? ['xy'] : []),
+    // The swap and fit need exactly two series that pair; a scatter has no
+    // zoom and no hour axis to download.
+    controls: (shown) =>
+      shown.drawable.length === 2 && pairingOf(shown.drawable[0], shown.drawable[1], shown.input).ok
+        ? ['xy']
+        : [],
     draw(next) {
       frame = next;
       tip.style.display = 'none';
@@ -389,6 +522,13 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
         return;
       }
       const [xs, ys] = xyPair(drawable);
+      const pairing = pairingOf(xs, ys, next.input);
+      if (!pairing.ok) {
+        pair = null;
+        clear();
+        host.banner('refusal', pairing.reason);
+        return;
+      }
       pair = [xs, ys];
       xySwap.title = `Put ${ys.name} on X and ${xs.name} on Y`;
       host.note(`X ${xs.name} / Y ${ys.name}`);
@@ -412,15 +552,31 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
       offered: () => !pair?.some((s) => s.dashed),
       capture() {
         if (!frame || !pair) return null;
+        const pairing = pairingOf(pair[0], pair[1], frame.input);
+        if (!pairing.ok) return null;
         const pinned = pinnedOf(frame.input.series);
-        return figureShot(host, frame.input, {
+        const shot = figureShot(host, frame.input, {
           pane: 'xy',
           // X first, as the pane holds it after any swap.
           ordered: [...pair, ...pinned.filter((s) => s.values === null)],
           // No zoom: a scatter's window is its pair's own values.
           xWindow: [0, 1],
-          xy: { fit: xyFit.checked },
+          xy: { fit: xyFit.checked, ...pairYears(pairing) },
         });
+        // Each side cut to its kept years, laid end to end, so the figure
+        // pairs by index exactly as the pane did.
+        const kept = [pairing.x, pairing.y];
+        const lines = shot.capture.lines.map((line, side) =>
+          side < 2 && line.values ? { ...line, values: keptValues(line.values, kept[side]) } : line,
+        );
+        // A pair has an hour only where both sides' years do: Feb 29 against
+        // a non-leap year pairs nothing.
+        let hours = 0;
+        pairing.x.forEach((xSlot, k) => {
+          const real = (slot: KeptSlot) => realHours(slot.year ?? NO_YEAR, 1);
+          hours += Math.min(real(xSlot), real(pairing.y[k]));
+        });
+        return { ...shot, capture: { ...shot.capture, lines, realHours: hours } };
       },
     },
   };

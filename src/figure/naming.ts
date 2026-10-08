@@ -19,7 +19,7 @@ const FILENAME_MAX = 80;
 const EXTENSION_ROOM = 4;
 
 /** `a`, `a and b`, `a, b and c`. */
-function listOf(items: readonly string[]): string {
+export function listOf(items: readonly string[]): string {
   if (items.length <= 1) return items[0] ?? '';
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
@@ -60,8 +60,9 @@ export function suggestCaption(
         : cases.length <= KEYS_LISTED
           ? `, Cases ${listOf(cases)}`
           : `, ${cases.length} Cases`;
+  const years = naming.years ? `, ${naming.years}` : '';
   const hours = hourFilter && hourFilter !== 'all hours' ? `; hours: ${hourFilter}` : '';
-  return `${lead(what)}${range}${forKeys}${inCases}${hours}.`;
+  return `${lead(what)}${range}${forKeys}${inCases}${years}${hours}.`;
 }
 
 /** Lower case, every run of anything but a letter or digit folded to `-`. */

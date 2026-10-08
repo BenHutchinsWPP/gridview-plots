@@ -25,8 +25,8 @@ import { figureFileStem, suggestCaption } from './naming';
 import { PT_PER_IN, line, svgDocument, text, tint, type StrokeStyle } from './svg';
 import { boxPane } from './box';
 import { DURATION_PANE } from './duration';
-import { STACKED_PANE } from './stacked';
-import { TIME_PANE } from './time';
+import { stackedPane } from './stacked';
+import { timePane } from './time';
 import { heatmapPane } from './heatmap';
 import { xyPane } from './xy';
 import { intervalPane, type FigureInterval } from './interval';
@@ -53,7 +53,10 @@ export interface FigureLine {
   readonly facets?: SeriesFacets;
   readonly color: string;
   readonly unit: string;
-  /** 8,784 values (the year slot), NaN where the pane shows a gap; null when refused. */
+  /** One value per x position: for time and stacked, the pane's axis of
+   * 8,784-hour year slots from `FigureCapture.firstYear`, the line placed at
+   * its Case's years, or under "overlay years" one slot holding one year.
+   * NaN where the pane shows a gap; null when refused. */
   readonly values: ArrayLike<number> | null;
   /** The drawer's grey click-preview: never part of a figure. */
   readonly dashed?: boolean;
@@ -63,13 +66,26 @@ export interface FigureLine {
   readonly warnings?: readonly string[];
   /** An Area weighted mean's weight column. */
   readonly weightColumn?: string;
+  /** One year of a series under "overlay years": the series' place among
+   * those drawn, the year, and the series' palette colour, which its key
+   * row shows with each year's shade (`color`). A series' years are
+   * adjacent, oldest first. */
+  readonly overlay?: OverlayYear;
+}
+
+/** Where one overlay line sits among a series' years. */
+export interface OverlayYear {
+  readonly series: number;
+  /** Absent for a line with no Case year. */
+  readonly year?: number;
+  readonly base: string;
 }
 
 /** One interface limit line as the pane drew it, in its line's colour. */
 export interface FigureLimit {
   readonly color: string;
   readonly unit: string;
-  /** 8,784 values (the year slot), NaN where unbounded or filtered. */
+  /** Placed on the pane's axis as its line is, NaN where unbounded or filtered. */
   readonly values: ArrayLike<number>;
   /** A boundary's members' limits summed: named as a best case. */
   readonly summed?: boolean;
@@ -99,23 +115,36 @@ export interface FigureBoxes {
 export interface FigureCapture {
   readonly pane: FigurePane;
   readonly lines: readonly FigureLine[];
-  /** The pane's x window, in the pane's own x units: hour-of-year for time
+  /** The pane's x window, in the pane's own x units: axis position for time
    * and stacked, % of interval for duration. A stacked pane's lines come
    * bottom band first, in the pane's stack order. */
   readonly xWindow: readonly [number, number];
+  /** The year at x = 0 of a time or stacked axis, so its ticks name years as
+   * the pane's do; absent when no drawn line names one. */
+  readonly firstYear?: number;
+  /** A heatmap's bands, top to bottom: the year of each year slot its first
+   * line's values hold, when its Case spans several years. Absent, one
+   * unlabelled band. */
+  readonly years?: readonly number[];
   /** The limit lines the pane draws: empty or absent when its limits box is
    * unticked, and never the preview's. */
   readonly limits?: readonly FigureLimit[];
   /** The box pane's boxes; required for a box figure. */
   readonly boxes?: FigureBoxes;
   /** The X-Y pane's state; required for an X-Y figure, whose first two
-   * lines are the pair in the pane's order, X then Y. */
-  readonly xy?: { readonly fit: boolean };
+   * lines are the pair in the pane's order, X then Y, each its kept year
+   * slots end to end so position k pairs with position k. `years` is each
+   * side's kept years in that order, absent when a side names none. */
+  readonly xy?: {
+    readonly fit: boolean;
+    readonly years?: { readonly x: readonly number[]; readonly y: readonly number[] };
+  };
   /** The interval pane's settings; required for an interval figure, whose
    * first line is the series it cut. */
   readonly interval?: FigureInterval;
-  /** The real hours of the Cases the drawn lines came from, never the slot's
-   * length: what the hours footnote counts out of. */
+  /** The real hours of the Cases the drawn lines came from, over every year
+   * they span that the window touches (an overlay's: every year drawn),
+   * never the slot's length: what the hours footnote counts out of. */
   readonly realHours: number;
 }
 
@@ -127,10 +156,10 @@ export interface FigureInput extends FigureCapture {
    * measurer; tests pass a fixed-width one. */
   readonly measureText: (text: string, fontPt: number) => number;
   /** Per-export replacements by text id (`context`, `legend[r][c]`,
-   * `legend[r][under]`, `footnote[i]`, `axis.x`, `axis.y[side]`, a heatmap's
+   * `legend[r][under]`, an overlay's year `legend[r][year][k]`, `footnote[i]`, `axis.x`, `axis.y[side]`, a heatmap's
    * `axis.color`, an interval key's `legend.from`, `legend.to`,
-   * `legend.key[i]`, `legend.mean`, `legend.band` and `legend.picked`,
-   * `caption`).
+   * `legend.key[i]`, `legend.mean`, `legend.band` and `legend.picked`, a
+   * heatmap band's `axis.year[i]`, `caption`).
    * Never remembered: the next figure starts from the app's own labels. */
   readonly edits?: Readonly<Record<string, string>>;
 }
@@ -192,6 +221,9 @@ export interface PaneRenderer {
   lead(what: string): string;
   /** The x-axis title, when the pane draws one. */
   readonly xTitle?: string;
+  /** The caption's years, when the pane states them itself in place of the
+   * span its lines cover; null names none. */
+  readonly years?: string | null;
   /** The lowest and highest value a line shows in the window, or
    * [Infinity, -Infinity] when it shows none. */
   extent(values: ArrayLike<number>, window: readonly [number, number]): [number, number];
@@ -214,12 +246,20 @@ export interface PaneRenderer {
   /** x ticks, `at` as a fraction of the plot width. A tick with a `room`
    * (a fraction of the plot width) wraps its label to fit it. */
   xTicks(window: readonly [number, number], plotWidth: number): XTick[];
-  marks(lines: readonly MarkLine[], window: readonly [number, number], frame: PlotFrame): string[];
+  marks(
+    lines: readonly MarkLine[],
+    window: readonly [number, number],
+    frame: PlotFrame,
+    say: (id: string, text: string) => string,
+  ): string[];
   /** Whether the pane draws interface limit lines (`FigureCapture.limits`). */
   readonly drawsLimits?: boolean;
   /** The pane's one y axis, when it is not read off the lines' units (an
    * X-Y pane's Y series): every line is drawn against it. */
-  readonly yAxis?: { readonly title: string; scale(tickCount: number): YScale };
+  readonly yAxis?: {
+    readonly title: string;
+    scale(tickCount: number, plotHeight: number): YScale;
+  };
   /** The context line, when the pane states it otherwise than as what every
    * line shares: `shared` is placement's line, `keys` each drawn line's key. */
   context?(shared: string, keys: readonly string[]): string;
@@ -244,9 +284,9 @@ const PANES: Record<
   FigurePane,
   (capture: FigureCapture, drawnIndex: (captured: number) => number) => PaneRenderer
 > = {
-  time: () => TIME_PANE,
+  time: (capture) => timePane(capture),
   duration: () => DURATION_PANE,
-  stacked: () => STACKED_PANE,
+  stacked: (capture) => stackedPane(capture),
   box: (capture, drawnIndex) => boxPane(capture.boxes, drawnIndex),
   xy: (capture, drawnIndex) => xyPane(capture, drawnIndex),
   heatmap: (capture, drawnIndex) => heatmapPane(capture, drawnIndex),
@@ -308,7 +348,18 @@ export function buildFigure(input: FigureInput): Figure {
   const sideOf = (unit: string) => scales.findIndex((s) => s.scale === scaleOf(unit));
   const sides = lines.map((entry) => sideOf(entry.unit));
   const values = lines.map((entry) => entry.values as ArrayLike<number>);
-  const strokes = lineStrokes(lines);
+  // An overlay's key is a row per series, not per line: its oldest year's
+  // line stands for it, in the series' own colour.
+  const heads = lines.flatMap((entry, i) =>
+    i === 0 || !entry.overlay || lines[i - 1].overlay?.series !== entry.overlay.series ? [i] : [],
+  );
+  /** Each line's key row. */
+  const headOf = lines.map((_, i) => heads.filter((head) => head <= i).length - 1);
+  const headStrokes = lineStrokes(
+    heads.map((i) => ({ ...lines[i], color: lines[i].overlay?.base ?? lines[i].color })),
+  );
+  // A year keeps its series' dash in its own shade.
+  const strokes = lines.map((entry, i) => ({ ...headStrokes[headOf[i]], color: entry.color }));
   // A limit is read against its line's axis; one on no drawn scale, or with
   // no value in the window, is not drawn and not named.
   const limits = (pane.drawsLimits ? (input.limits ?? []) : []).filter((limit) => {
@@ -325,14 +376,16 @@ export function buildFigure(input: FigureInput): Figure {
   const measure = input.measureText;
 
   const facts = placeFacts(
-    lines.map((entry, i) => ({
-      name: entry.name,
-      facets: entry.facets,
-      unit: entry.unit,
-      side: sides[i],
-      weightColumn: entry.weightColumn,
-      warnings: entry.warnings,
-    })),
+    heads
+      .map((i) => lines[i])
+      .map((entry, n) => ({
+        name: entry.name,
+        facets: entry.facets,
+        unit: entry.unit,
+        side: sides[heads[n]],
+        weightColumn: entry.weightColumn,
+        warnings: entry.warnings,
+      })),
   );
 
   const width = input.size.width * PT_PER_IN;
@@ -350,7 +403,18 @@ export function buildFigure(input: FigureInput): Figure {
   ].map((note, i) => say(`footnote[${i}]`, note));
   const noteLines = notes.map((note) => wrapText(note, contentWidth, NOTE_PT, measure));
   const limitRows = limitLegendRows(limits);
-  const order = pane.legendOrder?.(lines.length) ?? lines.map((_, i) => i);
+  const order = pane.legendOrder?.(heads.length) ?? heads.map((_, n) => n);
+  /** A series' years, as its key row's ramp. */
+  const rampOf = (n: number) =>
+    lines[heads[n]].overlay
+      ? lines
+          .map((entry, i) => ({ entry, i }))
+          .filter(({ i }) => headOf[i] === n)
+          .map(({ entry, i }) => ({
+            stroke: strokes[i],
+            label: entry.overlay?.year === undefined ? '' : `${entry.overlay.year}`,
+          }))
+      : undefined;
   const legend = pane.legendBlock
     ? pane.legendBlock({
         left: MARGIN,
@@ -361,9 +425,10 @@ export function buildFigure(input: FigureInput): Figure {
       })
     : layoutLegend(
         [
-          ...order.map((i) => ({
-            stroke: strokes[i],
-            ...(pane.boxSwatch ? { fill: tint(strokes[i].color, BOX_FILL_ALPHA) } : {}),
+          ...order.map((n) => ({
+            stroke: headStrokes[n],
+            ...(pane.boxSwatch ? { fill: tint(headStrokes[n].color, BOX_FILL_ALPHA) } : {}),
+            ...(rampOf(n) ? { ramp: rampOf(n) } : {}),
           })),
           ...limitRows.map((row) => ({ stroke: row.stroke })),
         ],
@@ -410,7 +475,7 @@ export function buildFigure(input: FigureInput): Figure {
   const tickCount = Math.max(3, Math.min(8, Math.round(plotHeight / 32)));
   const extents = pane.yExtents?.(values, window) ?? values.map((v) => pane.extent(v, window));
   const yScales = pane.yAxis
-    ? [pane.yAxis.scale(tickCount)]
+    ? [pane.yAxis.scale(tickCount, plotHeight)]
     : scales.map((_, side) => {
         let low = Infinity;
         let high = -Infinity;
@@ -475,6 +540,7 @@ export function buildFigure(input: FigureInput): Figure {
       ],
       window,
       frame,
+      say,
     ),
   );
 
@@ -543,7 +609,11 @@ export function buildFigure(input: FigureInput): Figure {
 
   const caption = say(
     'caption',
-    suggestCaption(facts.naming, (what) => pane.lead(what), input.hourFilter),
+    suggestCaption(
+      pane.years === undefined ? facts.naming : { ...facts.naming, years: pane.years },
+      (what) => pane.lead(what),
+      input.hourFilter,
+    ),
   );
   return {
     svg: svgDocument(input.size.width, input.size.height, body, {
@@ -609,7 +679,8 @@ function missingNotes(
       ? (entry.facets.figureSubject ?? subjectLabel(entry.facets))
       : entry.name;
     const caseLabel = entry.facets?.caseLabel;
-    return caseLabel && caseLabel !== sharedCase ? `${caseLabel} · ${key}` : key;
+    const year = entry.overlay?.year === undefined ? '' : ` · ${entry.overlay.year}`;
+    return (caseLabel && caseLabel !== sharedCase ? `${caseLabel} · ${key}` : key) + year;
   };
   const refused = captured
     .filter((entry) => entry.values === null && !entry.dashed)

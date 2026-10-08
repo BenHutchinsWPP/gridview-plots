@@ -19,14 +19,21 @@
 //     non-leap series blank on Feb 29, long writes no Feb 29 rows for a
 //     non-leap series, and HourOfYear is the slot hour (Mar 1 HE 1 is 1440
 //     in every year).
+//   * A file holding more than one year (a Case spanning several, or Cases
+//     of different years) writes each series' years: wide one column per
+//     series and year, named with its year, on the one 8,784-hour slot;
+//     long a `Year` column after `Series`, a non-leap year without Feb 29.
+//     A file of one year keeps the one-year layout byte for byte, and every
+//     size bound holds.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import './test_loader.mjs';
 
 const {
   CELL_MAX_CHARS,
   HOUR_COLUMNS,
-  WIDE_MAX_SERIES,
+  WIDE_MAX_COLUMNS,
   csvField,
   formatCell,
   formatRatioCell,
@@ -167,7 +174,9 @@ function series(subject, values, extra = {}) {
 }
 
 /** The fake host's Case years: `c1` is a leap year unless a test says. */
-const YEARS = { c1: 2024, c2: 2025 };
+const YEARS = { c1: 2024, c2: 2025, c4: 2025, c5: 2036 };
+/** Cases spanning several years. */
+const SPANS = { c3: { firstYear: 2035, numYears: 3 } };
 
 const refOf = (subject, extra = {}) => ({
   id: subject,
@@ -190,7 +199,11 @@ function plane(level, masked = () => false) {
 
 /** Run the export over resolved series, and return the file and the host's
  * account. */
-async function run(layout, resolved, { notes = [], confirm = true } = {}) {
+async function run(
+  layout,
+  resolved,
+  { notes = [], confirm = true, descriptor = ['# Cases: Case 1', '# Hours: Jan'] } = {},
+) {
   const refs = resolved.map((entry, i) =>
     refOf(entry.facets.subject, { id: `${entry.facets.subject}#${i}`, ...entry.ref }),
   );
@@ -203,7 +216,7 @@ async function run(layout, resolved, { notes = [], confirm = true } = {}) {
         log.push('resolve');
         return byId.get(ref.id) ?? null;
       },
-      yearOfCase: (caseId) => YEARS[caseId],
+      spanOfCase: (caseId) => SPANS[caseId] ?? { firstYear: YEARS[caseId], numYears: 1 },
       progress: (message) => log.push(`busy:${message}`),
       nextFrame: async () => log.push('frame'),
       confirm: async (bytes) => {
@@ -211,7 +224,7 @@ async function run(layout, resolved, { notes = [], confirm = true } = {}) {
         return confirm;
       },
     },
-    { layout, refs, descriptor: ['# Cases: Case 1', '# Hours: Jan'], notes },
+    { layout, refs, descriptor, notes },
   );
   return { text: parts?.join(''), parts, log, asked };
 }
@@ -325,11 +338,14 @@ const body = (text) => {
 }
 
 {
-  assert.equal(wideWithheld(WIDE_MAX_SERIES), '');
-  assert.match(wideWithheld(WIDE_MAX_SERIES + 1), /Withheld: 16,381 series/);
-  const refs = Array.from({ length: WIDE_MAX_SERIES + 1 }, () => series('X', plane(1)));
+  assert.equal(wideWithheld(WIDE_MAX_COLUMNS), '');
+  assert.match(
+    wideWithheld(WIDE_MAX_COLUMNS + 1),
+    /^Withheld: 16,381 columns is more than Excel holds \(16,380 beside the hour columns\)/,
+  );
+  const refs = Array.from({ length: WIDE_MAX_COLUMNS + 1 }, () => series('X', plane(1)));
   await assert.rejects(run('wide', refs), /at most 16,380/);
-  ok('wide is withheld above 16,380 series, with the reason');
+  ok('wide is withheld above 16,380 columns, with the reason');
 
   const declined = await run('wide', [series('ALDER', plane(1))], { confirm: false });
   assert.equal(declined.parts, null);
@@ -401,7 +417,7 @@ const body = (text) => {
         'long',
         new TextEncoder().encode(headerText).length,
         keys,
-        keys.map(() => ({ leap: true })),
+        keys.map(() => ({ span: { firstYear: 2024, numYears: 1 } })),
       ),
     'the confirm is asked on long’s own bound',
   );
@@ -455,9 +471,9 @@ const body = (text) => {
   assert.equal(leapRows.length, 8784);
   assert.equal(plainRows.length, 8760);
   assert.equal(data.length, 8784 + 8760);
-  assert.ok(leapRows.includes('Case 1 · ALDER [MW],Feb,29,1,1416,187'));
+  assert.ok(leapRows.includes('Case 1 · ALDER [MW],2024,Feb,29,1,1416,187'));
   assert.ok(!plainRows.some((line) => line.includes(',Feb,29,')));
-  assert.equal(plainRows[1416], 'Case 2 · BIRCH [MW],Mar,1,1,1440,200');
+  assert.equal(plainRows[1416], 'Case 2 · BIRCH [MW],2025,Mar,1,1,1440,200');
   ok(
     'long: a non-leap series writes no Feb 29 rows, a leap one does, and Mar 1 HE 1 is 1440 in both',
   );
@@ -465,10 +481,172 @@ const body = (text) => {
   const bytes = new TextEncoder().encode(long.text).length;
   assert.ok(long.asked >= 3 * bytes);
   assert.ok(
-    hourlyFileBound('long', 0, ['x'], [{ leap: false }]) <
-      hourlyFileBound('long', 0, ['x'], [{ leap: true }]),
+    hourlyFileBound('long', 0, ['x'], [{ span: { firstYear: 2025, numYears: 1 } }]) <
+      hourlyFileBound('long', 0, ['x'], [{ span: { firstYear: 2024, numYears: 1 } }]),
   );
   ok("long's size bound counts a non-leap series' rows, not the slot's");
+}
+
+const sha256 = (text) => createHash('sha256').update(text).digest('hex');
+const bytesOf = (text) => new TextEncoder().encode(text).length;
+
+{
+  // The one-year layout, pinned byte for byte: these are the files a
+  // one-year Case's reader already parses, so years must not reach them.
+  const feb29 = (hour) => hour >= 1416 && hour < 1440;
+  const options = { descriptor: ['# Cases: Case 1'], notes: ['n1'] };
+  const same = () => [
+    series('ALDER', plane(10)),
+    series('BIRCH', plane(42.5), {
+      ref: { perUnit: true },
+      facets: { range: '% of peak' },
+      warnings: ['w'],
+    }),
+    series('CEDAR', null, { refusal: 'No hours.' }),
+  ];
+  const nonleap = () => [
+    series('ALDER', plane(10, feb29), { ref: { caseId: 'c2' } }),
+    series('BIRCH', plane(3, feb29), { ref: { caseId: 'c4' }, facets: { caseLabel: 'Case 4' } }),
+  ];
+  const golden = {
+    'same wide': [same, 'wide', '7a694268aed7ecd3c8f7289fcc9eb9dabc95af1db4fc80121c8117334549935f'],
+    'same long': [same, 'long', '9a0012e25bfa2d10fa2cec9d020f9d20cbe8869d8be3ef26dcd3798d4f276cdc'],
+    'non-leap wide': [
+      nonleap,
+      'wide',
+      '96906f62e1f7bf34acd4377f02aeb4af9ff68bf1a468d5d26bfb45b86c2f3bb4',
+    ],
+    'non-leap long': [
+      nonleap,
+      'long',
+      'fa3ca2e9270bb9c099cf0e2efd36bc1aec3b2780056cff73289f20cc45bfc979',
+    ],
+  };
+  for (const [label, [make, layout, hash]] of Object.entries(golden)) {
+    const { text } = await run(layout, make(), options);
+    assert.equal(sha256(text), hash, label);
+    assert.ok(!/Years: |,Year,/.test(text), `${label} names no year`);
+  }
+  ok('a file of one year is the one-year layout byte for byte, naming no year');
+}
+
+/** A three-year series of Case 3 (2035–2037): `level + year` every hour of
+ * year slot `year`, Feb 29 NaN in 2035 and 2037 as a load leaves it. */
+function threeYears(level) {
+  const values = new Float32Array(3 * H);
+  for (let i = 0; i < values.length; i++) {
+    const year = Math.floor(i / H);
+    const slot = i % H;
+    values[i] = year !== 1 && slot >= 1416 && slot < 1440 ? NaN : level + year;
+  }
+  return values;
+}
+
+{
+  const resolved = [
+    series('ALDER', threeYears(10), { ref: { caseId: 'c3' }, facets: { caseLabel: 'Case 3' } }),
+    series('BIRCH', threeYears(20), { ref: { caseId: 'c3' }, facets: { caseLabel: 'Case 3' } }),
+  ];
+  const wide = await run('wide', resolved);
+  const rows = body(wide.text);
+  assert.equal(
+    rows[0],
+    'Month,Day,HE,HourOfYear,ALDER [MW] 2035,ALDER [MW] 2036,ALDER [MW] 2037,' +
+      'BIRCH [MW] 2035,BIRCH [MW] 2036,BIRCH [MW] 2037',
+  );
+  assert.equal(rows.length - 1, H);
+  assert.equal(rows[1], 'Jan,1,1,0,10,11,12,20,21,22');
+  assert.equal(rows[1 + 1416], 'Feb,29,1,1416,,11,,,21,');
+  assert.equal(rows[1 + 1439], 'Feb,29,24,1439,,11,,,21,');
+  assert.equal(rows[1 + 1440], 'Mar,1,1,1440,10,11,12,20,21,22');
+  assert.equal(rows[H], 'Dec,31,24,8783,10,11,12,20,21,22');
+  assert.ok(
+    header(wide.text).includes(
+      '# Every series: Kind: Generator | Case: Case 3 | Group-by: none | Filters: none | Variable: Generation (MW) | Unit: MW | Divisor: none | Years: 2035–2037',
+    ),
+    header(wide.text).join('\n'),
+  );
+  assert.ok(!header(wide.text).some((line) => line.startsWith('# Refused')));
+  ok(
+    'wide: a three-year series is a column per year on the 8,784-hour slot, Feb 29 filled only in 2036',
+  );
+
+  assert.ok(wide.asked >= 3 * bytesOf(wide.text), `${wide.asked} bound`);
+  assert.equal(
+    wide.asked -
+      3 *
+        hourlyFileBound(
+          'wide',
+          bytesOf(wide.parts[0]),
+          ['ALDER', 'BIRCH'],
+          [{ span: SPANS.c3 }, { span: SPANS.c3 }],
+        ),
+    6 * H * 4,
+    'wide copies six columns, not two',
+  );
+  ok('the wide size bound counts every series-year column and holds');
+
+  const long = await run('long', resolved);
+  const longRows = body(long.text);
+  assert.equal(longRows[0], 'Series,Year,Month,Day,HE,HourOfYear,Value');
+  const data = longRows.slice(1);
+  assert.equal(data.length, 2 * 26_304);
+  const alder = data.filter((row) => row.startsWith('ALDER'));
+  assert.equal(alder.length, 26_304, '8,760 + 8,784 + 8,760');
+  for (const year of [2035, 2036, 2037]) {
+    const ofYear = alder.filter((row) => row.startsWith(`ALDER [MW],${year},`));
+    assert.equal(ofYear.length, year === 2036 ? 8784 : 8760, String(year));
+    assert.equal(
+      ofYear.some((row) => row.includes(',Feb,29,')),
+      year === 2036,
+      String(year),
+    );
+  }
+  assert.equal(alder[0], 'ALDER [MW],2035,Jan,1,1,0,10');
+  assert.equal(alder[8760], 'ALDER [MW],2036,Jan,1,1,0,11');
+  assert.ok(alder.includes('ALDER [MW],2036,Feb,29,1,1416,11'));
+  assert.ok(alder.includes('ALDER [MW],2037,Mar,1,1,1440,12'));
+  ok('long: a Year column, 26,304 rows per three-year series, no Feb 29 rows in 2035 or 2037');
+
+  assert.ok(long.asked >= 3 * bytesOf(long.text), `${long.asked} bound`);
+  ok('the long size bound counts each year’s real rows and holds');
+}
+
+{
+  // One-year Cases of different years: the file holds two years, so it says
+  // which each column and row is.
+  const resolved = [
+    series('ALDER', plane(10)),
+    series('BIRCH', plane(20), { ref: { caseId: 'c5' }, facets: { caseLabel: 'Case 5' } }),
+  ];
+  const wide = await run('wide', resolved);
+  const rows = body(wide.text);
+  assert.equal(
+    rows[0],
+    'Month,Day,HE,HourOfYear,Case 1 · ALDER [MW] 2024,Case 5 · BIRCH [MW] 2036',
+  );
+  assert.equal(rows.length - 1, H);
+  assert.ok(
+    header(wide.text).some((line) => /^# Series: Case 1 · ALDER.*\| Years: 2024$/.test(line)),
+  );
+  assert.ok(wide.asked >= 3 * bytesOf(wide.text));
+  const long = await run('long', resolved);
+  const data = body(long.text);
+  assert.equal(data[0], 'Series,Year,Month,Day,HE,HourOfYear,Value');
+  assert.equal(data[1], 'Case 1 · ALDER [MW],2024,Jan,1,1,0,10');
+  assert.ok(data.includes('Case 5 · BIRCH [MW],2036,Jan,1,1,0,20'));
+  assert.equal(data.length - 1, 2 * H);
+  assert.ok(long.asked >= 3 * bytesOf(long.text));
+  ok('one-year Cases of different years name their year in every column and row');
+}
+
+{
+  // Wide's column limit counts a series' years, once they are known.
+  const many = Array.from({ length: Math.ceil(WIDE_MAX_COLUMNS / 3) + 1 }, () =>
+    series('X', threeYears(1), { ref: { caseId: 'c3' } }),
+  );
+  await assert.rejects(run('wide', many), /at most 16,380 columns.*take the long layout/);
+  ok('wide refuses more series-year columns than Excel holds');
 }
 
 console.log(`\n${checks} checks passed.`);

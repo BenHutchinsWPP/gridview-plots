@@ -82,6 +82,7 @@ export function resolveBusSeries(
       // member set still narrows it. Avoids a fifth accumulate loop.
       const count = reduceSingleBucket(
         data.cube,
+        data.numYears * YEAR_SLOT_HOURS,
         data.presence,
         data.buses,
         undefined,
@@ -105,6 +106,7 @@ export function resolveBusSeries(
       const ids = members ?? new Set<string | number>(busesInGroup(spec.subject.value));
       const count = reduceMembers(
         data.cube,
+        data.numYears * YEAR_SLOT_HOURS,
         data.presence,
         data.buses,
         ids,
@@ -133,6 +135,7 @@ export function resolveBusSeries(
       }
       const count = reduceSingleBucket(
         data.cube,
+        data.numYears * YEAR_SLOT_HOURS,
         data.presence,
         data.buses,
         lookup,
@@ -176,13 +179,13 @@ export function resolveBusSeries(
     warnings = built.warnings;
   }
 
-  buildMask(filters, buildCalendar(data.year), data.tou, buffers.mask);
+  buildMask(filters, buildCalendar(data.firstYear, data.numYears), data.tou, buffers.mask);
   // Taken after a group is summed: the peak of the sum, not of its members.
   const rangeText = spec.perUnit
     ? rangeLabel(normalizeToRange(buffers.series, {}, PERCENT, buffers.mask))
     : undefined;
 
-  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+  for (let hour = 0; hour < buffers.series.length; hour++) {
     buffers.display[hour] = buffers.mask[hour] === 1 ? buffers.series[hour] : NaN;
   }
 

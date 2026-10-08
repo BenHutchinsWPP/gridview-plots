@@ -18,6 +18,7 @@ export function createInterfaceRetainGate(): RetainGate {
       batch.union,
       batch.coverage,
       batch.fileCount,
+      batch.yearCount,
       widenedPreselection(batch, state, batch.union),
       batch.everything,
     ),

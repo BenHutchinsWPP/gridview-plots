@@ -10,19 +10,33 @@
 //      Float32Array and accumulated in plain JS numbers.
 //   2. **NaN never reaches a kernel.** `applyMask` drops it on the way through.
 
-import { YEAR_SLOT_HOURS } from './model/calendar';
+/** One plane's buffer, allocated once per drawn line and reused. `hours` is
+ * the table's plane length (`numYears` × 8,784); a buffer sized for one year
+ * cannot hold a span. Never allocate one inside a render path. */
+export function createScratch(hours: number): Float32Array {
+  return new Float32Array(hours);
+}
 
-/** One 8,784-point buffer, allocated once per drawn line and reused. Never
- * allocate one inside a render path. */
-export function createScratch(): Float32Array {
-  return new Float32Array(YEAR_SLOT_HOURS);
+/** `held`'s first `hours` values when it is that long, else a new buffer of
+ * `hours`. A scratch shared across tables of different spans is cut to each
+ * table's plane, so a reduce that writes exactly one plane fits it. */
+export function fitScratch(held: Float32Array | undefined, hours: number): Float32Array {
+  return held && held.length >= hours ? held.subarray(0, hours) : createScratch(hours);
 }
 
 /** Gather the hours the mask keeps into `out`, dropping NaN. Returns the
- * count written. */
+ * count written. Walks the whole series, every year of a span; a mask or
+ * `out` of another length throws rather than gather some years and not the
+ * rest. */
 export function applyMask(series: Float32Array, mask: Uint8Array, out: Float32Array): number {
+  if (mask.length !== series.length || out.length < series.length) {
+    throw new Error(
+      `mask of ${mask.length} h and buffer of ${out.length} h against a series of ` +
+        `${series.length} h`,
+    );
+  }
   let n = 0;
-  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+  for (let hour = 0; hour < series.length; hour++) {
     if (mask[hour] === 0) continue;
     const value = series[hour];
     if (Number.isNaN(value)) continue;
@@ -314,14 +328,15 @@ function sameBytes(a: ArrayLike<number>, b: ArrayLike<number>): boolean {
  * where row `i` begins in `cube`, or -1 when the case lacks it; each plane is
  * `planeLength` values, the table's own (its mask's length). Results are
  * `RANKED_FIELDS` numbers per row in `out` (read with `rankedRow`). `scratch`
- * is reused across rows, so nothing is allocated per interaction.
+ * is reused across rows, so nothing is allocated per interaction; one shorter
+ * than a plane is replaced for this call rather than gather part of a span.
  */
 export function rankedStats(
   cube: Float32Array,
   planeStarts: Int32Array,
   planeLength: number,
   mask: Uint8Array,
-  scratch: Float32Array = createScratch(),
+  scratch: Float32Array = createScratch(planeLength),
   out?: Float64Array,
   memo?: RankMemo,
 ): Float64Array {
@@ -335,6 +350,7 @@ export function rankedStats(
     result.set(hit.ranked);
     return result;
   }
+  if (scratch.length < planeLength) scratch = createScratch(planeLength);
   for (let row = 0; row < rows; row++) {
     const base = row * RANKED_FIELDS;
     const start = planeStarts[row];

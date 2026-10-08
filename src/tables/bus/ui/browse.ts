@@ -14,7 +14,14 @@
 // and kV refuse by unit). Group controls follow AGENTS.md's two-owner rule:
 // the quantity (`spatialOf`) and the column (`isBucketable`).
 
-import { applyMask, createScratch, quantiles, stats, type RankMemo } from '../../../kernels';
+import {
+  applyMask,
+  createScratch,
+  fitScratch,
+  quantiles,
+  stats,
+  type RankMemo,
+} from '../../../kernels';
 import { cellValue } from '../../../lookups/merge';
 import { BUS_LIST } from '../../../lookups/schema';
 import {
@@ -41,7 +48,7 @@ import {
   type BrowseRowRef,
   type BrowseTab,
 } from '../../../ui/browse-model';
-import { planeStart } from '../kernels';
+import { planeLength, planeStart } from '../kernels';
 import { BUS_GROUP_BY, busGroupNames, busesInGroup } from '../groups';
 import { busLabel, spatialOf, spatialRefusal, unitOf, type SpatialRule } from '../rules';
 import type { BusTable } from '../types';
@@ -259,8 +266,11 @@ export function buildBusTab(input: BusBrowseInput): BrowseTab {
     tables,
     rowCounts,
     axisIndexOf: (row) => refs[row].axisIndex,
-    planesOf: (data) => ({ presence: data.presence, planeStart }),
-    scratch: input.scratch ?? createScratch(),
+    planesOf: (data) => ({
+      presence: data.presence,
+      planeStart: (axisIndex) => planeStart(data, axisIndex),
+    }),
+    scratch: input.scratch,
     memo: input.memo,
     ...(perUnit ? { rangeOf: () => ({}) } : {}),
   });
@@ -407,9 +417,12 @@ function groupTabRows(
     };
   }
 
-  const seriesScratch = input.scratch ?? createScratch();
-  const gatheredScratch = createScratch();
-  const rangeScratch = createScratch();
+  // Sized to the longest plane in scope and cut to each table's, since a
+  // reduce writes exactly one plane.
+  const longest = Math.max(0, ...tables.map((table) => planeLength(table.data)));
+  const seriesScratch = fitScratch(input.scratch, longest);
+  const gatheredScratch = createScratch(longest);
+  const rangeScratch = createScratch(longest);
   const perUnit = Boolean(input.perUnit);
   // A narrowed group freezes its membership, as a narrowed bucket does.
   const narrowed = keep !== undefined || areas !== null;
@@ -438,17 +451,20 @@ function groupTabRows(
       });
       if (scopedMembers.length === 0) continue;
 
+      const hours = planeLength(table.data);
+      const summed = seriesScratch.subarray(0, hours);
       const contributing = reduceMembers(
         table.data.cube,
+        hours,
         table.data.presence,
         table.data.buses,
         new Set<string | number>(scopedMembers),
-        seriesScratch,
+        summed,
       );
       if (contributing === 0) continue;
 
       // After the sum: the peak of the group, as a bucket's is.
-      const series = perUnit ? normalizedCopy(seriesScratch, {}, rangeScratch) : seriesScratch;
+      const series = perUnit ? normalizedCopy(summed, {}, rangeScratch) : summed;
       const n = applyMask(series, table.mask, gatheredScratch);
       const s = stats(gatheredScratch, n);
       const q = quantiles(gatheredScratch, n);
@@ -526,8 +542,9 @@ function groupByRows(
   const groupedRefs: BrowseRowRef[] = [];
   const groupCounts: number[] = [];
   const groupStatsList: GroupStats[] = [];
-  const gatheredScratch = createScratch();
-  const rangeScratch = createScratch();
+  const longest = Math.max(0, ...tables.map((table) => planeLength(table.data)));
+  const gatheredScratch = createScratch(longest);
+  const rangeScratch = createScratch(longest);
   const perUnit = Boolean(input.perUnit);
 
   for (const table of tables) {
@@ -555,6 +572,7 @@ function groupByRows(
 
     const { buckets } = bucketedReduce(
       table.data.cube,
+      planeLength(table.data),
       table.data.presence,
       table.data.buses,
       list,

@@ -83,7 +83,7 @@ function loadWideArea(bytes, retained, blockBytes = 32 * 1024) {
 
   const plan = buildColumnPlan(header, retained);
   const layout = layoutFor(parser.budget, plan);
-  const accumulator = createAccumulator(plan);
+  const accumulator = createAccumulator(plan, { firstYear: year, numYears: 1 });
 
   for (let start = dataStart; start < bytes.length; start += blockBytes) {
     const from = start === dataStart ? dataStart : afterNextNewline(bytes, start);
@@ -93,7 +93,7 @@ function loadWideArea(bytes, retained, blockBytes = 32 * 1024) {
     if (to <= from) continue;
     blitBlock(accumulator, parseBytes(parser, layout, bytes, from, to, plan.activePlanes, year, 1));
   }
-  return finalizeCase(accumulator, 'wide case', year, title);
+  return finalizeCase(accumulator, 'wide case', title);
 }
 
 /** Independent parser: strings, split, parseFloat. Deliberately naive, and it
@@ -169,7 +169,7 @@ const { data: table, warnings } = loadWideArea(wide, AREAS);
 assert.deepEqual(table.areas, AREAS, 'the area axis is the header, in source order');
 assert.deepEqual(table.metrics, [EXTENSIVE], "the metric axis is the title line's quantity");
 assert.deepEqual(table.sourceColumns, [EXTENSIVE]);
-assert.equal(table.year, 2036);
+assert.deepEqual([table.firstYear, table.numYears], [2036, 1]);
 assert.equal(table.presence.length, AREAS.length * 1, 'one presence byte per (area, metric)');
 assert.ok(
   [...table.presence].every((p) => p === 1),
@@ -278,7 +278,8 @@ const longTable = {
   presence: new Uint8Array(AREAS.length * longMetrics.length).fill(1),
   tou: new Uint8Array(HOURS).fill(1),
   sourceColumns: longMetrics,
-  year: 2036,
+  firstYear: 2036,
+  numYears: 1,
 };
 
 for (const [label, original] of [

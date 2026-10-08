@@ -8,6 +8,7 @@ import type { DateSet } from './date-range';
 /** Hour filters over the calendar; `null` means no constraint, a fast path
  * in `buildMask`. */
 export interface Filters {
+  readonly years: Set<number> | null; // absolute calendar years
   readonly dates: DateSet | null; // runs of slot days 0..365 (leap calendar), both ends kept
   readonly hoursOfDay: Set<number> | null; // 1-24, hour-ending (HE)
   readonly daysOfWeek: Set<number> | null; // 0-6, 0 = Monday .. 6 = Sunday

@@ -6,6 +6,8 @@
 // is tested in plain Node (tests/test_import_plan.mjs); the dialog only renders.
 
 import type { DetectResult, DetectShape } from '../detect';
+import { spanLabel } from '../ingest';
+import type { YearSpan } from '../model/calendar';
 import { caseForName, slotKey, type TableKind } from '../model/case-model';
 import { TABLE_KINDS } from '../tables/registry';
 
@@ -49,6 +51,9 @@ export interface ExistingCase {
    * unknown, never a year of absence.
    */
   slotHours?: Record<string, SlotCoverage | null>;
+  /** The years each occupied slot's table spans; missing or `null` is
+   * unknown. */
+  slotSpans?: Record<string, YearSpan | null>;
 }
 
 /** A table's real hours with a row, `covers`, of the `of` its year(s) have. */
@@ -102,6 +107,13 @@ export interface ImportPlan {
    */
   replacesExisting: boolean;
   replaceReason?: string;
+  /**
+   * NON-blocking: the years a wide file's date line states differ from its
+   * Case's. Ingest refuses the mismatch (`keepSpans` in `./batch.ts`); this
+   * says so before it runs. A long file's years are known only after its
+   * scan, so it never carries one.
+   */
+  spanReason?: string;
 }
 
 function escapeRegExp(literal: string): string {
@@ -144,6 +156,7 @@ interface ResolvedFile {
   kind: TableKind;
   shape?: DetectShape;
   variant?: string;
+  years?: YearSpan;
 }
 
 /** One `ImportPlan` per dropped file: case naming, variants and collision
@@ -192,7 +205,14 @@ export function planImports(
     // every later lookup (and a same-batch collision) matches on.
     caseName = caseForName(existingCases, caseName)?.name ?? caseName;
 
-    return { file: f.name, caseName, kind: kind as TableKind, shape: f.detected.shape, variant };
+    return {
+      file: f.name,
+      caseName,
+      kind: kind as TableKind,
+      shape: f.detected.shape,
+      variant,
+      years: f.detected.years,
+    };
   });
 
   // Group by (caseName, slot) to find same-batch collisions.
@@ -249,6 +269,7 @@ export function planImports(
     return {
       file: r.file,
       fileIndex: index,
+      ...spanWarning(r, resolved, existingCase),
       caseName: r.caseName,
       caseIsNew,
       kind: r.kind,
@@ -261,6 +282,43 @@ export function planImports(
       replaceReason,
     };
   });
+}
+
+/**
+ * Why a wide file's stated years will be refused, mirroring the ingest check:
+ * the Case's loaded tables outside this file's own slot (a replaced table's
+ * years go with it), then the other wide files of this drop for the same
+ * Case. Empty when its years are unknown or agree.
+ */
+function spanWarning(
+  r: ResolvedFile,
+  resolved: readonly ResolvedFile[],
+  existingCase: ExistingCase | undefined,
+): { spanReason?: string } {
+  const years = r.years;
+  if (years === undefined) return {};
+  const differs = (other: YearSpan | null | undefined): other is YearSpan =>
+    other != null && (other.firstYear !== years.firstYear || other.numYears !== years.numYears);
+  const own = slotKeyFor(r.kind, r.variant);
+  for (const [slot, span] of Object.entries(existingCase?.slotSpans ?? {})) {
+    if (slot === own || !differs(span)) continue;
+    return {
+      spanReason:
+        `Spans ${spanLabel(years)}, but this Case's "${slot.trim()}" table spans ` +
+        `${spanLabel(span)}. One Case holds one run of years, so the load will refuse this ` +
+        `file; give it its own Case.`,
+    };
+  }
+  const sibling = resolved.find(
+    (other) => other !== r && other.caseName === r.caseName && differs(other.years),
+  );
+  if (sibling?.years === undefined) return {};
+  return {
+    spanReason:
+      `Spans ${spanLabel(years)}, but "${sibling.file}", for the same Case, spans ` +
+      `${spanLabel(sibling.years)}. One Case holds one run of years, so the load will refuse ` +
+      `one of them; give each run its own Case.`,
+  };
 }
 
 // ------------------------------------------------------- interface limits

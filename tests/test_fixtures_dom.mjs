@@ -108,6 +108,18 @@ export class FakeElement {
   get clientWidth() {
     return this.rect.width;
   }
+  get clientHeight() {
+    return this.rect.height;
+  }
+  /** Only clearing is modelled: `innerHTML = ''` drops the children, as the
+   * chip rows redraw. */
+  get innerHTML() {
+    return this.html ?? '';
+  }
+  set innerHTML(html) {
+    this.html = html;
+    if (html === '') this.children = [];
+  }
   appendChild(child) {
     child.remove();
     child.parentElement = this;
@@ -143,6 +155,7 @@ export class FakeElement {
     }
   }
   replaceChildren(...children) {
+    for (const child of this.children) child.parentElement = null;
     this.children = [];
     this.append(...children);
   }
@@ -176,6 +189,10 @@ export class FakeElement {
   matches(selector) {
     if (selector.startsWith('#')) return this.id === selector.slice(1);
     return selector.startsWith('.') && this.className.split(/\s+/).includes(selector.slice(1));
+  }
+  closest(selector) {
+    for (let at = this; at; at = at.parentElement) if (at.matches(selector)) return at;
+    return null;
   }
   querySelector(selector) {
     return this.descendants().find((node) => node.matches(selector)) ?? null;
@@ -237,6 +254,7 @@ export function paneElements() {
     follow: check(true),
     overview: check(false),
     overviewHost: new FakeElement(),
+    overlayYears: check(false),
     boxDim,
     boxValues: check(false),
     xySwap: new FakeElement('button'),

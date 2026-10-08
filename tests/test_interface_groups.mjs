@@ -349,18 +349,18 @@ const AXIS = ['SYN-P01', 'SYN-P02', 'SYN-P03'];
     },
   });
 
-  const forward = summedLimits([f(1, 100, -40), f(1, 50, -10)]);
+  const forward = summedLimits([f(1, 100, -40), f(1, 50, -10)], YEAR_SLOT_HOURS);
   assert.equal(forward.upper[0], 150);
   assert.equal(forward.lower[0], -50);
   ok('an all-forward boundary is the plain sum of its paths’ limits');
 
-  const swapped = summedLimits([f(1, 100, -40), f(-1, 50, -10)]);
+  const swapped = summedLimits([f(1, 100, -40), f(-1, 50, -10)], YEAR_SLOT_HOURS);
   assert.equal(swapped.upper[0], 110, "100 + the reversed path's −MIN (10)");
   assert.equal(swapped.lower[0], -90, "−40 + the reversed path's −MAX (−50)");
   ok("a reversed member's MIN becomes upper and its MAX lower, both negated");
 
   // A MIN ≥ 0 is a floor; reversed it is a ceiling below zero, never |MIN|.
-  const floor = summedLimits([f(-1, 200, 30)]);
+  const floor = summedLimits([f(-1, 200, 30)], YEAR_SLOT_HOURS);
   assert.equal(floor.upper[0], -30);
   assert.equal(floor.lower[0], -200);
   ok('the swap is signed arithmetic: a positive MIN reversed stays signed');
@@ -368,7 +368,7 @@ const AXIS = ['SYN-P01', 'SYN-P02', 'SYN-P03'];
   // Hourly sides: one member unlimited in hour 1 makes that hour NaN only.
   const monthly = new Float32Array(YEAR_SLOT_HOURS).fill(80);
   monthly[1] = NaN;
-  const gap = summedLimits([f(1, monthly, -20), f(1, 20, -5)]);
+  const gap = summedLimits([f(1, monthly, -20), f(1, 20, -5)], YEAR_SLOT_HOURS);
   assert.equal(gap.upper[0], 100);
   assert.ok(Number.isNaN(gap.upper[1]), 'the hour the member has no limit');
   assert.equal(gap.upper[2], 100);
@@ -376,11 +376,11 @@ const AXIS = ['SYN-P01', 'SYN-P02', 'SYN-P03'];
   ok('a member with no limit in an hour leaves that side unlimited in that hour only');
 
   // A member with no MIN at all: the lower side has no hour, so it is absent.
-  const oneSided = summedLimits([f(1, 100, -40), f(1, 50, undefined)]);
+  const oneSided = summedLimits([f(1, 100, -40), f(1, 50, undefined)], YEAR_SLOT_HOURS);
   assert.equal(oneSided.upper[0], 150);
   assert.equal(oneSided.lower, undefined);
-  assert.deepEqual(summedLimits([f(1, undefined, undefined), f(-1, 50, -10)]), {});
-  assert.deepEqual(summedLimits([]), {});
+  assert.deepEqual(summedLimits([f(1, undefined, undefined), f(-1, 50, -10)], YEAR_SLOT_HOURS), {});
+  assert.deepEqual(summedLimits([], YEAR_SLOT_HOURS), {});
   ok('a member with no limits leaves the side unlimited, never rated zero');
 
   // A drawn boundary sums the members its table carries with hours, frozen
@@ -402,6 +402,7 @@ const AXIS = ['SYN-P01', 'SYN-P02', 'SYN-P03'];
   const data = {
     interfaces: ['SAMPLE_P01', 'SAMPLE_P02', 'SAMPLE_P03'],
     presence: new Uint8Array([1, 1, 0]),
+    numYears: 1,
   };
   const rated = { SAMPLE_P01: { upper: 100, lower: -40 }, SAMPLE_P02: { upper: 50, lower: -10 } };
   const asked = [];
@@ -417,6 +418,32 @@ const AXIS = ['SYN-P01', 'SYN-P02', 'SYN-P03'];
   assert.equal(frozen.upper[0], 10, 'P02 alone, reversed: its −MIN');
   assert.equal(frozen.lower[0], -50);
   ok('a drawn boundary sums the limits of the members its sum took, frozen set applied');
+
+  // Over a two-year span the sum is as long as the table's plane. Constant
+  // limits fill every year; hourly ones are summed in every year, and
+  // P01's year-two limit differs, so year one alone would miss it.
+  const span = { ...data, numYears: 2 };
+  const constant = boundaryLimits(span, boundaryCoefficients('SAMPLE_WEST'), rangeOf);
+  assert.equal(constant.upper.length, 2 * YEAR_SLOT_HOURS);
+  assert.equal(constant.upper[2 * YEAR_SLOT_HOURS - 1], 110);
+  const p01 = new Float32Array(2 * YEAR_SLOT_HOURS).fill(100, 0, YEAR_SLOT_HOURS);
+  p01.fill(300, YEAR_SLOT_HOURS);
+  const hourly = boundaryLimits(span, boundaryCoefficients('SAMPLE_WEST'), (name) =>
+    name === 'SAMPLE_P01' ? { upper: p01, lower: -40 } : rated[name],
+  );
+  assert.equal(hourly.upper[0], 110);
+  assert.equal(hourly.upper[YEAR_SLOT_HOURS + 3], 310, "year two's limit, summed");
+  assert.equal(hourly.lower[2 * YEAR_SLOT_HOURS - 1], -90);
+  assert.throws(
+    () =>
+      summedLimits(
+        [f(1, p01, -40), f(1, new Float32Array(YEAR_SLOT_HOURS).fill(50), -10)],
+        2 * YEAR_SLOT_HOURS,
+      ),
+    /in one group/,
+    'members of different lengths are refused rather than summed over the shorter',
+  );
+  ok("a boundary's summed limits cover every year of a two-year span");
   clearInterfaceGroups();
 }
 

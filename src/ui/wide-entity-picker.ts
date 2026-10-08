@@ -12,7 +12,7 @@
 // "Keep everything" is on every picker, priced by `keepAllCost`, and past
 // `LARGE_ALLOCATION_BYTES` it asks for confirmation.
 
-import { confirmLargeAllocation } from './confirm-allocation';
+import { confirmLargeAllocation, type AllocationAsk } from './confirm-allocation';
 
 export interface WideEntityPickerGroup {
   title: string;
@@ -53,14 +53,15 @@ export interface WideEntityPickerRequest {
   moreText?: (matchedCount: number, maxRows: number) => string;
 
   /** The readout line: the real allocation arithmetic, not an estimate. */
-  readout: (chosenCount: number, unionCount: number, caseCount: number) => string;
+  readout: (chosenCount: number, unionCount: number) => string;
 
   mode: 'keepAll' | 'cancelable';
   /** Defaults to "Keep everything". */
   keepAllLabel?: string;
-  /** The union's cost and its name for "Keeping ..." ("all 5,900 buses").
-   * One callback, so the tooltip and the confirmation state one price. */
-  keepAllCost?: (unionCount: number) => { bytes: number; what: string };
+  /** The union's cost, its name for "Keeping ..." ("all 5,900 buses") and
+   * its lever. One callback, so the tooltip and the confirmation state one
+   * price. */
+  keepAllCost?: (unionCount: number) => AllocationAsk;
   /** The Import Dialog already said "Load everything": skip the picker but
    * still state the price through `keepAllCost`. */
   everything?: boolean;
@@ -94,9 +95,7 @@ export function showWideEntityPicker(request: WideEntityPickerRequest): Promise<
   if (request.everything) {
     return keepAllCost === null
       ? Promise.resolve(union)
-      : confirmLargeAllocation(keepAllCost.bytes, keepAllCost.what).then((ok) =>
-          ok ? union : null,
-        );
+      : confirmLargeAllocation(keepAllCost).then((ok) => (ok ? union : null));
   }
 
   return new Promise((resolve) => {
@@ -258,9 +257,9 @@ export function showWideEntityPicker(request: WideEntityPickerRequest): Promise<
         }
       }
 
-      readout.textContent = request.readout(chosen.size, union.length, caseCount);
+      readout.textContent = request.readout(chosen.size, union.length);
       keepAllBtn.title = keepAllCost
-        ? `Load ${keepAllCost.what} — ${(keepAllCost.bytes / (1024 * 1024)).toFixed(0)} MB`
+        ? `Load ${keepAllCost.what}: ${keepAllCost.cost.arithmetic}`
         : '';
       confirm.disabled = chosen.size === 0;
     }
@@ -301,7 +300,7 @@ export function showWideEntityPicker(request: WideEntityPickerRequest): Promise<
       // Detach this Escape handler while the confirmation is up, or one
       // Escape would close both dialogs.
       document.removeEventListener('keydown', onKey);
-      void confirmLargeAllocation(keepAllCost.bytes, keepAllCost.what).then((ok) => {
+      void confirmLargeAllocation(keepAllCost).then((ok) => {
         if (ok) close(union);
         else document.addEventListener('keydown', onKey);
       });

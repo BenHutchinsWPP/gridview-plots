@@ -84,6 +84,7 @@ export function resolveInterfaceSeries(
     coefficients = signs;
     const count = reduceSignedMembers(
       data.cube,
+      data.numYears * YEAR_SLOT_HOURS,
       data.presence,
       data.interfaces,
       signs,
@@ -118,7 +119,7 @@ export function resolveInterfaceSeries(
     warnings.push(...built.warnings);
   }
 
-  buildMask(filters, buildCalendar(data.year), data.tou, buffers.mask);
+  buildMask(filters, buildCalendar(data.firstYear, data.numYears), data.tou, buffers.mask);
   let rangeText: string | undefined;
   if (spec.perUnit) {
     const { rangeOf } = options;
@@ -133,7 +134,7 @@ export function resolveInterfaceSeries(
     rangeText = coefficients ? rangeLabel(use, SUMMED_LIMITS) : rangeLabel(use);
   }
 
-  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+  for (let hour = 0; hour < buffers.series.length; hour++) {
     buffers.display[hour] = buffers.mask[hour] === 1 ? buffers.series[hour] : NaN;
   }
 

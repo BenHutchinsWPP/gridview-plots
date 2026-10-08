@@ -9,6 +9,8 @@
 //      failure is attributed to its caseIndex.
 //   3. A non-overflow failure never aborts; a sibling file still commits.
 //   4. At settle, no stub has an in-flight job or stale listener.
+//   5. A cube the browser will not allocate refuses its own file with the
+//      arithmetic; the sibling still commits.
 
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
@@ -346,6 +348,43 @@ const OVERFLOW_MESSAGE = `${OVERFLOW_MARKER}: 3 row(s) past the 4096-row block s
 
   assertSettled(workers, 'after a non-overflow failure');
   ok('a batch with a non-retryable failure leaves every worker loop settled');
+}
+
+// ------------------------------------------- (5) a refused allocation costs one file
+
+{
+  // The browser's `RangeError` is the only refusal of a large cube, and it
+  // must cost the file whose cube it is, not the batch. The first cube-sized
+  // allocation (case 0's) is refused, as a browser out of memory would.
+  const cubeLength = RETAINED.length * YEAR_SLOT_HOURS;
+  const Real = globalThis.Float32Array;
+  let refused = 0;
+  globalThis.Float32Array = class extends Real {
+    constructor(...args) {
+      if (args[0] === cubeLength && refused === 0) {
+        refused++;
+        throw new RangeError('Array buffer allocation failed');
+      }
+      super(...args);
+    }
+  };
+  let result;
+  try {
+    const { workers } = scriptedPool();
+    result = await ingestWithWorkers(workers, BUDGET, PLANS, RETAINED);
+    assertSettled(workers, 'after a refused allocation');
+  } finally {
+    globalThis.Float32Array = Real;
+  }
+  assert.equal(refused, 1);
+  assert.equal(result.failures.length, 1);
+  assert.equal(result.failures[0].index, 0);
+  assert.match(
+    result.failures[0].message,
+    /^case_a: could not allocate this file's cube -- 2 entities × 1 year × 8,784 h × 4 B = 0\.1 MB in one array, which this browser refused\. .*keeping fewer entities/,
+  );
+  assert.deepEqual(result.ok, [1], 'the sibling file still commits');
+  ok('a refused cube allocation refuses its own file with the arithmetic, not the batch');
 }
 
 console.log(`1..${checks}`);

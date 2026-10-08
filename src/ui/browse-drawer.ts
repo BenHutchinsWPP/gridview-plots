@@ -16,7 +16,8 @@
 
 import { within } from './dom';
 import { browseDescriptor, browseTableCsv } from './browse-csv';
-import { longNote, wideWithheld, type HourlyLayout } from './hourly-csv';
+import { longNote, wideColumnCount, wideWithheld, type HourlyLayout } from './hourly-csv';
+import type { YearSpan } from '../model/calendar';
 import { createBrowsePopovers } from './browse-popovers';
 import { createBrowseDetent, type Detent } from './browse-detent';
 import { createBrowseTable } from './browse-table';
@@ -45,6 +46,7 @@ import {
   statValue,
   viewChips,
   visibleRows,
+  withoutEmptyRows,
   type BrowseColumn,
   type BrowseRowRef,
   type BrowseTab,
@@ -101,6 +103,9 @@ export interface BrowseDrawerState {
   /** A Case's label (`caseLabel` in src/model/case-model.ts), for the
    * Selected tab and the CSV descriptor, which list pins from every Case. */
   readonly caseLabel: (caseId: string) => string;
+  /** A Case's years, so the download menu counts wide's columns as the
+   * export does: one per series and year. */
+  readonly spanOfCase: (caseId: string) => YearSpan;
   /** The Selected tab's Variable dropdown. A function, since only the
    * Selected tab reads it and every preview renders. */
   readonly selectedVariable: () => VariableSwitch;
@@ -252,6 +257,7 @@ export function createBrowseDrawer(
     variable: '',
     hourFilter: '',
     caseLabel: (caseId) => caseId,
+    spanOfCase: () => ({ firstYear: 0, numYears: 1 }),
     selectedVariable: () => ({ variables: [], variable: '' }),
     selectedPercent: () => ({ on: false, next: true }),
     selectedCase: () => ({ cases: [], caseId: '' }),
@@ -380,15 +386,17 @@ export function createBrowseDrawer(
   }
   /** Each item says, before it is picked, whether it can write this tab. */
   function openDownloadMenu(): void {
-    const count = shownRows()?.refs.length ?? 0;
-    const withheld = wideWithheld(count);
+    const refs = shownRows()?.refs ?? [];
+    const count = refs.length;
+    const columns = wideColumnCount(refs.map((ref) => ({ span: latest.spanOfCase(ref.caseId) })));
+    const withheld = wideWithheld(columns);
     wideItem.disabled = count === 0 || withheld !== '';
     wideNote.textContent = withheld;
     wideItem.title =
       withheld ||
       (count === 0
         ? 'This tab shows no rows.'
-        : `One row per hour, one column per series: ${count.toLocaleString()} series`);
+        : `One row per hour, one column per series and year: ${count.toLocaleString()} series over ${columns.toLocaleString()} columns`);
     const note = longNote(count);
     longItem.disabled = count === 0;
     longNoteLine.textContent = note;
@@ -459,7 +467,7 @@ export function createBrowseDrawer(
     const key = keyOf(id, null, pu);
     let tab = built.get(key)?.tab;
     if (!tab) {
-      tab = source.build(null, pu);
+      tab = withoutEmptyRows(source.build(null, pu));
       built.set(key, { tabId: id, grouped: false, tab });
     }
     readShown(id, tab);
@@ -479,7 +487,7 @@ export function createBrowseDrawer(
     if (held) return held.tab;
     // The tab's own view, not the active tab's: the Selected tab builds
     // every kind's tab in one pass.
-    let tab = source.build(view.groupBy, pu, keptRowKeys(base, view));
+    let tab = withoutEmptyRows(source.build(view.groupBy, pu, keptRowKeys(base, view)));
     if (declinedGroupBy(tab)) {
       // The build declined the group-by (the quantity cannot be summed, or
       // the column is gone). Nothing was consumed, and the tab says why in

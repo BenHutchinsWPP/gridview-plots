@@ -132,7 +132,8 @@ function splitLines(bytes) {
   return lines;
 }
 
-/** The year on a file's first data row, the way readCasePlan reads it. */
+/** The year on a file's first data row, which readCasePlan takes when no
+ * date line states the years. */
 function yearOf(bytes, dataStart) {
   const end = bytes.indexOf(NEWLINE, dataStart);
   return Number(decoder.decode(bytes.subarray(dataStart, end)).split(',', 1)[0].split('/')[2]);
@@ -143,8 +144,8 @@ function parseToCube(bytes, retained, blockBytes) {
   const { header, title, dataStart } = headerOf(bytes);
   const plan = buildColumnPlan(header, retained);
   const layout = layoutOf(plan);
-  const accumulator = createAccumulator(plan);
   const year = yearOf(bytes, dataStart);
+  const accumulator = createAccumulator(plan, { firstYear: year, numYears: 1 });
   const ranges = wholeRowRanges(bytes, dataStart, blockBytes);
   for (const [from, to] of ranges) {
     blitBlock(accumulator, parseBytes(parser, layout, bytes, from, to, plan.activePlanes, year, 1));
@@ -306,8 +307,8 @@ function worstText(result) {
   const { header, dataStart } = headerOf(csv);
   const plan = buildColumnPlan(header, names);
   const layout = layoutOf(plan);
-  const accumulator = createAccumulator(plan);
   const year = yearOf(csv, dataStart);
+  const accumulator = createAccumulator(plan, { firstYear: year, numYears: 1 });
   const ranges = wholeRowRanges(csv, dataStart, 5 * 1024).reverse();
   for (const [from, to] of ranges) {
     blitBlock(accumulator, parseBytes(parser, layout, csv, from, to, plan.activePlanes, year, 1));
@@ -462,7 +463,7 @@ function worstText(result) {
 {
   const plan = await readCasePlan(new File([csv], 'Case A.csv'));
   assert.equal(plan.title.quantity, 'Power Flow (MW)');
-  assert.equal(plan.year, 2035, 'the year comes from the first data row');
+  assert.deepEqual([plan.firstYear, plan.numYears], [2035, 1], 'the years come from the date line');
   assert.deepEqual(plan.header.entityNames, names);
   assert.equal(
     decoder.decode(csv.subarray(plan.dataStart, plan.dataStart + 3)),
@@ -553,13 +554,7 @@ function worstText(result) {
   // File B, loaded onto the union axis: the columns it lacks must be absent,
   // not zero, and the columns it has must be exactly where the axis says.
   const { accumulator, plan } = parseToCube(fileB, union, 64 * 1024);
-  const finalized = finalizeCase(
-    accumulator,
-    'B',
-    plans[1].header.entityNames,
-    2036,
-    plans[1].title,
-  );
+  const finalized = finalizeCase(accumulator, 'B', plans[1].header.entityNames, plans[1].title);
   const reference = referenceCube(decoder.decode(fileB), union);
   const result = compareCubes(reference.cube, accumulator.cube, union);
   assert.equal(result.beyondOneUlp, 0, 'drift must not disturb parity');
@@ -601,7 +596,7 @@ function worstText(result) {
   assert.equal(accumulator.cube[1416], firstValue('2/29/2036', 1), 'Feb 29 hour 1 is 1416');
   assert.equal(accumulator.cube[1417], firstValue('2/29/2036', 2), 'Feb 29 hour 2 is 1417');
   assert.equal(accumulator.cube[1440], firstValue('3/1/2036', 1), 'Mar 1 hour 1 is 1440');
-  const finalized = finalizeCase(accumulator, 'leap', interfaceNames(4), 2036, {
+  const finalized = finalizeCase(accumulator, 'leap', interfaceNames(4), {
     quantity: 'Power Flow (MW)',
     year: 2036,
   });

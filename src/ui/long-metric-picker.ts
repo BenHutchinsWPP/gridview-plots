@@ -2,25 +2,27 @@
 //
 // The long-shape drop's metric picker. In shape L the entities are ROWS, so
 // their count is unknown until the scan and the metric axis is the only
-// choice; this is where the coming allocation (entities x metrics x 8784 x
-// 4 B) is priced BEFORE it is attempted. Kind-neutral: it takes a noun and a
+// choice; this is where the coming allocation (metrics x entities x years x
+// 8784 x 4 B) is priced BEFORE it is attempted. Kind-neutral: it takes a noun and a
 // list of strings. Area's own picker groups by area's rules and is separate.
 
-import { YEAR_SLOT_HOURS } from '../model/calendar';
+import { cubeCost, type CubeCost } from '../ingest';
 import { confirmLargeAllocation } from './confirm-allocation';
-
-const BYTES_PER_VALUE = 4; // Float32Array
 
 export interface LongMetricPickerRequest {
   /** Every metric column the batch's headers carry, in union order. */
   union: string[];
-  /** The kind's noun, for wording only: "bus", "unit". Never a kind token. */
-  noun: string;
+  /** The kind's noun, singular and plural, for wording only. Never a kind
+   * token. */
+  noun: { readonly one: string; readonly many: string };
   /** Entities the scan pass found -- the axis the cube is about to be sized
    * on. This is why the picker runs AFTER the scan on this path. */
   entityCount: number;
   /** Files in this batch; each gets its own cube of the stated size. */
   fileCount: number;
+  /** The years the scan found, summed over the batch's files: each file's
+   * cube holds one 8,784-hour slot per year of its span. */
+  yearCount: number;
   /** Ticked on open. Empty on a first drop: at bus width the Enter key would
    * otherwise allocate every metric the file carries. */
   preselected?: readonly string[];
@@ -35,20 +37,28 @@ export interface LongMetricPickerRequest {
  * and is never the default so Enter cannot reach it.
  */
 export function showLongMetricPicker(request: LongMetricPickerRequest): Promise<string[] | null> {
-  const { union, noun, entityCount, fileCount } = request;
-  const keepAllWhat = `all ${union.length} metric${union.length === 1 ? '' : 's'}`;
-  const keepAllBytes = (bytesPerMetric: number): number =>
-    union.length * bytesPerMetric * fileCount;
+  const { union, noun, entityCount, fileCount, yearCount } = request;
   // The same product `createAccumulator` is about to hand to
-  // `new Float32Array`, per file, so the number on screen, the number in the
-  // confirmation and the number in the refusal cannot disagree.
-  const perMetric = entityCount * YEAR_SLOT_HOURS * BYTES_PER_VALUE;
+  // `new Float32Array`, worded by the same `cubeCost` as its allocation
+  // refusal, so the number on screen, the number in the confirmation and the
+  // number in the refusal cannot disagree.
+  const costOf = (metricCount: number): CubeCost =>
+    cubeCost(
+      [
+        { count: metricCount, one: 'metric', many: 'metrics' },
+        { count: entityCount, one: noun.one, many: noun.many },
+      ],
+      yearCount,
+    );
+  const keepAll = {
+    what: `all ${union.length} metric${union.length === 1 ? '' : 's'}`,
+    cost: costOf(union.length),
+    lever: 'fewer metrics',
+  };
 
   // An unpriced multi-GB allocation is what a skipped picker must not become.
   if (request.everything) {
-    return confirmLargeAllocation(keepAllBytes(perMetric), keepAllWhat).then((ok) =>
-      ok ? [...union] : null,
-    );
+    return confirmLargeAllocation(keepAll).then((ok) => (ok ? [...union] : null));
   }
 
   return new Promise((resolve) => {
@@ -62,15 +72,15 @@ export function showLongMetricPicker(request: LongMetricPickerRequest): Promise<
     backdrop.appendChild(modal);
 
     const title = document.createElement('h2');
-    title.textContent = `Which ${noun} metrics should be kept?`;
+    title.textContent = `Which ${noun.one} metrics should be kept?`;
     modal.appendChild(title);
 
     const subtitle = document.createElement('p');
     subtitle.className = 'modal-subtitle';
     subtitle.textContent =
-      `${entityCount.toLocaleString()} ${noun}${entityCount === 1 ? '' : 's'} were read from ` +
+      `${entityCount.toLocaleString()} ${entityCount === 1 ? noun.one : noun.many} were read from ` +
       `${fileCount} file${fileCount === 1 ? '' : 's'}. Every metric kept costs one full plane ` +
-      `per ${noun}, so the figure below is exactly what loading is about to allocate.`;
+      `per ${noun.one} per year, so the figure below is exactly what loading is about to allocate.`;
     modal.appendChild(subtitle);
 
     const toolbar = document.createElement('div');
@@ -106,15 +116,15 @@ export function showLongMetricPicker(request: LongMetricPickerRequest): Promise<
     cancel.type = 'button';
     cancel.className = 'btn';
     cancel.textContent = 'Cancel';
-    const keepAll = document.createElement('button');
-    keepAll.type = 'button';
-    keepAll.className = 'btn';
-    keepAll.textContent = 'Keep everything';
+    const keepAllButton = document.createElement('button');
+    keepAllButton.type = 'button';
+    keepAllButton.className = 'btn';
+    keepAllButton.textContent = 'Keep everything';
     const confirm = document.createElement('button');
     confirm.type = 'button';
     confirm.className = 'btn btn-primary';
     confirm.textContent = 'Load with these';
-    actions.append(cancel, keepAll, confirm);
+    actions.append(cancel, keepAllButton, confirm);
     modal.appendChild(actions);
 
     function paint(): void {
@@ -140,14 +150,9 @@ export function showLongMetricPicker(request: LongMetricPickerRequest): Promise<
         row.appendChild(text);
         list.appendChild(row);
       }
-      const bytes = chosen.size * perMetric * fileCount;
-      keepAll.title =
-        `Load ${keepAllWhat} — ` + `${(keepAllBytes(perMetric) / (1024 * 1024)).toFixed(0)} MB`;
+      keepAllButton.title = `Load ${keepAll.what}: ${keepAll.cost.arithmetic}`;
       readout.textContent =
-        `${chosen.size} metric${chosen.size === 1 ? '' : 's'} × ` +
-        `${entityCount.toLocaleString()} ${noun}${entityCount === 1 ? '' : 's'} × ` +
-        `${YEAR_SLOT_HOURS} h × 4 B ≈ ${(bytes / (1024 * 1024)).toFixed(0)} MB` +
-        (fileCount === 1 ? '' : ` across ${fileCount} files`);
+        costOf(chosen.size).arithmetic + (fileCount === 1 ? '' : ` across ${fileCount} files`);
       confirm.disabled = chosen.size === 0;
     }
 
@@ -174,11 +179,11 @@ export function showLongMetricPicker(request: LongMetricPickerRequest): Promise<
     }
     document.addEventListener('keydown', onKey);
     cancel.addEventListener('click', () => close(null));
-    keepAll.addEventListener('click', () => {
+    keepAllButton.addEventListener('click', () => {
       // See src/ui/wide-entity-picker.ts for why the picker's own Escape
       // handler comes off while the confirmation is up.
       document.removeEventListener('keydown', onKey);
-      void confirmLargeAllocation(keepAllBytes(perMetric), keepAllWhat).then((ok) => {
+      void confirmLargeAllocation(keepAll).then((ok) => {
         if (ok) close([...union]);
         else document.addEventListener('keydown', onKey);
       });

@@ -15,10 +15,12 @@
 //     used, so a month filter never reads "else peak" for a peak it hid.
 //   * A limit may vary by hour (an interface's monthly limit), with NaN for
 //     "no limit this hour"; the fallback then applies to that hour alone.
+//   * **A per-hour limit is as long as the series**, every year of a span.
+//     One of another length throws: read short, its missing years would
+//     divide by the peak with nothing said, and a label that read "% of
+//     limit" for year one would claim it for the rest.
 
-import { YEAR_SLOT_HOURS } from '../model/calendar';
-
-/** A side's divisor: one number for the year, or one per hour. NaN means no
+/** A side's divisor: one number for every hour, or one per hour. NaN means no
  * limit (that hour, or at all). */
 export type RangeSide = number | ArrayLike<number>;
 
@@ -63,7 +65,15 @@ export function normalizeToRange(
   scale = 1,
   shown?: ArrayLike<number>,
 ): RangeUse {
-  const hours = Math.min(series.length, YEAR_SLOT_HOURS);
+  const hours = series.length;
+  for (const [name, side] of [
+    ['upper', limits.upper],
+    ['lower', limits.lower],
+  ] as const) {
+    if (side !== undefined && typeof side !== 'number' && side.length !== hours) {
+      throw new Error(`${name} limit of ${side.length} h against a series of ${hours} h`);
+    }
+  }
   let peak = 0;
   let trough = 0;
   for (let hour = 0; hour < hours; hour++) {
@@ -120,15 +130,17 @@ export function rangeLabel(use: RangeUse, limit = 'limit'): string {
 }
 
 /** `normalizeToRange` on a copy, for a browse tab ranking a cube plane or a
- * bucket it must not overwrite. Returns `out`. */
+ * bucket it must not overwrite. `series` is the whole plane; returns the
+ * start of `out` it was copied into, the same length. */
 export function normalizedCopy(
   series: Float32Array,
   limits: RangeLimits,
   out: Float32Array,
 ): Float32Array {
-  out.set(series.subarray(0, YEAR_SLOT_HOURS));
-  normalizeToRange(out, limits);
-  return out;
+  const copy = out.subarray(0, series.length);
+  copy.set(series);
+  normalizeToRange(copy, limits);
+  return copy;
 }
 
 /** The label before a line is resolved, or when it was refused. */

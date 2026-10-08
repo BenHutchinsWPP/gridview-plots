@@ -24,7 +24,7 @@ import { readFileSync } from 'node:fs';
 import './test_loader.mjs';
 
 const { YEAR_SLOT_HOURS: H } = await import('../src/model/calendar.ts');
-const { computeFrame, datesCleared, drawContextOf } = await import('../src/app/render-frame.ts');
+const { computeFrame, datesClearedOf, drawContextOf } = await import('../src/app/render-frame.ts');
 
 let checks = 0;
 function ok(label) {
@@ -33,6 +33,7 @@ function ok(label) {
 }
 
 const FILTERS = Object.freeze({
+  years: null,
   dates: null,
   hoursOfDay: null,
   daysOfWeek: null,
@@ -107,11 +108,11 @@ function frameOf(over = {}) {
     drawn,
     overview,
     limitLines: (series) => series.map((entry) => ({ label: `limit of ${entry.rowId}` })),
-    yearOfCase: (caseId) => {
+    spanOfCase: (caseId) => {
       years.push(caseId);
-      return 2031;
+      return { firstYear: 2031, numYears: 1 };
     },
-    boxScratch: new Float32Array(H),
+    boxScratch: (hours) => new Float32Array(hours),
     declareTabs: () => {
       log.push('declareTabs');
       return declared;
@@ -235,7 +236,7 @@ function frameOf(over = {}) {
   assert.equal(frame.charts.hasCases, false, 'the charts are told whether any Case is loaded');
   assert.equal(frame.charts.dates, null);
   assert.deepEqual(frame.charts.boxDims, QUERY.boxDims);
-  assert.equal(frame.charts.yearOf(frame.series[0]), 2031);
+  assert.deepEqual(frame.charts.spanOf(frame.series[0]), { firstYear: 2031, numYears: 1 });
   assert.equal(frame.status.split(' ')[0], '100', 'the status counts the hours kept');
   assert.equal(frameOf({ draws: [], pinnedIds: [] }).frame.status.split(' ')[0], '8,760');
   ok('the charts input and status sentence state the render as drawn');
@@ -244,9 +245,14 @@ function frameOf(over = {}) {
   // The count is out of real hours, never the slot's 8,784: a non-leap Case
   // reads 8,760, a leap one 8,784, and a frame mixing them the most any has.
   const status = (over) => frameOf(over).frame.status.split(' · ')[0];
-  const yearOfCase = (caseId) => (caseId === 'leap' ? 2032 : 2031);
+  const spanOfCase = (caseId) => ({ firstYear: caseId === 'leap' ? 2032 : 2031, numYears: 1 });
   assert.equal(status({}), '100 of 8,760 h');
-  assert.equal(status({ yearOfCase: () => 2032 }), '100 of 8,784 h');
+  assert.equal(status({ spanOfCase: () => ({ firstYear: 2032, numYears: 1 }) }), '100 of 8,784 h');
+  assert.equal(
+    status({ spanOfCase: () => ({ firstYear: 2031, numYears: 2 }) }),
+    '100 of 17,544 h',
+    'a Case spanning 2031-2032 counts both years',
+  );
   const full = (caseIds) =>
     source('drawn', [], (draws) =>
       draws.map((one, i) =>
@@ -254,7 +260,7 @@ function frameOf(over = {}) {
       ),
     );
   assert.equal(
-    status({ drawn: full(['c1']), yearOfCase }),
+    status({ drawn: full(['c1']), spanOfCase }),
     '8,760 of 8,760 h',
     'an unfiltered non-leap Case shows every hour it has',
   );
@@ -263,7 +269,7 @@ function frameOf(over = {}) {
       drawn: full(['c1', 'leap']),
       draws: [draw('p1'), draw('p2')],
       pinnedIds: ['p1', 'p2'],
-      yearOfCase,
+      spanOfCase,
     }),
     '8,784 of 8,784 h',
   );
@@ -329,14 +335,19 @@ function frameOf(over = {}) {
   const drawn = drawContextOf(source, () => filters, lines);
   const overview = drawContextOf(
     source,
-    datesCleared(() => filters),
+    datesClearedOf(() => filters),
     lines,
   );
   assert.equal(drawn.lines, lines);
   assert.equal(drawn.caseLabel('c1'), 'Case');
-  filters = { ...FILTERS, dates: [{ start: 0, end: 23 }] };
+  filters = { ...FILTERS, years: new Set([2036]), dates: [{ start: 0, end: 23 }] };
   assert.equal(drawn.filters, filters, 'a context reads the filters at every draw');
   assert.equal(overview.filters.dates, null, 'an overview clears the dates');
+  assert.equal(
+    overview.filters.years,
+    filters.years,
+    'and keeps the years: it draws every year the Years filter keeps',
+  );
   assert.equal(overview.filters, overview.filters, 'one cleared object per filter state');
   const held = overview.filters;
   filters = { ...filters, hoursOfDay: new Set([1]) };

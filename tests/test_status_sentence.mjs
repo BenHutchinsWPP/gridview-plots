@@ -17,6 +17,7 @@ function check(what, fn) {
 }
 
 const NO_FILTERS = Object.freeze({
+  years: null,
   dates: null,
   hoursOfDay: null,
   daysOfWeek: null,
@@ -86,6 +87,18 @@ check('seasons and TOU are named only when filtered, in that order', () => {
     ),
   );
   assert.deepEqual(said.slice(3), ['Winter, Summer', 'OnPeak', '2 cases']);
+});
+
+check('a Years filter names its years as runs, after the hours and before the dates', () => {
+  const said = (years, kept = 8784) =>
+    parts(statusSentence(view({ years: new Set(years) }), kept, 26304));
+  assert.deepEqual(said([2036]).slice(0, 3), [`${n(8784)} of ${n(26304)} h`, '2036', 'all dates']);
+  assert.equal(said([2037, 2035, 2036])[1], '2035–2037');
+  assert.equal(said([2038, 2035, 2036])[1], '2035–2036, 2038');
+  // The whole stays the drawn Cases' every year, as it does under a dates
+  // filter: the Years filter shrinks the count, never what it is out of.
+  assert.equal(said([2035], 8760)[0], `${n(8760)} of ${n(26304)} h`);
+  assert.equal(parts(statusSentence(view({}), 26304, 26304)).length, 4, 'unset, no years part');
 });
 
 check('a full selection reads as no constraint, an empty one as nothing', () => {

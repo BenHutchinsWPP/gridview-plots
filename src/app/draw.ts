@@ -17,7 +17,7 @@ import { memberSignature, resolveSeries, specFromRow, type ResolveOptions } from
 import { fullLabel, shortLabels, type SeriesFacets } from '../series/label';
 import { RANGE_LABEL, type RangeLimits } from '../series/range';
 import type { SeriesPool } from '../series/pool';
-import type { SeriesBuffers } from '../series/model';
+import { YEAR_SLOT_HOURS, spanOfTable } from '../model/calendar';
 import { SERIES_RESOLVERS } from '../tables/registry';
 import type { AreaTable } from '../tables/area/types';
 import type { BusTable } from '../tables/bus/types';
@@ -70,7 +70,12 @@ export interface DrawContext {
   busKv(id: number): number | null;
   /** One path's hourly limits in one Case, for its "% of range" line. The
    * limits store stays in `main.ts`; only numbers come back. */
-  interfaceRange(caseId: string, interfaceName: string, year: number): RangeLimits;
+  interfaceRange(
+    caseId: string,
+    interfaceName: string,
+    year: number,
+    numYears: number,
+  ): RangeLimits;
   /** Every drawn line's buffers, whatever its kind. */
   lines: SeriesPool;
 }
@@ -82,13 +87,13 @@ export function resolveDraw(context: DrawContext, draw: Draw): CaseSeries | null
   // A kind this build cannot draw. Not a `never` check: the drawer may list
   // kinds with no resolver.
   if (!resolve) return null;
-  return resolve(context, draw, context.lines.for(...bufferKey(draw.ref)));
+  return resolve(context, draw);
 }
 
-type KindResolver = (context: DrawContext, spec: Draw, buffer: SeriesBuffers) => CaseSeries | null;
+type KindResolver = (context: DrawContext, spec: Draw) => CaseSeries | null;
 
 /** What each kind contributes: its table and how its subject reads, never
- * its buffer. */
+ * its buffer (`draw` takes that from the pool, one plane of the table long). */
 const RESOLVERS: Readonly<Record<string, KindResolver>> = {
   area: resolveAreaDraw,
   interface: resolveInterfaceDraw,
@@ -175,18 +180,21 @@ function facetsOf(context: DrawContext, ref: BrowseRowRef, subject: string): Ser
 }
 
 /** The one resolve call. `name` is the full label until `resolveDraws`
- * shortens it; a refusal must read on its own. */
+ * shortens it; a refusal must read on its own. The line's buffers are one
+ * plane of `table` long, so each Case's span sizes its own. */
 function draw(
   context: DrawContext,
   spec: Draw,
-  table: unknown,
-  buffer: SeriesBuffers,
+  table: { readonly numYears: number },
   facets: SeriesFacets,
   tableLabel: string,
   figureKey: FigureKey,
   rangeOf?: ResolveOptions['rangeOf'],
 ): CaseSeries {
+  const years = spanOfTable(table);
+  if (years) facets = { ...facets, years };
   const full = fullLabel(facets);
+  const buffer = context.lines.for(table.numYears * YEAR_SLOT_HOURS, ...bufferKey(spec.ref));
   const resolved = resolveSeries(
     SERIES_RESOLVERS,
     specFromRow(spec.ref),
@@ -235,43 +243,34 @@ function countedGroup(
   };
 }
 
-function resolveAreaDraw(
-  context: DrawContext,
-  spec: Draw,
-  buffer: SeriesBuffers,
-): CaseSeries | null {
+function resolveAreaDraw(context: DrawContext, spec: Draw): CaseSeries | null {
   const owner = context.areaCases().find((entry) => entry.id === spec.ref.caseId);
   if (!owner) return null;
   return draw(
     context,
     spec,
     owner.data,
-    buffer,
     facetsOf(context, spec.ref, rowSubject(spec.ref, context.caseLabel)),
     `${owner.name} · ${spec.ref.variable}`,
     countedGroup(context, spec.ref, AREA_MEMBERS),
   );
 }
 
-function resolveInterfaceDraw(
-  context: DrawContext,
-  spec: Draw,
-  buffer: SeriesBuffers,
-): CaseSeries | null {
+function resolveInterfaceDraw(context: DrawContext, spec: Draw): CaseSeries | null {
   const row = rowAt(context.interfaceRows(), spec.ref);
   if (!row) return null;
   // A path's own limits, or for a group each member's, which the kind sums
   // in the group's directions.
   const { caseId, perUnit } = spec.ref;
-  const year = row.data.year;
+  // Over the table's whole span: the divisors are as long as its plane.
+  const { firstYear, numYears } = row.data;
   const rangeOf = perUnit
-    ? (path: string) => context.interfaceRange(caseId, path, year)
+    ? (path: string) => context.interfaceRange(caseId, path, firstYear, numYears)
     : undefined;
   return draw(
     context,
     spec,
     row.data,
-    buffer,
     facetsOf(context, spec.ref, rowSubject(spec.ref, context.caseLabel)),
     row.label,
     // A boundary is named by the name its author gave it: its members and
@@ -281,11 +280,7 @@ function resolveInterfaceDraw(
   );
 }
 
-function resolveBusDraw(
-  context: DrawContext,
-  spec: Draw,
-  buffer: SeriesBuffers,
-): CaseSeries | null {
+function resolveBusDraw(context: DrawContext, spec: Draw): CaseSeries | null {
   const row = rowAt(context.busRows(), spec.ref);
   if (!row) return null;
   const id = Number(spec.ref.entity);
@@ -293,7 +288,6 @@ function resolveBusDraw(
     context,
     spec,
     row.data,
-    buffer,
     // The row's label, else the id: a bare name may be ambiguous.
     facetsOf(
       context,
@@ -320,18 +314,13 @@ function busKey(context: DrawContext, id: number): string {
     .join(' ');
 }
 
-function resolveGeneratorDraw(
-  context: DrawContext,
-  spec: Draw,
-  buffer: SeriesBuffers,
-): CaseSeries | null {
+function resolveGeneratorDraw(context: DrawContext, spec: Draw): CaseSeries | null {
   const row = rowAt(context.generatorRows(), spec.ref);
   if (!row) return null;
   return draw(
     context,
     spec,
     row.data,
-    buffer,
     facetsOf(context, spec.ref, rowSubject(spec.ref, context.caseLabel)),
     row.label,
     countedGroup(context, spec.ref, GENERATOR_MEMBERS),

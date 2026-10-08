@@ -137,7 +137,8 @@ async function flowExtremes(file, plan) {
   // The failure's text names the file and quotes cells; the refusal names the stage.
   if (result.failures.length > 0 || result.cases.length === 0) throw new Error('flow refused');
   const table = result.cases[0];
-  const calendar = buildCalendar(table.year);
+  const calendar = buildCalendar(table.firstYear, table.numYears);
+  const span = table.numYears * YEAR_SLOT_HOURS;
   const extremes = new Map();
   table.interfaces.forEach((name, i) => {
     if (!table.presence[i]) return;
@@ -145,8 +146,8 @@ async function flowExtremes(file, plan) {
       max: new Float64Array(12).fill(-Infinity),
       min: new Float64Array(12).fill(Infinity),
     };
-    const plane = table.cube.subarray(i * YEAR_SLOT_HOURS, (i + 1) * YEAR_SLOT_HOURS);
-    for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+    const plane = table.cube.subarray(i * span, (i + 1) * span);
+    for (let hour = 0; hour < span; hour++) {
       const value = plane[hour];
       if (Number.isNaN(value)) continue;
       const month = getMonth(calendar[hour]) - 1;

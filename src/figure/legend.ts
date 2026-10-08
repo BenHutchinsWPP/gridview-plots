@@ -12,6 +12,11 @@
 // half the width, the narrow ones keep their width and the wide ones share
 // what is left, wrapping their cells onto more lines: a key cut short could
 // name a different line.
+//
+// Under "overlay years" a row is a series, its swatch the series' colour, and
+// a line under its cells is its year ramp: a short swatch in each year's
+// shade, labelled with the year, so the key names series and the ramp says
+// which shade is which year without a row per line.
 
 import { line, outlinedRect, text, type StrokeStyle } from './svg';
 import type { LegendColumn } from './facts';
@@ -26,6 +31,9 @@ const SWATCH = 16;
 const SWATCH_GAP = 4;
 const COLUMN_GAP = 8;
 const HALF_GAP = 14;
+const RAMP_SWATCH = 9;
+const RAMP_GAP = 2;
+const RAMP_ITEM_GAP = 6;
 /** A box's outline and its fill's opacity over the white page, as the pane
  * draws a box: the swatch and the box are one mark. */
 export const BOX_STROKE_PT = 0.75;
@@ -88,6 +96,8 @@ export interface LegendEntry {
   readonly stroke: StrokeStyle;
   /** A box's fill: the swatch is a filled box rather than a stroke. */
   readonly fill?: string;
+  /** An overlay series' years, oldest first: each year's stroke and label. */
+  readonly ramp?: readonly { readonly stroke: StrokeStyle; readonly label: string }[];
 }
 
 export interface LegendLayout {
@@ -137,6 +147,25 @@ export function layoutLegend(
   const underWrapped = under.map((text) =>
     text ? wrapText(text, underWidth, UNDER_PT, measureText) : [],
   );
+  // Each ramp item's place: its line under the cells, and its x from the
+  // first cell's left edge. Items wrap onto another line at the half's edge.
+  const ramps = entries.map((entry, row) => {
+    let x = 0;
+    let at = 0;
+    return (entry.ramp ?? []).map((item, k) => {
+      const label = say(`legend[${row}][year][${k}]`, item.label);
+      const width =
+        RAMP_SWATCH + RAMP_GAP + measureText(label, UNDER_PT) * MEASURE_SLACK + RAMP_ITEM_GAP;
+      if (x > 0 && x + width - RAMP_ITEM_GAP > underWidth) {
+        x = 0;
+        at++;
+      }
+      const placed = { stroke: item.stroke, label, line: at, x };
+      x += width;
+      return placed;
+    });
+  });
+  const rampLines = ramps.map((items) => (items.length > 0 ? items[items.length - 1].line + 1 : 0));
 
   const rows = Math.ceil(entries.length / 2);
   const rowLine = LEGEND_PT * LEADING;
@@ -147,7 +176,7 @@ export function layoutLegend(
     Math.max(
       ...[2 * r, 2 * r + 1]
         .filter((i) => i < entries.length)
-        .map((i) => cellLines(i) * rowLine + underWrapped[i].length * underLine),
+        .map((i) => cellLines(i) * rowLine + (rampLines[i] + underWrapped[i].length) * underLine),
     ),
   );
   const height = rowHeights.reduce((sum, h) => sum + h, 0);
@@ -177,7 +206,20 @@ export function layoutLegend(
               out.push(text(part, x0 + offsets[c], baseline + k * rowLine, { size: LEGEND_PT })),
             );
           });
-          const underTop = baseline + (cellLines(i) - 1) * rowLine;
+          const rampTop = baseline + (cellLines(i) - 1) * rowLine;
+          for (const item of ramps[i]) {
+            const x = x0 + (offsets[0] ?? SWATCH + SWATCH_GAP) + item.x;
+            const itemBaseline = rampTop + (item.line + 1) * underLine;
+            const itemMid = itemBaseline - UNDER_PT * 0.32;
+            out.push(line(x, itemMid, x + RAMP_SWATCH, itemMid, item.stroke));
+            out.push(
+              text(item.label, x + RAMP_SWATCH + RAMP_GAP, itemBaseline, {
+                size: UNDER_PT,
+                fill: '#444444',
+              }),
+            );
+          }
+          const underTop = rampTop + rampLines[i] * underLine;
           underWrapped[i].forEach((part, k) =>
             out.push(
               text(part, x0 + offsets[0], underTop + (k + 1) * underLine, {

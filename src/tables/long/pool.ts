@@ -1,14 +1,15 @@
 // src/tables/long/pool.ts
 //
 // The LONG shape's reader: worker pool, file dispatch and cube assembly for an
-// `entity x metric x 8784` cube, one leap-calendar year slot. It knows only
+// `entity x metric x years x 8784` cube, one leap-calendar slot per year of
+// the Case's span. It knows only
 // numbers (key-column count, entity column, slab width); what a kind decides lives in its own `long.ts`
 // (`src/tables/area/long.ts` is the worked example).
 //
 // The unit of work is a BYTE RANGE, so one file uses every core. The cube is
 // pre-filled with NaN so "never written" reads as no data, never as zeros.
 
-import { YEAR_SLOT_HOURS, TOU_LABELS } from '../../model/calendar';
+import { YEAR_SLOT_HOURS, TOU_LABELS, type YearSpan } from '../../model/calendar';
 import {
   dispatch,
   hasSimd,
@@ -17,13 +18,16 @@ import {
   poolSize,
   ready,
   aboutPlans,
+  cubeCost,
+  spanHourLabel,
+  yearSpanOf,
   type PlanWarning,
 } from '../../ingest';
 
 // Re-exported so kinds reach the dispatch surface through their pool.ts.
 // `caseIndex` on a failure indexes THIS call's plans, never a Case id.
 export { dispatch, hasSimd, NO_SIMD_MESSAGE, partitionByFailure };
-import { checkMergeGroup, unionMetricNames } from './merge';
+import { addYearRows, checkMergeGroup, unionMetricNames } from './merge';
 import {
   entityHashes,
   buildColumnPlan,
@@ -84,8 +88,8 @@ export interface PlanFailure {
   message: string;
 }
 
-/** What `discoverEntities` found. It fills `plan.entities` and
- * `plan.rowsPerBlock` in place and produces no tables. */
+/** What `discoverEntities` found. It fills `plan.entities`,
+ * `plan.rowsPerBlock` and the plan's years in place and produces no tables. */
 export interface ScanOutcome {
   /** Indices into `plans`, ascending: the plans whose axis was read. */
   ok: number[];
@@ -93,9 +97,11 @@ export interface ScanOutcome {
 }
 
 /**
- * Read one file's header and enough of its first row to size blocks. `sig` is
+ * Read one file's header and confirm a whole data row follows it. `sig` is
  * the same object `src/detect.ts` matched the file on, so detection and
- * ingest agree on where the metrics start.
+ * ingest agree on where the metrics start. The years are not read here: rows
+ * come in any order, so the first row's year says nothing about the span, and
+ * the axis scan counts every row's.
  */
 export async function readCasePlan(file: File, sig: LongSignature): Promise<CasePlan> {
   for (let probeBytes = HEAD_PROBE_BYTES; ; probeBytes *= 2) {
@@ -108,24 +114,26 @@ export async function readCasePlan(file: File, sig: LongSignature): Promise<Case
     const header = parseHeaderLine(decoder.decode(probe.subarray(0, headerEnd)), sig);
     const dataStart = headerEnd + 1;
 
-    const rowEnd = probe.indexOf(10, dataStart);
-    if (rowEnd < 0) {
+    if (probe.indexOf(10, dataStart) < 0) {
       if (probeBytes < MAX_HEAD_PROBE_BYTES && probe.length === probeBytes) continue;
       throw new Error(
         `${file.name}: header but no complete data row in the first ${probeBytes} B.`,
       );
     }
-    const firstRow = decoder.decode(probe.subarray(dataStart, rowEnd));
 
-    // Date is `M/D/YYYY` parsed as integers, never a Date object (timezones).
-    const year = Number(firstRow.split(',', 1)[0].split('/')[2]);
-    if (!Number.isInteger(year) || year < 1900 || year > 2200) {
-      throw new Error(`${file.name}: could not read a year from the first Date field.`);
-    }
-
-    // The entities are read from every row by discoverEntities(), never
-    // guessed from this probe.
-    return { file, label: file.name, header, dataStart, year, entities: [], rowsPerBlock: [] };
+    // The entities and years are read from every row by discoverEntities(),
+    // never guessed from this probe.
+    return {
+      file,
+      label: file.name,
+      header,
+      dataStart,
+      firstYear: NaN,
+      numYears: 0,
+      rowsByYear: new Map(),
+      entities: [],
+      rowsPerBlock: [],
+    };
   }
 }
 
@@ -228,22 +236,30 @@ async function useLayout(workers: Worker[], layout: KeyLayout): Promise<void> {
 }
 
 /**
- * The one allocation a long ingest makes: up to `entities x metrics x 8784`
- * floats (1.65 GB for a full 8-metric bus study). No size cap, because a fixed
- * cap would refuse files that fit on a bigger device. The caller catches the
- * `RangeError` and refuses with the arithmetic, naming the metrics to untick.
+ * The one allocation a long ingest makes: up to `entities x metrics x years x
+ * 8784` floats (1.65 GB per year for a full 8-metric bus study). No size cap,
+ * because a fixed cap would refuse files that fit on a bigger device. The
+ * caller catches the `RangeError` and refuses with the arithmetic, naming the
+ * metrics to untick. `span` is the merge group's.
  */
-export function createAccumulator(plan: ColumnPlan, entityCount: number): CaseAccumulator {
-  const cube = new Float32Array(entityCount * plan.metrics.length * YEAR_SLOT_HOURS);
+export function createAccumulator(
+  plan: ColumnPlan,
+  entityCount: number,
+  span: YearSpan,
+): CaseAccumulator {
+  const hours = span.numYears * YEAR_SLOT_HOURS;
+  const cube = new Float32Array(entityCount * plan.metrics.length * hours);
   cube.fill(NaN);
   return {
     plan,
     entityCount,
+    firstYear: span.firstYear,
+    numYears: span.numYears,
     cube,
-    tou: new Uint8Array(YEAR_SLOT_HOURS).fill(0xff),
+    tou: new Uint8Array(hours).fill(0xff),
     entitySeen: new Uint8Array(entityCount),
-    hourSeen: new Uint8Array(YEAR_SLOT_HOURS),
-    covered: new Uint8Array(Math.ceil((entityCount * YEAR_SLOT_HOURS) / 8)),
+    hourSeen: new Uint8Array(hours),
+    covered: new Uint8Array(Math.ceil((entityCount * hours) / 8)),
   };
 }
 
@@ -257,7 +273,8 @@ export function blitBlock(
   block: BlockPayload,
   columnPlan: ColumnPlan = accumulator.plan,
 ): void {
-  const { cube, entityCount, covered } = accumulator;
+  const { cube, entityCount, covered, numYears } = accumulator;
+  const span = numYears * YEAR_SLOT_HOURS;
   // The block's OWN file's plan. It differs from the accumulator's only in a
   // merge group, where files with different column orders fill one cube.
   const plan = columnPlan;
@@ -274,7 +291,7 @@ export function blitBlock(
   const numMetrics = plan.metrics.length;
   const offsets = new Int32Array(planes);
   for (let p = 0; p < planes; p++) {
-    offsets[p] = plan.slabPlan[plan.activePlanes[p]] * YEAR_SLOT_HOURS;
+    offsets[p] = plan.slabPlan[plan.activePlanes[p]] * span;
   }
 
   // Counting sort by area. O(rows), one pass to count and one to place.
@@ -297,23 +314,26 @@ export function blitBlock(
   for (let i = 0; i < rows; i++) {
     const r = order[i];
     const area = rowEntity[r];
-    const hour = rowHour[r];
-    // Every Case is dispatched as one year, so a row in any other was
-    // refused by the parser; the cube has no place for one.
-    if (rowYear[r] !== 0) {
-      throw new Error(`A row was placed in year offset ${rowYear[r]} of a one-year Case.`);
+    // The parser refuses a row dated outside the span it was given; one past
+    // the cube means a block was parsed against another span than this one.
+    if (rowYear[r] >= numYears) {
+      throw new Error(
+        `A row was placed in year offset ${rowYear[r]} of a ${numYears}-year Case. Every block ` +
+          `of a Case must be parsed against the Case's own years.`,
+      );
     }
+    const hour = rowYear[r] * YEAR_SLOT_HOURS + rowHour[r];
 
     // A cell written twice is two rows for one (entity, hour): refuse rather
     // than keep whichever worker finished last.
-    const bit = area * YEAR_SLOT_HOURS + hour;
+    const bit = area * span + hour;
     const byte = bit >> 3;
     const mask = 1 << (bit & 7);
     if (covered[byte] & mask) {
       throw new Error(
-        `Two rows both describe area index ${area} at hour ${hour}. One case cannot hold the ` +
-          `same area-hour twice; two exports concatenated into one file look like this. Load ` +
-          `them as separate files.`,
+        `Two rows both describe area index ${area} at hour ` +
+          `${spanHourLabel(accumulator.firstYear, hour)}. One case cannot hold the same area-hour twice; two exports concatenated into one ` +
+          `file look like this. Load them as separate files.`,
       );
     }
     covered[byte] |= mask;
@@ -324,7 +344,8 @@ export function blitBlock(
     // land on either file.
     if (hourSeen[hour] && tou[hour] !== rowTou[r]) {
       throw new Error(
-        `Hour ${hour} of the year is ${TOU_LABELS[rowTou[r]]} on one row and ` +
+        `Hour ${spanHourLabel(accumulator.firstYear, hour)} is ${TOU_LABELS[rowTou[r]]} on one ` +
+          `row and ` +
           `${TOU_LABELS[tou[hour]]} on another (in this file or another file of the same ` +
           `study). A case holds one TOU per hour, so the load is refused rather than keeping ` +
           `either.`,
@@ -334,7 +355,7 @@ export function blitBlock(
     hourSeen[hour] = 1;
 
     const src = r * planes;
-    let out = area * numMetrics * YEAR_SLOT_HOURS + hour;
+    let out = area * numMetrics * span + hour;
     if (stepped) {
       out += offsets[0];
       for (let p = 0; p < planes; p++) {
@@ -361,14 +382,14 @@ function rangesFor(plan: CasePlan): { start: number; end: number; skipPartialFir
   return out;
 }
 
-/** `firstYear` is the merge GROUP's, never this file's own: every member's
- * rows place against the one span the group's cube holds. */
+/** `span` is the merge GROUP's, never this file's own: every member's rows
+ * place against the one span the group's cube holds. */
 function blocksFor(
   plan: CasePlan,
   caseIndex: number,
   activePlanes: Int32Array,
   entityCount: number,
-  firstYear: number,
+  span: YearSpan,
   nextId: () => number,
 ): BlockMessage[] {
   const ranges = rangesFor(plan);
@@ -388,16 +409,18 @@ function blocksFor(
     entityCount,
     sourceMetricCount: plan.header.metricNames.length,
     maxRows: plan.rowsPerBlock[i],
-    firstYear,
-    numYears: 1,
+    firstYear: span.firstYear,
+    numYears: span.numYears,
   }));
 }
 
 /**
  * Read the entity axis from every row's key column, and count each block's
- * rows. Guessing it from the first rows fails on shuffled or incomplete
- * exports. The scan skips metric fields whole, so it costs a small fraction
- * of the parse, and its row counts bound the parser's output exactly.
+ * rows and each year's. Guessing either from the first rows fails on shuffled
+ * or incomplete exports. The scan skips metric fields whole, so it costs a
+ * small fraction of the parse, and its row counts bound the parser's output
+ * exactly. A file whose years are not one contiguous run is refused here,
+ * before any cube is allocated.
  */
 export async function discoverEntities(
   plans: CasePlan[],
@@ -418,6 +441,7 @@ export async function discoverEntities(
   const names = plans.map(() => new Set<string>());
   plans.forEach((plan) => {
     plan.rowsPerBlock = new Array(rangesFor(plan).length).fill(0);
+    plan.rowsByYear = new Map();
   });
 
   // ONE dispatch over every plan's scan blocks, so the axis sees every file.
@@ -434,6 +458,7 @@ export async function discoverEntities(
       const at = slotOf.get(result.blockId)!;
       for (const name of result.names) names[at.caseIndex].add(name);
       plans[at.caseIndex].rowsPerBlock[at.slot] = result.rows;
+      addYearRows(plans[at.caseIndex].rowsByYear, result);
     },
     { onProgress, abortOnError: false },
   );
@@ -457,6 +482,13 @@ export async function discoverEntities(
       });
       continue;
     }
+    const years = yearSpanOf(`${plan.file.name} has`, plan.rowsByYear);
+    if (years.refusal !== undefined) {
+      failures.push({ index, file: plan.file.name, message: years.refusal });
+      continue;
+    }
+    plan.firstYear = years.span.firstYear;
+    plan.numYears = years.span.numYears;
     plan.entities = [...names[index]];
     scanned.push(index);
   }
@@ -490,7 +522,7 @@ export function unionEntities(plans: CasePlan[], base: readonly string[] = []): 
  * Parse every plan into a cube. `retained` is the metric axis (picker answer,
  * or the union for everything). Plans sharing a `groupOf` id merge into one
  * table under the rules stated at `ingest` in `src/tables/wide/pool.ts`; here
- * `covered` is per (entity, hour) rather than per hour.
+ * `covered` is per (entity, span hour) rather than per hour.
  */
 export async function ingest<T>(
   plans: CasePlan[],
@@ -521,11 +553,16 @@ export async function ingest<T>(
   const columnPlans = plans.map((plan) => buildColumnPlan(plan.header, metrics));
   const groups = groupsOf(plans, groupOf, metrics);
 
-  // A refused group is reported before any bytes are read.
+  // A refused group is reported before any bytes are read. The check runs on
+  // scanned plans, so a group's years are its members' union.
   const groupFailures: PlanFailure[] = [];
   for (const group of groups) {
     const check = checkMergeGroup(group.members.map((i) => plans[i]));
     warnings.push(...aboutPlans(check.warnings, group.members));
+    if (check.span !== undefined) {
+      group.repPlan.firstYear = check.span.firstYear;
+      group.repPlan.numYears = check.span.numYears;
+    }
     if (check.refusal === undefined) continue;
     group.refused = true;
     for (const index of group.members) {
@@ -543,7 +580,7 @@ export async function ingest<T>(
       return;
     }
     try {
-      accumulators.push(createAccumulator(group.plan, areas.length));
+      accumulators.push(createAccumulator(group.plan, areas.length, group.repPlan));
     } catch (error) {
       if (!(error instanceof RangeError)) throw error;
       accumulators.push(null);
@@ -551,7 +588,12 @@ export async function ingest<T>(
         allocationFailures.push({
           index,
           file: plans[index].file.name,
-          message: allocationRefusal(group.label, areas.length, group.plan.metrics.length),
+          message: allocationRefusal(
+            group.label,
+            areas.length,
+            group.plan.metrics.length,
+            group.repPlan.numYears,
+          ),
         });
       }
     }
@@ -562,14 +604,13 @@ export async function ingest<T>(
   plans.forEach((plan, index) => {
     // A file with no cube gets no blocks: parsing it would fill nothing.
     if (accumulators[groupOf[index]] === null) return;
-    const firstYear = groups[groupOf[index]].repPlan.year;
     jobs.push(
       ...blocksFor(
         plan,
         index,
         columnPlans[index].activePlanes,
         areas.length,
-        firstYear,
+        groups[groupOf[index]].repPlan,
         () => id++,
       ),
     );
@@ -634,7 +675,8 @@ interface MergeGroup {
   label: string;
   /** The group's union of columns against `retained`, not any one member's. */
   plan: ColumnPlan;
-  /** The first member with the union header, so notes name every file. */
+  /** The first member with the union header and the group's years, so notes
+   * name every file and the table spans every member's years. */
   repPlan: CasePlan;
   refused?: boolean;
 }
@@ -670,15 +712,24 @@ function groupsOf(plans: CasePlan[], groupOf: number[], metrics?: string[]): Mer
   });
 }
 
-/** An oversized cube's refusal, naming entities (fixed) and metrics (the
- * user's lever) separately. */
-function allocationRefusal(file: string, entityCount: number, metricCount: number): string {
-  const bytes = entityCount * metricCount * YEAR_SLOT_HOURS * 4;
+/** An oversized cube's refusal: the product the metric picker priced, worded
+ * by the same `cubeCost`. The metrics are the user's lever. */
+function allocationRefusal(
+  file: string,
+  entityCount: number,
+  metricCount: number,
+  numYears: number,
+): string {
+  const cost = cubeCost(
+    [
+      { count: metricCount, one: 'retained metric', many: 'retained metrics' },
+      { count: entityCount, one: 'entity', many: 'entities' },
+    ],
+    numYears,
+  );
   return (
-    `${file}: could not allocate this file's cube -- ${entityCount.toLocaleString()} entities x ` +
-    `${metricCount} retained metric${metricCount === 1 ? '' : 's'} x ${YEAR_SLOT_HOURS} hours x ` +
-    `4 B = ${(bytes / (1024 * 1024)).toFixed(0)} MB in one array, which this browser refused. ` +
-    `Nothing was loaded from it; drop it again keeping fewer metrics. The other files in this ` +
-    `drop are unaffected.`
+    `${file}: could not allocate this file's cube -- ${cost.arithmetic} in one array, which ` +
+    `this browser refused. Nothing was loaded from it; drop it again keeping fewer metrics. ` +
+    `The other files in this drop are unaffected.`
   );
 }

@@ -38,7 +38,7 @@ export function mountSection(
     onFiltersChange(patch: Partial<Filters>): void;
     onBoxDimChange(pane: number, dim: string): void;
     onFigure(capture: FigureCapture, shown: { wholeYear: boolean }): void;
-    onDatesChange(dates: DateSet): void;
+    onDatesChange(dates: DateSet | null): void;
   },
 ): SectionHandle {
   root.className = 'gv-section';

@@ -471,16 +471,25 @@ await check('a slot counts its real hours, against its own year, for the replace
   leap.fill(0, FEB29, FEB29 + 24);
   const coverage = hoursCoveredBySlot({
     tables: new Map([
-      ['a', { data: { hoursPresent: nonLeap, year: 2035 } }],
-      ['b', { data: { hoursPresent: leap, year: 2036 } }],
-      ['c', { data: { hoursPresent: new Uint8Array(8760).fill(1), year: 2035 } }],
+      ['a', { data: { hoursPresent: nonLeap, firstYear: 2035, numYears: 1 } }],
+      ['b', { data: { hoursPresent: leap, firstYear: 2036, numYears: 1 } }],
+      ['c', { data: { hoursPresent: new Uint8Array(8760).fill(1), firstYear: 2035, numYears: 1 } }],
       ['d', { data: { hoursPresent: nonLeap } }],
+      [
+        'e',
+        { data: { hoursPresent: new Uint8Array(2 * SLOT).fill(1), firstYear: 2035, numYears: 2 } },
+      ],
     ]),
   });
   assert.deepEqual(coverage.a, { covers: 8760, of: 8760 });
   assert.deepEqual(coverage.b, { covers: 8760, of: 8784 });
   assert.equal(coverage.c, null, 'not a slot: unknown');
   assert.equal(coverage.d, null, 'no year: unknown');
+  assert.deepEqual(
+    coverage.e,
+    { covers: 8760 + 8784, of: 8760 + 8784 },
+    'a span counts every year',
+  );
 });
 
 console.log(`\n${passed} drop-load checks passed.`);

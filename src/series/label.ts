@@ -13,6 +13,8 @@
 //
 // Imports no kind; the kind's display noun is derived from its token.
 
+import type { YearSpan } from '../model/calendar';
+
 /** The facets of one drawn line: plain data, built from a browse row. */
 export interface SeriesFacets {
   /** The Case's label (`caseLabel`), resolved when the line is drawn. */
@@ -37,6 +39,9 @@ export interface SeriesFacets {
   readonly figureSubject?: string;
   /** The filters a grouped row was built under, frozen at tick time. */
   readonly filters?: readonly { readonly label: string; readonly constraint: string }[];
+  /** The years the line's Case spans, which a figure's caption names when
+   * its axis covers more than one. */
+  readonly years?: YearSpan;
 }
 
 /** The separator every label in this app joins its parts with. */

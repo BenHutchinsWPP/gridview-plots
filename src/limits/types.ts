@@ -18,7 +18,7 @@
 // with its case. See `store.ts`, which holds both halves for that reason.
 //
 // Twelve values, never one per hour. The expansion to hours belongs to whatever
-// draws the line, because only the pane knows the case's calendar year; a
+// draws the line, because only the pane knows the case's years; a
 // store that expanded eagerly would be guessing it.
 
 /** Which side of the band a row carries. Read off the row's own cells by

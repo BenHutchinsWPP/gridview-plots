@@ -32,6 +32,7 @@ import {
 // The scope half comes off the Import Dialog, which is the only auxiliary file
 // for which that is true -- see `src/app/import-plan.ts`'s `LimitPlan`.
 import { createLimitsStore } from './limits/store';
+import { YEAR_SLOT_HOURS, yearsStillLoaded } from './model/calendar';
 import { createScratch, hasData } from './tables/area/kernels';
 import * as longPool from './tables/long/pool';
 import type { GroupEditingHost } from './app/group-editing';
@@ -86,7 +87,8 @@ import { createRankMemo } from './kernels';
 import { resolveDraw } from './app/draw';
 import {
   computeFrame,
-  datesCleared,
+  datesClearedOf,
+  figureFilters,
   drawContextOf,
   lineSourceOf,
   type DrawSource,
@@ -122,8 +124,9 @@ const { areaCases, interfaceRows, busRows, generatorRows } = views;
 const drawLines = createSeriesPool();
 
 /** Reused by every box-plot partition; one box is consumed before the next,
- * so two buffers cover the whole pane no matter how many boxes it draws. */
-const boxScratch = createScratch();
+ * so one buffer covers the whole pane no matter how many boxes it draws. It
+ * grows to the longest line drawn and is kept at that length. */
+let boxScratch = createScratch(YEAR_SLOT_HOURS);
 /**
  * The notes, by LIFETIME. A channel is rewritten wholesale, so two messages
  * that die at different moments must never share one:
@@ -168,6 +171,7 @@ function adoptAxis(axis: string[]): void {
 let query: AreaQuery = Object.freeze({
   cases: [] as readonly string[],
   filters: Object.freeze({
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
@@ -218,7 +222,7 @@ function allBrowseDraws(): { ref: BrowseRowRef; color: string; dashed: boolean }
 const drawnLimits = createLimitLines({
   limits: limitsStore,
   interfaceRows,
-  yearOfCase: views.yearOfCase,
+  spanOfCase: views.spanOfCase,
 });
 
 /** What a draw reads from this module's state, through accessors so a removed
@@ -242,7 +246,7 @@ const overviewLines = createSeriesPool();
 const overviewSource = lineSourceOf(
   drawContextOf(
     drawSource,
-    datesCleared(() => query.filters),
+    datesClearedOf(() => query.filters),
     overviewLines,
   ),
 );
@@ -266,8 +270,9 @@ function render(): void {
     drawn: drawnSource,
     overview: overviewSource,
     limitLines: drawnLimits.limitLines,
-    yearOfCase: views.yearOfCase,
-    boxScratch,
+    spanOfCase: views.spanOfCase,
+    boxScratch: (hours) =>
+      boxScratch.length >= hours ? boxScratch : (boxScratch = createScratch(hours)),
     declareTabs: browseWiring.declareTabs,
     freshness: {
       lookups: allLookups(),
@@ -284,12 +289,13 @@ function render(): void {
   sections.sync(hasCases, frame.notes);
   charts.render(frame.charts);
   frame.settle();
-  shell.render(query, views.loadedYears());
+  shell.render(query, views.loadedSpans(), views.loadedYears());
 
   const { browse: drawer } = frame;
   browseDrawer.render({
     ...drawer,
     caseLabel: views.caseLabel,
+    spanOfCase: views.spanOfCase,
     selectedVariable: () => browseWiring.switches(drawer.signature).variable,
     selectedPercent: () => browseWiring.switches(drawer.signature).percent,
     selectedCase: () => browseWiring.switches(drawer.signature).case,
@@ -406,7 +412,7 @@ async function downloadHourly(download: HourlyDownload): Promise<void> {
         resolve: (ref) => resolveDraw(exportContext, { ref, color: '#000000', dashed: false }),
         caseLabel: views.caseLabel,
         caseNames: views.caseNames,
-        yearOfCase: views.yearOfCase,
+        spanOfCase: views.spanOfCase,
         progress: (message) => setBusy(message),
         nextFrame,
         confirm: confirmLargeDownload,
@@ -492,7 +498,8 @@ function caseIdForName(name: string): string {
 }
 
 /** The host both ingest engines attach through: the progress line, Case
- * naming, and table attachment, recorded with the files behind the table. */
+ * naming, a Case's years, and table attachment, recorded with the files
+ * behind the table. */
 const ingestHost: IngestHost = {
   setBusy,
   caseIdForName,
@@ -500,6 +507,7 @@ const ingestHost: IngestHost = {
     caseStore.attachTable(caseId, slot, table, { replace: true });
     inventory.recordTable(caseId, slot, sources);
   },
+  heldSpan: views.heldSpan,
 };
 
 /** One retain gate per kind, built once. Not on a section: which columns a
@@ -529,10 +537,17 @@ const ingestKinds = createIngestKinds({
  * Every loaded Case is drawn; which Cases a reader looks at is the drawer's
  * Case column. This runs after EVERY ingest of every kind (each batch's
  * `refresh`): a Case missing from `query.cases` has its rows dropped by the
- * drawer's scoping with nothing on screen to bring them back.
+ * drawer's scoping with nothing on screen to bring them back. A Years filter
+ * on a year no Case has any more would empty every line the same way.
  */
 function setQueryCases(): void {
-  setQuery({ cases: caseStore.listCases().map((entry) => entry.id) });
+  const years = yearsStillLoaded(query.filters.years, views.loadedYears());
+  setQuery({
+    cases: caseStore.listCases().map((entry) => entry.id),
+    ...(years === query.filters.years
+      ? {}
+      : { filters: Object.freeze({ ...query.filters, years }) }),
+  });
 }
 
 /** A drop, from its first byte to its last table: the sequence is
@@ -671,6 +686,7 @@ const saveRestore = createSaveRestore({
     layout: charts.layout(),
     boxDims: query.boxDims,
     intervals: charts.intervals(),
+    overlayYears: charts.overlayYears(),
     drawerHeight: browseDrawer.heightPx(),
     inventory: inventory.snapshot(),
   }),
@@ -704,6 +720,7 @@ function restoreView(loaded: RestoredBundle, made: readonly { id: string }[]): v
   browseDrawer.setSelection(restorePins(loaded.pins, made));
   if (loaded.layout) charts.setLayout(loaded.layout as SlotType[]);
   charts.setIntervals(loaded.intervals);
+  charts.setOverlayYears(loaded.overlayYears);
   // A bundle with no box cut starts every pane by Case, as does a name this
   // build does not know.
   const boxDims = loaded.boxDims;
@@ -726,8 +743,10 @@ const browseWiring = createBrowseWiring({
   views,
   browse: createBrowseScopes(),
   // Shared because a tab's rows are ranked one at a time, and reused because
-  // allocating per render is how a free interaction acquires a cost.
-  scratch: createScratch(),
+  // allocating per render is how a free interaction acquires a cost. One slot
+  // long: every reader cuts it to its table's plane or, for a longer span,
+  // takes a buffer of that plane instead (`fitScratch`), never year one only.
+  scratch: createScratch(YEAR_SLOT_HOURS),
   // Kept so a drop ranks only its own rows.
   ranks: createRankMemo(),
   query: () => query,
@@ -788,12 +807,10 @@ const section = mountSection(sectionRoot, {
     }),
   onFiltersChange: setFilters,
   onDatesChange: (dates) => setFilters({ dates }),
-  // A time pane showing the whole year shows no dates filter, and its
-  // caption must not claim one.
   onFigure: (capture, shown) =>
     openFigureDialog({
       capture,
-      hourFilter: filtersLabel(shown.wholeYear ? { ...query.filters, dates: null } : query.filters),
+      hourFilter: filtersLabel(figureFilters(query.filters, shown)),
     }),
 });
 const shell = section.rail;

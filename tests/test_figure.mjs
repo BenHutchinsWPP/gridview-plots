@@ -27,8 +27,13 @@
 //   * X-Y: each axis titled by its series' full label, in the pane's order;
 //     no legend; the fit and its equation only when on; one mark per pixel.
 //   * Heatmap: 24 × 366 vector cells on the pane's colour scale, a colour bar
-//     for a legend, the key in the context line, filtered hours footnoted.
+//     for a legend, the key in the context line, filtered hours footnoted; a
+//     Case's years stacked in labelled bands on one scale.
 //   * A bus key is `number name kV`, the kV only where the BusList states one.
+//   * Overlay years: a key row per series in its palette colour, then its year
+//     ramp (a swatch per year in that year's shade, labelled by `say`, wrapped
+//     inside the half); a year keeps its series' dash; the caption names the
+//     years overlaid; the hours footnote counts each year's hours.
 //
 // Text is measured at a fixed width per character, so layout is exact here.
 
@@ -38,9 +43,10 @@ import './test_loader.mjs';
 const { buildFigure, figureLines, FIGURE_SIZES, LIMIT_DASH, LINE_DASHES } =
   await import('../src/figure/build.ts');
 const { thinLine, thinShared } = await import('../src/figure/thin.ts');
+const { placeFacts } = await import('../src/figure/facts.ts');
 const { runningTotals } = await import('../src/figure/stacked.ts');
 const { YEAR_SLOT_HOURS: H, YEAR_SLOT_DAYS } = await import('../src/model/calendar.ts');
-const { weekdayOf } = await import('../src/model/date-range.ts');
+const { weekdayOf, weekdaysOver } = await import('../src/model/date-range.ts');
 const { resolveDraws } = await import('../src/app/draw.ts');
 const { createSeriesPool } = await import('../src/series/pool.ts');
 const { rowKeyOf } = await import('../src/model/case-model.ts');
@@ -145,6 +151,17 @@ ok('the quantity and unit are the y-axis title, one per scale', () => {
   assert.equal(textOf(two, 'axis.y[0]'), 'Power Flow (MW)');
   assert.equal(textOf(two, 'axis.y[1]'), 'LMP ($/MWh)');
   assert.ok(!legendCells(two).includes('LMP'), 'two axes: each title names its quantity');
+});
+
+ok('the axis title states the unit once, however the quantity spaced it', () => {
+  const titleOf = (variable, unit) =>
+    placeFacts([{ ...line({ facets: { variable, unit } }), side: 0 }]).yTitles[0];
+  assert.equal(titleOf('Simple Average LMP($/MWh)', '$/MWh'), 'Simple Average LMP ($/MWh)');
+  assert.equal(titleOf('LMP ( $/MWh ) ', '$/MWh'), 'LMP ($/MWh)');
+  // A group that is not the unit is part of the quantity's name.
+  assert.equal(titleOf('Load (net)', 'MW'), 'Load (net) (MW)');
+  const drawn = build([line({ facets: { variable: 'Simple Average LMP($/MWh)', unit: '$/MWh' } })]);
+  assert.equal(textOf(drawn, 'axis.y[0]'), 'Simple Average LMP ($/MWh)');
 });
 
 ok('two quantities on one unit keep the unit on the axis and add a quantity column', () => {
@@ -732,6 +749,36 @@ ok('a duration figure keeps the pane’s % of interval axis and its zoom window'
   assert.deepEqual(footnotes(filtered), ['Hours shown: Every other hour (4,380 of 8,760 hours)']);
 });
 
+ok('a duration figure of a three-year Case ranks every year and names them', () => {
+  // Year y holds 1000 y + hour of day; 2035 and 2037 have no Feb 29.
+  const values = Float32Array.from(
+    { length: 3 * H },
+    (_, h) => (h % 24) + 1000 * Math.floor(h / H),
+  );
+  for (const year of [0, 2]) values.fill(NaN, year * H + FEB_29, year * H + FEB_29 + 24);
+  const span = { facets: { years: { firstYear: 2035, numYears: 3 } }, values };
+  const figure = build([line(span)], {
+    pane: 'duration',
+    xWindow: [0, 100],
+    realHours: 8760 + 8784 + 8760,
+  });
+  assert.match(figure.caption, /2035–2037/, figure.caption);
+  assert.deepEqual(footnotes(figure), [], 'every real hour of the span is on the curve');
+  const labels = svgTexts(figure.svg);
+  assert.ok(labels.includes('2,000'), 'the scale reaches 2037’s values: ' + labels.join(' | '));
+
+  // A filter keeps every other hour of all three years: counted over the span.
+  const kept = values.slice();
+  for (let h = 1; h < kept.length; h += 2) kept[h] = NaN;
+  const filtered = build([line({ ...span, values: kept })], {
+    pane: 'duration',
+    xWindow: [0, 100],
+    hourFilter: 'Every other hour',
+    realHours: 26304,
+  });
+  assert.deepEqual(footnotes(filtered), ['Hours shown: Every other hour (13,152 of 26,304 hours)']);
+});
+
 ok('a stacked figure draws bands in stack order and its legend top band first', () => {
   // Bottom band first, as the pane stacks them: the larger total at the base.
   const lines = [
@@ -1048,6 +1095,38 @@ ok('an X-Y figure merges points on one output pixel and counts only hours both h
   assert.deepEqual(footnotes(kept), ['Hours shown: hours 761-8760 (8,000 of 8,760 hours)']);
 });
 
+ok('an X-Y figure’s caption names the years it paired, and fits every pair', () => {
+  const [a, b] = xyPair();
+  const caption = (years) => xyFigure([a, b], { xy: { fit: false, years } }).caption;
+  assert.doesNotMatch(caption(undefined), /paired/, 'a side with no year names none');
+  assert.match(caption({ x: [2035], y: [2035] }), /, paired by hour, 2035[.;]/);
+  assert.match(caption({ x: [2034], y: [2035] }), /, paired by hour, 2034 against 2035[.;]/);
+  assert.match(
+    caption({ x: [2034, 2035, 2036], y: [2035, 2036, 2037] }),
+    /, paired by hour, 2034–2036 against 2035–2037[.;]/,
+  );
+  assert.match(
+    caption({ x: [2035, 2036, 2037], y: [2035, 2036, 2037] }),
+    /, paired by hour, 2035–2037[.;]/,
+  );
+  assert.match(
+    caption({ x: [2034, 2036], y: [2035, 2037] }),
+    /2034 and 2036 against 2035 and 2037/,
+  );
+  // Three year slots end to end, the third off the first two's line: the fit
+  // is over every pair, not the first slot's.
+  const three = (f) => Float32Array.from({ length: 3 * H }, (_, h) => f(h));
+  const fitted = xyFigure(
+    [
+      { ...a, values: three((h) => h % 10) },
+      { ...b, values: three((h) => (h < 2 * H ? 2 * (h % 10) + 5 : 0)) },
+    ],
+    { xy: { fit: true, years: { x: [2034, 2035, 2036], y: [2034, 2035, 2036] } } },
+  );
+  assert.doesNotMatch(textOf(fitted, 'context'), /R² = 1\.0000/, 'the third year counts');
+  assert.equal(textOf(fitted, 'caption'), fitted.caption, 'the caption is one said text');
+});
+
 ok('an X-Y figure leaves the preview out of the pair', () => {
   const [a, b] = xyPair();
   assert.throws(() => xyFigure([a, { ...b, dashed: true }]), /both series/);
@@ -1125,6 +1204,45 @@ ok('a heatmap figure paints filtered hours grey and says so, and names lines it 
   ]);
 });
 
+ok('a heatmap figure stacks a Case’s years, each band labelled, on one colour scale', () => {
+  // Hour of day plus ten a year; 2035 and 2037 have no Feb 29.
+  const values = Float32Array.from({ length: 3 * H }, (_, h) => (h % 24) + 10 * Math.floor(h / H));
+  for (const year of [0, 2]) values.fill(NaN, year * H + FEB_29, year * H + FEB_29 + 24);
+  const years = [2035, 2036, 2037];
+  const figure = heatmapFigure([line({ values })], {
+    years,
+    realHours: 8760 + 8784 + 8760,
+  });
+  const cells = 3 * 24 * YEAR_SLOT_DAYS;
+  assert.equal(fills(figure.svg).length, 1 + cells + BAR_STEPS, 'three bands, one colour bar');
+  assert.deepEqual(
+    years.map((_, i) => textOf(figure, `axis.year[${i}]`)),
+    ['2035', '2036', '2037'],
+  );
+  for (const year of years) assert.ok(svgTexts(figure.svg).includes(String(year)));
+  const grey = fills(figure.svg).filter((fill) => fill === '#f0f0f0').length;
+  assert.equal(grey, 2 * 24, 'Feb 29 blank in 2035 and 2037 only');
+  // One scale over every band: only 2037's HE 24 reaches its top colour.
+  const top = fills(figure.svg)
+    .slice(1, 1 + cells)
+    .filter((fill) => fill === '#fde725').length;
+  assert.equal(top, YEAR_SLOT_DAYS - 1, 'the peak of 2037 alone, Feb 29 aside');
+  assert.ok(!footnotes(figure).some((note) => /^Hours shown/.test(note)), 'every real hour');
+  const edited = heatmapFigure([line({ values })], {
+    years,
+    realHours: 26304,
+    edits: { 'axis.year[1]': 'Leap year' },
+  });
+  assert.ok(svgTexts(edited.svg).includes('Leap year'), 'an edit renames a band');
+  assert.ok(!svgTexts(edited.svg).includes('2036'));
+});
+
+ok('a one-year heatmap figure is one unlabelled band', () => {
+  const values = Float32Array.from({ length: H }, (_, h) => 10 + (h % 24));
+  const figure = heatmapFigure([line({ values })]);
+  assert.ok(!figure.texts.some((entry) => entry.id.startsWith('axis.year')));
+});
+
 // ------------------------------------------------------------ 12. bus kV
 
 /** One invented bus drawn through the app's own resolve, with `kv` as the
@@ -1137,11 +1255,13 @@ function busDrawn(kv) {
     names: ['SAMPLE_BUS_A'],
     tou: new Uint8Array(H),
     sourceColumns: [90001],
-    year: 2035,
+    firstYear: 2035,
+    numYears: 1,
     quantity: 'LMP ($/MWh)',
   };
   const context = {
     filters: {
+      years: null,
       dates: null,
       hoursOfDay: null,
       daysOfWeek: null,
@@ -1183,6 +1303,8 @@ ok('a bus figure key reads `number name kV`, and states no kV the BusList does n
   const drawn = busDrawn(230);
   assert.equal(drawn.facets.subject, 'SAMPLE_BUS_A (90001)');
   assert.ok(!/kV/.test(drawn.detail), drawn.detail);
+  // The years facet is the table's span, for the caption to name past one.
+  assert.deepEqual(drawn.facets.years, { firstYear: 2035, numYears: 1 });
 });
 
 let passed = 0;
@@ -1275,6 +1397,141 @@ ok(
     assert.equal(textOf(figure, 'axis.x'), undefined, 'a week is titled by its day names');
   },
 );
+
+ok('an interval figure of 2035–2037 cuts the span and says each label with its year', () => {
+  const values = Float32Array.from({ length: 3 * H }, (_, h) => 100 + (h % 24));
+  const span = intervalFigure(
+    [line({ values })],
+    {
+      length: 'month',
+      weekdays: Array.from(weekdaysOver(2035, 3)),
+      firstYear: 2035,
+      picked: '2036 Feb',
+    },
+    { edits: { 'legend.to': 'end of 2037' } },
+  );
+  assert.equal(textOf(span, 'legend.from'), '2035 Jan');
+  assert.equal(textOf(span, 'legend.to'), 'end of 2037', 'the edit replaces the label');
+  assert.ok(svgTexts(span.svg).includes('end of 2037'));
+  assert.equal(textOf(span, 'legend.picked'), '2036 Feb');
+  assert.equal(
+    footnotes(span)[0],
+    'Each line is one month, 36 months in all, coloured from the earliest to the latest.',
+  );
+  // A one-year line with no year to print names none.
+  const plain = intervalFigure([line({ values: shaped() })]);
+  for (const id of ['legend.from', 'legend.to']) assert.doesNotMatch(textOf(plain, id), /20\d\d/);
+});
+
+// ------------------------------------------------------------ 13. overlay years
+
+const { shade } = await import('../src/ui/palette.ts');
+
+/** Series `series` of `base` over `years`, a line per year in its shade, as
+ * the time pane captures an overlay. */
+function overlayLines(series, base, years, subject, level = 100) {
+  return years.map((year, i) => ({
+    ...line(
+      {
+        facets: { subject, years: { firstYear: year, numYears: 1 } },
+        color: shade(base, i, years.length),
+      },
+      level + i,
+    ),
+    overlay: { series, year, base },
+  }));
+}
+
+ok('overlay: a key row per series, its swatch the base colour, then its year ramp', () => {
+  const years = [2035, 2036, 2037];
+  const lines = [
+    ...overlayLines(0, '#1f77b4', years, 'NORTH_PATH'),
+    ...overlayLines(1, '#ff7f0e', years, 'SOUTH_PATH', 200),
+  ];
+  const figure = build(lines, { realHours: 8760 + 8784 + 8760 });
+  assert.deepEqual(legendCells(figure), ['NORTH_PATH', 'SOUTH_PATH'], 'one row per series');
+  const ramp = figure.texts.filter((t) => t.id.includes('[year]'));
+  assert.deepEqual(
+    ramp.map((t) => [t.id, t.text]),
+    [0, 1].flatMap((r) => years.map((year, k) => [`legend[${r}][year][${k}]`, `${year}`])),
+  );
+  // The legend's swatches: a row's in its base colour, then a short one per year.
+  const swatches = [
+    ...figure.svg.matchAll(
+      /<line x1="([^"]*)" y1="[^"]*" x2="([^"]*)" y2="[^"]*" stroke="([^"]*)"/g,
+    ),
+  ]
+    .filter((m) => m[3] !== '#dddddd' && Number(m[2]) - Number(m[1]) <= 16 + 1e-6)
+    .map((m) => m[3]);
+  assert.deepEqual(swatches, [
+    '#1f77b4',
+    ...years.map((_, i) => shade('#1f77b4', i, 3)),
+    '#ff7f0e',
+    ...years.map((_, i) => shade('#ff7f0e', i, 3)),
+  ]);
+  const drawn = [...figure.svg.matchAll(/<path d="[^"]*" fill="none" stroke="([^"]*)"/g)].map(
+    (m) => m[1],
+  );
+  assert.deepEqual(
+    drawn,
+    lines.map((l) => l.color),
+    'each year in its shade',
+  );
+  assert.equal(
+    figure.caption,
+    'Hourly Interface Power Flow for NORTH_PATH and SOUTH_PATH, Case Summer 2035, ' +
+      'years 2035–2037 overlaid.',
+  );
+  assert.deepEqual(footnotes(figure), [], 'every real hour of every year drawn');
+  assert.doesNotMatch(figure.svg, /clipPath|class=|style=/);
+  const edited = build(lines, {
+    realHours: 8760 + 8784 + 8760,
+    edits: { 'legend[0][year][1]': 'mid' },
+  });
+  assert.ok(svgTexts(edited.svg).includes('mid'));
+  assert.equal(
+    svgTexts(edited.svg).filter((t) => t === '2036').length,
+    1,
+    'only the edited year changes',
+  );
+});
+
+ok('overlay: two series of one colour keep their own dash in every year', () => {
+  const years = [2035, 2036];
+  const lines = [
+    ...overlayLines(0, '#1f77b4', years, 'NORTH_PATH'),
+    ...overlayLines(1, '#1f77b4', years, 'SOUTH_PATH', 200),
+  ];
+  const figure = build(lines, { realHours: 8760 + 8784 });
+  const dashes = [...figure.svg.matchAll(/<path d="[^"]*" fill="none" [^>]*>/g)].map(
+    (m) => /stroke-dasharray="([^"]*)"/.exec(m[0])?.[1] ?? '',
+  );
+  assert.equal(dashes[0], '');
+  assert.equal(dashes[1], '');
+  assert.notEqual(dashes[2], '');
+  assert.equal(dashes[2], dashes[3]);
+});
+
+ok('overlay: ten years wrap their ramp inside the half, and the hours count per year', () => {
+  const years = Array.from({ length: 10 }, (_, i) => 2030 + i);
+  const lines = overlayLines(0, '#1f77b4', years, 'NORTH_PATH');
+  const real = years.reduce((sum, y) => sum + (y % 4 === 0 ? 8784 : 8760), 0);
+  const whole = build(lines, { realHours: real });
+  const half = (FIGURE_SIZES.half.width * 72 - 12 - 14) / 2;
+  const labels = [...whole.svg.matchAll(/<text x="([^"]*)" y="([^"]*)"[^>]*>(20\d\d)<\/text>/g)];
+  assert.equal(labels.length, 10);
+  assert.ok(
+    labels.every((m) => Number(m[1]) < 6 + half),
+    'inside the left half',
+  );
+  assert.ok(new Set(labels.map((m) => m[2])).size > 1, 'on more than one line');
+  // January only: 744 hours of each of ten years.
+  const jan = build(lines, { realHours: real, xWindow: [-0.5, 743.5] });
+  assert.deepEqual(footnotes(jan), [`Hours shown: 7,440 of ${real.toLocaleString('en-US')} hours`]);
+  assert.match(jan.caption, /, years 2030–2039 overlaid\.$/);
+  const gap = build(overlayLines(0, '#1f77b4', [2035, 2037], 'NORTH_PATH'), { realHours: 17520 });
+  assert.match(gap.caption, /, years 2035 and 2037 overlaid\.$/);
+});
 
 for (const [name, fn] of checks) {
   fn();

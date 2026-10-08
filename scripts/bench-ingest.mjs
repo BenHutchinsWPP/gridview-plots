@@ -61,6 +61,7 @@ const busWide = await import('../src/tables/bus/wide.ts');
 const areaHeader = await import('../src/tables/long/header.ts');
 const areaBlock = await import('../src/tables/long/block.ts');
 const areaPool = await import('../src/tables/long/pool.ts');
+const areaMerge = await import('../src/tables/long/merge.ts');
 const areaLong = await import('../src/tables/area/long.ts');
 const detect = await import('../src/detect.ts');
 const ingestShared = await import('../src/ingest.ts');
@@ -240,6 +241,9 @@ function wideBlockBytes(plan, layout) {
  * property of the WIDTH, not of whether the parser will accept the file. This
  * probe measures the allocation even when a rung fails before reaching it.
  */
+/** The span a probe cube is sized for: the allocation of one year. */
+const PROBE_SPAN = { firstYear: 2034, numYears: 1 };
+
 function cubeProbePlan(entities) {
   return {
     // `entities`, not `interfaces`: the wide seam is not only the interface
@@ -287,7 +291,7 @@ async function measureWide(entry, dir, result, { parser: provided = null, retain
       // Measure the cube allocation anyway: it is what the width costs, and
       // the plan refusal is a different ceiling from the allocation one.
       const probe = await stage(result, 'cubeAlloc', () =>
-        interfacePool.createAccumulator(cubeProbePlan(entry.entities)),
+        interfacePool.createAccumulator(cubeProbePlan(entry.entities), PROBE_SPAN),
       );
       result.cubeBytes = probe.cube.byteLength;
       result.cubeProbed = true;
@@ -295,7 +299,7 @@ async function measureWide(entry, dir, result, { parser: provided = null, retain
     }
 
     const accumulator = await stage(result, 'cubeAlloc', () =>
-      interfacePool.createAccumulator(columnPlan),
+      interfacePool.createAccumulator(columnPlan, plan),
     );
     result.cubeBytes = accumulator.cube.byteLength;
 
@@ -318,8 +322,8 @@ async function measureWide(entry, dir, result, { parser: provided = null, retain
           skipPartialFirstRow: start !== plan.dataStart,
           activePlanes: columnPlan.activePlanes,
           layout,
-          firstYear: plan.year,
-          numYears: 1,
+          firstYear: plan.firstYear,
+          numYears: plan.numYears,
         };
         // The two calls worker.ts makes, timed as one: this is what a worker
         // does, and it is the only part more workers can shorten.
@@ -333,8 +337,8 @@ async function measureWide(entry, dir, result, { parser: provided = null, retain
             from,
             to,
             columnPlan.activePlanes,
-            plan.year,
-            1,
+            plan.firstYear,
+            plan.numYears,
           );
         });
         split.blit(() => interfacePool.blitBlock(accumulator, payload));
@@ -349,7 +353,7 @@ async function measureWide(entry, dir, result, { parser: provided = null, retain
     result.blitMs = Number(split.totals.blit.toFixed(2));
 
     const finalized = await stage(result, 'finalize', () =>
-      interfacePool.finalizeCase(accumulator, entry.name, retained, plan.year, plan.title),
+      interfacePool.finalizeCase(accumulator, entry.name, retained, plan.title),
     );
     result.warnings = finalized.warnings;
     retain?.push(finalized.data);
@@ -474,7 +478,7 @@ async function measureLong(entry, dir, result) {
 
     // Axis discovery. discoverEntities() itself dispatches to Workers and cannot
     // run here, so its per-block body is driven directly: the same scanAxis
-    // over the same ranges, collecting the same names and row counts.
+    // over the same ranges, collecting the same names, row counts and years.
     const seen = new Set();
     const rowsPerBlock = new Array(ranges.length).fill(0);
     let scannedBytes = 0;
@@ -484,9 +488,13 @@ async function measureLong(entry, dir, result) {
         const scan = areaBlock.scanAxis(parser, bytes, from, to);
         for (const name of scan.names) seen.add(name);
         rowsPerBlock[i] = scan.rows;
+        areaMerge.addYearRows(plan.rowsByYear, scan);
         scannedBytes += to - from;
       }
     });
+    const years = ingestShared.yearSpanOf(`${entry.name} has`, plan.rowsByYear);
+    if (years.refusal) throw new Error(years.refusal);
+    const span = years.span;
     const areas = [...seen];
     result.axisSize = areas.length;
     result.blocks = ranges.length;
@@ -500,7 +508,7 @@ async function measureLong(entry, dir, result) {
       areaHeader.buildColumnPlan(plan.header, retained),
     );
     const accumulator = await stage(result, 'cubeAlloc', () =>
-      areaPool.createAccumulator(columnPlan, areas.length),
+      areaPool.createAccumulator(columnPlan, areas.length, span),
     );
     result.cubeBytes = accumulator.cube.byteLength;
 
@@ -521,8 +529,8 @@ async function measureLong(entry, dir, result) {
             areas.length,
             plan.header.metricNames.length,
             rowsPerBlock[i],
-            plan.year,
-            1,
+            span.firstYear,
+            span.numYears,
           );
         });
         split.blit(() => areaPool.blitBlock(accumulator, payload));
@@ -536,7 +544,7 @@ async function measureLong(entry, dir, result) {
     result.blitMs = Number(split.totals.blit.toFixed(2));
 
     const finalized = await stage(result, 'finalize', () =>
-      areaLong.finalizeCase(accumulator, entry.name, retained, plan.year, areas),
+      areaLong.finalizeCase(accumulator, entry.name, retained, areas),
     );
     result.warnings = finalized.warnings;
     result.outcome = 'ok';
@@ -723,7 +731,7 @@ const CUBE_PROBES = [10000, 20000, 30000].map((entities) => ({
 
 async function measureCube(entry, _dir, result) {
   const accumulator = await stage(result, 'cubeAlloc', () =>
-    interfacePool.createAccumulator(cubeProbePlan(entry.entities)),
+    interfacePool.createAccumulator(cubeProbePlan(entry.entities), PROBE_SPAN),
   );
   result.cubeBytes = accumulator.cube.byteLength;
   result.cubeProbed = true;

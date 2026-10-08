@@ -82,7 +82,7 @@ async function ingestFile(file, areas, label, metrics = METRICS) {
 
   // One parser instance per file: the hash table is the file's own area axis.
   const parser = await instantiateParser(wasmModule, entityHashes(areas));
-  const accumulator = createAccumulator(plan, areas.length);
+  const accumulator = createAccumulator(plan, areas.length, { firstYear: YEAR, numYears: 1 });
   const from = headerEnd + 1;
   const scan = scanAxis(parser, bytes, from, bytes.length);
   blitBlock(
@@ -100,7 +100,7 @@ async function ingestFile(file, areas, label, metrics = METRICS) {
       1,
     ),
   );
-  return finalizeCase(accumulator, label, header.metricNames, YEAR, areas).data;
+  return finalizeCase(accumulator, label, header.metricNames, areas).data;
 }
 
 // File A carries only 'Load (MWh)', so its metric-1 planes are presence 0
@@ -303,5 +303,51 @@ assert.equal(
   'reindexCase onto the axis a table is already on returns it unchanged, allocating nothing',
 );
 ok('reindexing onto the same axis is a no-op that returns the same object');
+
+// --- a span ---------------------------------------------------------------
+// A three-year table's plane is every year of the span, so a widening moves
+// all three years of each (area, metric) plane, not the first one.
+{
+  const YEARS = 3;
+  const PLANE = YEARS * HOURS;
+  const areas = ['NORTH', 'EAST'];
+  const cube = new Float32Array(areas.length * METRICS.length * PLANE);
+  for (let area = 0; area < areas.length; area++) {
+    for (let metric = 0; metric < METRICS.length; metric++) {
+      const base = (area * METRICS.length + metric) * PLANE;
+      for (let hour = 0; hour < PLANE; hour++) {
+        cube[base + hour] = area * 1000 + metric * 100 + Math.floor(hour / HOURS);
+      }
+    }
+  }
+  const span = {
+    cube,
+    areas,
+    metrics: METRICS,
+    presence: new Uint8Array(areas.length * METRICS.length).fill(1),
+    tou: new Uint8Array(PLANE),
+    sourceColumns: METRICS,
+    firstYear: YEAR,
+    numYears: YEARS,
+  };
+  const wider = ['SOUTH', 'EAST', 'NORTH'];
+  const moved = reindexCase(span, wider);
+  assert.equal(moved.cube.length, wider.length * METRICS.length * PLANE);
+  for (let area = 0; area < areas.length; area++) {
+    const next = wider.indexOf(areas[area]);
+    for (let metric = 0; metric < METRICS.length; metric++) {
+      const from = (area * METRICS.length + metric) * PLANE;
+      const to = (next * METRICS.length + metric) * PLANE;
+      assert.deepEqual(
+        moved.cube.subarray(to, to + PLANE),
+        cube.subarray(from, from + PLANE),
+        `${areas[area]}/${METRICS[metric]}: every year moved`,
+      );
+      assert.equal(moved.cube[to + PLANE - 1], area * 1000 + metric * 100 + YEARS - 1);
+    }
+  }
+  assert.ok(Number.isNaN(moved.cube[PLANE * METRICS.length - 1]), "SOUTH's last year is NaN");
+  ok('widening the axis moves every year of each plane of a three-year table');
+}
 
 console.log(`\n${checks} checks passed`);

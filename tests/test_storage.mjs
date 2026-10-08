@@ -124,7 +124,8 @@ function areaTable(areas = ['AREA01', 'AREA02', 'AREA03']) {
     tou,
     hoursPresent,
     sourceColumns: [...metrics, 'Emissions (ton)'],
-    year: 2032,
+    firstYear: 2032,
+    numYears: 1,
   };
 }
 
@@ -150,7 +151,8 @@ function interfaceTable(quantity, unit) {
     tou,
     hoursPresent,
     sourceColumns: [...interfaces, 'PATH_C'],
-    year: 2032,
+    firstYear: 2032,
+    numYears: 1,
     quantity,
     unit,
   };
@@ -287,7 +289,7 @@ check('a Case with an Area and an Interface table round-trips both, cube bytes i
   assert.deepEqual(area.areas, original.tables.get(slotKey(AREA_SLOT)).data.areas);
   assert.deepEqual(area.metrics, ['Load (MWh)', 'Gen (MWh)']);
   assert.deepEqual(area.sourceColumns, ['Load (MWh)', 'Gen (MWh)', 'Emissions (ton)']);
-  assert.equal(area.year, 2032);
+  assert.deepEqual([area.firstYear, area.numYears], [2032, 1]);
 
   const flow = back.tables.get(slotKey(FLOW_SLOT)).data;
   assert.deepEqual(flow.interfaces, ['PATH_A', 'PATH_B']);
@@ -426,7 +428,8 @@ function oneQuantityTable(axisField, axis, quantity) {
     tou,
     hoursPresent: new Uint8Array(HOURS).fill(1),
     sourceColumns: [...axis],
-    year: 2031,
+    firstYear: 2031,
+    numYears: 1,
     quantity,
   };
 }
@@ -503,7 +506,7 @@ check('a v3 bundle of every kind restores with a NaN Feb 29 inside every plane',
     );
     assert.equal(data.tou[FEB_29], 0xff);
     assert.equal(data.hoursPresent[FEB_29 + 23], 0);
-    assert.equal(data.year, original.year);
+    assert.deepEqual([data.firstYear, data.numYears], [original.firstYear, 1]);
   }
 
   // The next save writes v4, never v3.
@@ -531,6 +534,140 @@ check('a v3 table whose cube is already on the slot is refused, not read a day o
     () => casesFromManifest(wire, toCaseBlocks(wire, cubes)),
     /expected .*8760 h per plane, saved before Feb 29 was kept/,
   );
+});
+
+// ------------------------------------------------- a span of years
+
+const SPAN_FIRST = 2035;
+const SPAN_YEARS = 3;
+
+/** A table of `planes` planes over 2035-2037, laid out
+ * `(plane × numYears + yearOff) × 8784 + slotHour`, every value naming its
+ * plane, year and hour so a value at the wrong offset shows. */
+function spanTable(planes, fields) {
+  const cube = new Float32Array(planes * SPAN_YEARS * HOURS);
+  for (let plane = 0; plane < planes; plane++) {
+    for (let y = 0; y < SPAN_YEARS; y++) {
+      for (let hour = 0; hour < HOURS; hour++) {
+        cube[(plane * SPAN_YEARS + y) * HOURS + hour] = plane * 100000 + y * 10000 + hour;
+      }
+    }
+  }
+  const tou = new Uint8Array(SPAN_YEARS * HOURS);
+  for (let hour = 0; hour < tou.length; hour++) tou[hour] = (hour + Math.floor(hour / HOURS)) % 3;
+  // The middle year half covered.
+  const hoursPresent = new Uint8Array(SPAN_YEARS * HOURS).fill(1);
+  hoursPresent.fill(0, HOURS + 4344, 2 * HOURS);
+  return {
+    cube,
+    presence: new Uint8Array(planes).fill(1),
+    tou,
+    hoursPresent,
+    firstYear: SPAN_FIRST,
+    numYears: SPAN_YEARS,
+    ...fields,
+  };
+}
+
+const SPAN_TABLES = () => [
+  [
+    AREA_SLOT,
+    spanTable(4, {
+      areas: ['AREA01', 'AREA02'],
+      metrics: ['Load (MWh)', 'Gen (MWh)'],
+      sourceColumns: ['Load (MWh)', 'Gen (MWh)'],
+    }),
+  ],
+  [
+    FLOW_SLOT,
+    spanTable(2, {
+      interfaces: ['PATH_A', 'PATH_B'],
+      sourceColumns: ['PATH_A', 'PATH_B'],
+      quantity: 'Power Flow (MW)',
+      unit: 'MW',
+    }),
+  ],
+  [
+    { kind: 'bus', variant: 'LMP ($/MWh)' },
+    spanTable(2, {
+      buses: Int32Array.from([10001, 10002]),
+      names: ['A', 'B'],
+      sourceColumns: [10001, 10002],
+      quantity: 'LMP ($/MWh)',
+    }),
+  ],
+  [
+    { kind: 'generator', variant: 'Generation (MWh)' },
+    spanTable(3, {
+      generators: ['UNIT_1', 'UNIT_2', 'UNIT_3'],
+      sourceColumns: ['UNIT_1', 'UNIT_2', 'UNIT_3'],
+      quantity: 'Generation (MWh)',
+    }),
+  ],
+];
+
+check('a three-year table of every kind round-trips with its span and every year in place', () => {
+  const slotTables = SPAN_TABLES();
+  const tables = new Map(slotTables.map(([key, data]) => [slotKey(key), { key, data }]));
+  const { wire, restored } = roundTrip([{ id: 'span', name: 'Span Case', tables }]);
+  assert.deepEqual(restored.warnings, []);
+  const back = restored.cases[0];
+  for (const [key, original] of slotTables) {
+    const kind = key.kind;
+    const planes = original.presence.length;
+    const written = wire.cases[0].tables[slotKey(key)];
+    // v4 writes the span and still writes `year`, its first year.
+    assert.deepEqual(
+      [written.year, written.firstYear, written.numYears],
+      [SPAN_FIRST, SPAN_FIRST, SPAN_YEARS],
+      `${kind}: written fields`,
+    );
+    assert.equal(written.cubeBytes, planes * SPAN_YEARS * HOURS * 4, `${kind}: cube bytes`);
+
+    const data = back.tables.get(slotKey(key)).data;
+    assert.deepEqual([data.firstYear, data.numYears], [SPAN_FIRST, SPAN_YEARS], `${kind}: span`);
+    assert.equal(data.cube.length, planes * SPAN_YEARS * HOURS);
+    assert.ok(bytesOf(data.cube).equals(bytesOf(original.cube)), `${kind}: cube bytes`);
+    assert.ok(bytesOf(data.tou).equals(bytesOf(original.tou)), `${kind}: TOU bytes`);
+    assert.ok(
+      bytesOf(data.hoursPresent).equals(bytesOf(original.hoursPresent)),
+      `${kind}: hoursPresent bytes`,
+    );
+    for (let plane = 0; plane < planes; plane++) {
+      for (let y = 0; y < SPAN_YEARS; y++) {
+        for (const hour of [0, FEB_29, 1440, HOURS - 1]) {
+          assert.equal(
+            data.cube[(plane * SPAN_YEARS + y) * HOURS + hour],
+            plane * 100000 + y * 10000 + hour,
+            `${kind} plane ${plane} year ${SPAN_FIRST + y} hour ${hour}`,
+          );
+        }
+      }
+    }
+  }
+});
+
+check('a v4 entry whose span disagrees with its cube or hours is refused', () => {
+  const [key, table] = SPAN_TABLES()[3];
+  const tables = new Map([[slotKey(key), { key, data: table }]]);
+  const { manifest, cubes } = buildManifest([{ id: 'span', name: 'Span Case', tables }], {});
+  const claim = (numYears) => {
+    const wire = JSON.parse(JSON.stringify(manifest));
+    wire.cases[0].tables[slotKey(key)].numYears = numYears;
+    return () => casesFromManifest(wire, toCaseBlocks(wire, cubes));
+  };
+  assert.throws(claim(2), /TOU array is 26352 values, expected 17568 \(2 years × 8784 h\)/);
+  assert.throws(claim(0), /a whole number of years/);
+  const shortCube = (() => {
+    const one = { ...table, cube: table.cube.subarray(0, 3 * 2 * HOURS) };
+    const built = buildManifest(
+      [{ id: 'span', name: 'Span Case', tables: new Map([[slotKey(key), { key, data: one }]]) }],
+      {},
+    );
+    const wire = JSON.parse(JSON.stringify(built.manifest));
+    return () => casesFromManifest(wire, toCaseBlocks(wire, built.cubes));
+  })();
+  assert.throws(shortCube, /expected 79056 \(3 generators × 3 years × 8784 h\)/);
 });
 
 // ------------------------------------------------- unknown table kinds
@@ -657,7 +794,7 @@ check('an Area entry with an EMPTY area list restores onto the global axis', () 
 function legacyAreaCase(name, table, overrides = {}) {
   return {
     name,
-    year: table.year,
+    year: table.firstYear,
     metrics: table.metrics,
     sourceColumns: table.sourceColumns,
     areas: table.areas,
@@ -673,7 +810,7 @@ function legacyAreaCase(name, table, overrides = {}) {
 function legacyInterfaceCase(name, table) {
   return {
     name,
-    year: table.year,
+    year: table.firstYear,
     interfaces: table.interfaces,
     sourceColumns: table.sourceColumns,
     quantity: table.quantity,
@@ -880,7 +1017,8 @@ check('four-slot chart layout round-trips intact with bundle', () => {
 });
 
 check('each pane’s box dimension round-trips, and an older bundle carries none', () => {
-  const dims = ['case', 'month', 'season', 'area'];
+  // 'year' is wire format: renaming it orphans every pane saved by year.
+  const dims = ['case', 'year', 'season', 'area'];
   const { manifest, cubes } = buildManifest([studyCase()], { boxDims: dims });
   const wire = JSON.parse(JSON.stringify(manifest));
   assert.deepEqual(wire.boxDims, dims);
@@ -888,6 +1026,13 @@ check('each pane’s box dimension round-trips, and an older bundle carries none
   const { wire: older, bundle } = roundTrip([studyCase()], GROUPINGS_CSV);
   assert.equal(older.boxDims, undefined, 'no field is written when none is given');
   assert.equal(bundle.boxDims, undefined, 'and the restore starts every pane by Case');
+  // A name this build does not know is carried, never a refused bundle: the
+  // root starts that pane by Case (`BOX_DIMS`).
+  const unknown = ['week', 'year', 'case', 'month'];
+  const later = JSON.parse(
+    JSON.stringify(buildManifest([studyCase()], { boxDims: unknown }).manifest),
+  );
+  assert.deepEqual(restoreBundle(later, toCaseBlocks(later, cubes)).boxDims, unknown);
 });
 
 check('each pane’s interval settings round-trip, and an older bundle carries none', () => {
@@ -907,6 +1052,28 @@ check('each pane’s interval settings round-trip, and an older bundle carries n
   const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
   assert.match(main, /intervals: charts\.intervals\(\)/, 'a save writes them');
   assert.match(main, /charts\.setIntervals\(loaded\.intervals\)/, 'a restore adopts them');
+});
+
+check('each pane’s "overlay years" round-trips, and an older bundle carries none', () => {
+  // `overlayYears`, one boolean per pane, is wire format: renaming it unticks
+  // every saved overlay.
+  const overlayYears = [true, false, false, true];
+  const { manifest, cubes } = buildManifest([studyCase()], { overlayYears });
+  const wire = JSON.parse(JSON.stringify(manifest));
+  assert.deepEqual(wire.overlayYears, overlayYears);
+  assert.deepEqual(restoreBundle(wire, toCaseBlocks(wire, cubes)).overlayYears, overlayYears);
+  const { wire: older, bundle } = roundTrip([studyCase()], GROUPINGS_CSV);
+  assert.ok(!('overlayYears' in older), 'no field is written when none is given');
+  assert.equal(bundle.overlayYears, undefined, 'and the restore leaves every pane unticked');
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.match(main, /overlayYears: charts\.overlayYears\(\)/, 'a save writes them');
+  assert.match(main, /charts\.setOverlayYears\(loaded\.overlayYears\)/, 'a restore adopts them');
+  const charts = readFileSync(new URL('../src/ui/charts.ts', import.meta.url), 'utf8');
+  assert.match(
+    charts,
+    /\.overlayYears\.checked = saved\?\.\[i\] === true;/,
+    'a pane with none saved, or anything but true, is unticked',
+  );
 });
 
 check('the drawer’s dragged height round-trips, and a detent bundle carries none', () => {
@@ -1020,6 +1187,7 @@ function drawPins(store, pins) {
   return resolveDraws(
     {
       filters: {
+        years: null,
         dates: null,
         hoursOfDay: null,
         daysOfWeek: null,

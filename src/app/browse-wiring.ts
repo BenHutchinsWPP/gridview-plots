@@ -97,13 +97,19 @@ export interface BrowseWiringHost {
   views: CaseViews;
   /** The drawer's per-kind variable memory and the scoping over it. */
   browse: BrowseScopes;
-  /** One 8,784-point buffer for every ranked row of every tab. */
+  /** One buffer for every ranked row of every tab, cut to each table's
+   * plane (or outgrown by a longer one, see `fitScratch`). */
   scratch: Float32Array;
   /** Every tab's ranking, kept per cube while its mask and rows hold still. */
   ranks: RankMemo;
   query(): AreaQuery;
   lookupFor(variant: LookupVariant): LookupTable | undefined;
-  interfaceRange(caseId: string, interfaceName: string, year: number): RangeLimits;
+  interfaceRange(
+    caseId: string,
+    interfaceName: string,
+    year: number,
+    numYears: number,
+  ): RangeLimits;
   /** The drawer these handlers are wired into, created after them. */
   drawer(): BrowseDrawer;
   /** The pins as the render path reads them. */

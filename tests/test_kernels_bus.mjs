@@ -55,22 +55,25 @@ function makeCase({
   sourceColumns = buses,
   quantity = 'LMP ($/MWh)',
   year = 2035,
+  years = 1,
 } = {}) {
-  const cube = new Float32Array(buses.length * HOURS).fill(NaN);
+  const plane = years * HOURS;
+  const cube = new Float32Array(buses.length * plane).fill(NaN);
   const presence = new Uint8Array(buses.length);
   buses.forEach((id, index) => {
     if (absent.includes(id)) return;
     presence[index] = 1;
-    for (let hour = 0; hour < HOURS; hour++) cube[index * HOURS + hour] = fill(index, hour);
+    for (let hour = 0; hour < plane; hour++) cube[index * plane + hour] = fill(index, hour);
   });
   return {
     cube,
     buses: Int32Array.from(buses),
     names,
     presence,
-    tou: new Uint8Array(HOURS),
+    tou: new Uint8Array(plane),
     sourceColumns,
-    year,
+    firstYear: year,
+    numYears: years,
     quantity,
   };
 }
@@ -80,14 +83,14 @@ function makeCase({
 {
   const data = makeCase({ buses: [10001, 10002, 10003], absent: [10003] });
   const index = busIndex(data);
-  const out = createScratch();
+  const out = createScratch(HOURS);
 
   const built = buildSeries(data, 10002, index, out);
   assert.ok(built.values, 'a carried bus builds');
   assert.equal(built.values[0], 1000, 'the stored plane IS the series');
   assert.equal(built.values[HOURS - 1], 1000 + HOURS - 1);
   assert.equal(built.values, out, 'the caller-owned buffer is written, not a fresh one');
-  assert.equal(planeStart(2), 2 * HOURS);
+  assert.equal(planeStart(data, 2), 2 * HOURS);
   ok('a retained bus builds straight out of its cube plane, resolved by id');
 
   // Presence before the cube: an absent plane is NaN, and NaN must never
@@ -127,13 +130,13 @@ function makeCase({
     fill: (i) => (i === 0 ? 7 : 42),
   });
   const index = busIndex(data);
-  const out = createScratch();
+  const out = createScratch(HOURS);
 
   assert.equal(index.get(20001), 0);
   assert.equal(index.get(20002), 1);
   const first = buildSeries(data, 20001, index, out);
   assert.equal(first.values[0], 7);
-  const second = buildSeries(data, 20002, index, createScratch());
+  const second = buildSeries(data, 20002, index, createScratch(HOURS));
   assert.equal(second.values[0], 42);
   assert.notEqual(first.values[0], second.values[0]);
   ok('two same-named buses resolve to two different planes through the id');
@@ -149,13 +152,13 @@ function makeCase({
   // The shared kernels reach callers through this module (they are the same
   // functions Interface uses); this checks the re-export, and that NaN is
   // dropped rather than counted.
-  const series = createScratch();
+  const series = createScratch(HOURS);
   const mask = new Uint8Array(HOURS);
   for (let hour = 0; hour < HOURS; hour++) {
     series[hour] = hour % 5 === 0 ? NaN : hour;
     mask[hour] = hour % 2 === 0 ? 1 : 0;
   }
-  const gathered = createScratch();
+  const gathered = createScratch(HOURS);
   const kept = applyMask(series, mask, gathered);
   assert.ok(kept > 0);
   for (let i = 0; i < kept; i++) assert.ok(!Number.isNaN(gathered[i]), 'no NaN survives the mask');
@@ -302,6 +305,34 @@ function makeCase({
     );
   }
   ok('nothing under src/tables/long/ imports a kind either');
+}
+
+// ---------------------------------------------------------------- a span
+//
+// A three-year table's plane is every year of the span: entity 1's plane
+// starts three years in, and each year's values differ (1 + year), so year
+// one alone gives another sum.
+
+{
+  const YEARS = 3;
+  const PLANE = YEARS * HOURS;
+  const data = makeCase({
+    buses: [10001, 10002],
+    years: YEARS,
+    fill: (i, h) => (i + 1) * (1 + Math.floor(h / HOURS)),
+  });
+  assert.equal(planeStart(data, 1), PLANE);
+  const out = createScratch(PLANE);
+  const built = buildSeries(data, 10002, busIndex(data), out);
+  assert.equal(built.values[0], 2);
+  assert.equal(built.values[PLANE - 1], 6, 'the last year of the second plane');
+  const mask = new Uint8Array(PLANE).fill(1);
+  const gathered = createScratch(PLANE);
+  const n = applyMask(built.values, mask, gathered);
+  assert.equal(n, PLANE);
+  assert.equal(stats(gathered, n).sum, (2 + 4 + 6) * HOURS);
+  assert.ok(Math.abs(stats(gathered, n).mean - 4) < 1e-9, 'the mean of every year, not year one');
+  ok('a bus plane over a three-year span is copied and summed whole');
 }
 
 console.log(`\n${checks} checks passed.`);

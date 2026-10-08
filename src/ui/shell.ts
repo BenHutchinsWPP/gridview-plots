@@ -62,6 +62,9 @@ export interface RetainedBatch {
   union: string[];
   /** How many files of this kind are in the batch. */
   fileCount: number;
+  /** The years those files span, summed: each file's cube holds one
+   * 8,784-hour slot per year of its own span, so this prices the batch. */
+  yearCount: number;
   /** Width of the area axis (0 for a kind with no axis pass). */
   axisCount: number;
   /** Column -> the files that carry it ("in 1 of 2 files"). */

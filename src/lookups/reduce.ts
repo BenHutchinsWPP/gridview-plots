@@ -10,10 +10,11 @@
 //   4. Planes with presence 0 are skipped.
 //
 // The axis is an `ArrayLike` (Bus's is an `Int32Array`), read only by index.
+// Entity `i`'s plane is `cube[i × planeLength, (i + 1) × planeLength)`, every
+// year of the table's span, and every series a reduce writes is that long.
 // The member-set reduces share this file for the accumulate loop and the
 // presence rule, so no two reduces disagree about an absent plane.
 
-import { YEAR_SLOT_HOURS } from '../model/calendar';
 import type { LookupColumn, LookupTable } from './types';
 
 /**
@@ -26,6 +27,14 @@ import type { LookupColumn, LookupTable } from './types';
  */
 export function isBucketable(column: LookupColumn): boolean {
   return column.kind === 'enum';
+}
+
+/** An `out` of another length would sum part of a span, or leave a tail the
+ * caller reads as the last years' hours. */
+function checkOut(out: Float32Array, planeLength: number): void {
+  if (out.length !== planeLength) {
+    throw new Error(`output of ${out.length} h for planes of ${planeLength} h`);
+  }
 }
 
 export interface BucketedBucket {
@@ -73,6 +82,7 @@ export function bucketLabelFor(
  */
 export function reduceSingleBucket(
   cube: Float32Array,
+  planeLength: number,
   presence: Uint8Array,
   entityNames: ArrayLike<string | number>,
   lookup: LookupTable | undefined,
@@ -83,6 +93,7 @@ export function reduceSingleBucket(
   labelOf?: (entity: string | number) => string,
   summed?: (string | number)[],
 ): number {
+  checkOut(out, planeLength);
   out.fill(NaN);
   let count = 0;
   for (let i = 0; i < entityNames.length; i++) {
@@ -92,8 +103,8 @@ export function reduceSingleBucket(
     if (label === targetValue && (!members || members.has(name))) {
       count++;
       summed?.push(name);
-      const start = i * YEAR_SLOT_HOURS;
-      for (let h = 0; h < YEAR_SLOT_HOURS; h++) {
+      const start = i * planeLength;
+      for (let h = 0; h < planeLength; h++) {
         const val = cube[start + h];
         if (!Number.isNaN(val)) {
           out[h] = Number.isNaN(out[h]) ? val : out[h] + val;
@@ -128,12 +139,14 @@ export function anyPresent(
  */
 export function reduceMembers(
   cube: Float32Array,
+  planeLength: number,
   presence: Uint8Array,
   entityNames: ArrayLike<string | number>,
   members: ReadonlySet<string | number>,
   out: Float32Array,
   summed?: (string | number)[],
 ): number {
+  checkOut(out, planeLength);
   out.fill(NaN);
   let count = 0;
   for (let i = 0; i < entityNames.length; i++) {
@@ -142,8 +155,8 @@ export function reduceMembers(
     if (!members.has(name)) continue;
     count++;
     summed?.push(name);
-    const start = i * YEAR_SLOT_HOURS;
-    for (let h = 0; h < YEAR_SLOT_HOURS; h++) {
+    const start = i * planeLength;
+    for (let h = 0; h < planeLength; h++) {
       const val = cube[start + h];
       if (!Number.isNaN(val)) {
         out[h] = Number.isNaN(out[h]) ? val : out[h] + val;
@@ -162,11 +175,13 @@ export function reduceMembers(
  */
 export function reduceSignedMembers(
   cube: Float32Array,
+  planeLength: number,
   presence: Uint8Array,
   entityNames: ArrayLike<string | number>,
   coefficients: ReadonlyMap<string | number, number>,
   out: Float32Array,
 ): number {
+  checkOut(out, planeLength);
   out.fill(NaN);
   let count = 0;
   for (let i = 0; i < entityNames.length; i++) {
@@ -174,8 +189,8 @@ export function reduceSignedMembers(
     const coefficient = coefficients.get(entityNames[i]);
     if (coefficient === undefined) continue;
     count++;
-    const start = i * YEAR_SLOT_HOURS;
-    for (let h = 0; h < YEAR_SLOT_HOURS; h++) {
+    const start = i * planeLength;
+    for (let h = 0; h < planeLength; h++) {
       const val = cube[start + h];
       if (!Number.isNaN(val)) {
         const term = val * coefficient;
@@ -191,6 +206,7 @@ export function reduceSignedMembers(
  * buckets with a contributor. */
 export function bucketedReduce(
   cube: Float32Array,
+  planeLength: number,
   presence: Uint8Array,
   entityNames: ArrayLike<string | number>,
   lookup: LookupTable | undefined,
@@ -203,7 +219,7 @@ export function bucketedReduce(
 
   if (seededLabels) {
     for (const label of seededLabels) {
-      bucketsMap.set(label, { count: 0, series: new Float32Array(YEAR_SLOT_HOURS).fill(NaN) });
+      bucketsMap.set(label, { count: 0, series: new Float32Array(planeLength).fill(NaN) });
     }
   } else if (lookup) {
     const colIndex = lookup.byName.get(columnName);
@@ -211,7 +227,7 @@ export function bucketedReduce(
       const column = lookup.columns[colIndex];
       if (column.kind === 'enum') {
         for (const label of column.labels) {
-          bucketsMap.set(label, { count: 0, series: new Float32Array(YEAR_SLOT_HOURS).fill(NaN) });
+          bucketsMap.set(label, { count: 0, series: new Float32Array(planeLength).fill(NaN) });
         }
       }
     }
@@ -224,12 +240,12 @@ export function bucketedReduce(
     const label = labelOf ? labelOf(name) : bucketLabelFor(name, lookup, columnName);
     let bucket = bucketsMap.get(label);
     if (!bucket) {
-      bucket = { count: 0, series: new Float32Array(YEAR_SLOT_HOURS).fill(NaN) };
+      bucket = { count: 0, series: new Float32Array(planeLength).fill(NaN) };
       bucketsMap.set(label, bucket);
     }
     bucket.count++;
-    const start = i * YEAR_SLOT_HOURS;
-    for (let h = 0; h < YEAR_SLOT_HOURS; h++) {
+    const start = i * planeLength;
+    for (let h = 0; h < planeLength; h++) {
       const val = cube[start + h];
       if (!Number.isNaN(val)) {
         bucket.series[h] = Number.isNaN(bucket.series[h]) ? val : bucket.series[h] + val;

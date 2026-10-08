@@ -26,8 +26,10 @@ import {
   groupByCase,
   groupFiles,
   groupMembers,
+  keepSpans,
   refusalOf,
   warningsOf,
+  yearCountOf,
   type Drop,
   type IngestHost,
   type IngestOutcome,
@@ -72,10 +74,10 @@ async function readLongPlans<D extends Drop>(
   host: IngestHost,
   drops: readonly D[],
   sig: LongSignature,
-  noun: string,
   outcome: IngestOutcome,
 ): Promise<LongPlans<D>> {
-  host.setBusy(`Reading ${drops.length} ${noun} header${drops.length === 1 ? '' : 's'}…`);
+  const noun = sig.noun;
+  host.setBusy(`Reading ${drops.length} ${noun.one} header${drops.length === 1 ? '' : 's'}…`);
   // P1: an unparseable header drops that file, not the batch.
   let plans: CasePlan[] = [];
   let kept: D[] = [];
@@ -92,9 +94,9 @@ async function readLongPlans<D extends Drop>(
   }
   if (plans.length === 0) return { plans, kept };
 
-  host.setBusy(`Reading the ${noun} axis…`);
+  host.setBusy(`Reading the ${noun.one} axis…`);
   const scan = await reader.discoverEntities(plans, (done, total) => {
-    host.setBusy(`Reading the ${noun} axis: block ${done} of ${total}…`);
+    host.setBusy(`Reading the ${noun.one} axis: block ${done} of ${total}…`);
   });
   pushFailures(outcome, scan.failures, kept);
   plans = scan.ok.map((index) => plans[index]);
@@ -147,8 +149,14 @@ export interface AreaLongBatch {
   union(plans: CasePlan[]): string[];
   /** The area axis: this batch's names merged into the one already loaded. */
   axis(plans: CasePlan[]): string[];
-  /** Area's retain gate, or `null` when the user cancelled it. */
-  retained(union: string[], fileCount: number, axisCount: number): Promise<string[] | null>;
+  /** Area's retain gate, or `null` when the user cancelled it. `yearCount`
+   * is `yearCountOf` the batch's plans. */
+  retained(
+    union: string[],
+    fileCount: number,
+    axisCount: number,
+    yearCount: number,
+  ): Promise<string[] | null>;
   parse(
     plans: CasePlan[],
     retained: string[],
@@ -181,20 +189,23 @@ export function createAreaLongIngest(
       return outcome;
     }
     try {
-      const { plans, kept } = await readLongPlans(
-        batch.reader,
-        host,
-        drops,
-        batch.sig,
-        'area',
-        outcome,
-      );
+      const scanned = await readLongPlans(batch.reader, host, drops, batch.sig, outcome);
+      // The scan has read the years, so a file whose span differs from its
+      // Case's is refused before the picker opens.
+      const { plans, kept } = keepSpans(host, outcome, scanned.kept, scanned.plans, () => [
+        batch.slot,
+      ]);
       if (plans.length === 0) return outcome;
 
       const axis = batch.axis(plans);
       // ONCE over the union: per file, the user would see N modals. `null`
       // means cancelled; other kinds' batches are unaffected.
-      const retained = await batch.retained(batch.union(plans), plans.length, axis.length);
+      const retained = await batch.retained(
+        batch.union(plans),
+        plans.length,
+        axis.length,
+        yearCountOf(plans),
+      );
       if (retained === null) {
         outcome.stop = { files: kept.map((drop) => drop.file), notes: [] };
         return outcome;
@@ -251,9 +262,11 @@ export interface EntityLongBatch {
    * so this sequence runs without a DOM (`tests/test_ingest_batch.mjs`). */
   pickMetrics(request: {
     union: string[];
-    noun: string;
+    noun: LongSignature['noun'];
     entityCount: number;
     fileCount: number;
+    /** `yearCountOf` the batch's plans. */
+    yearCount: number;
     preselected: string[];
     /** The drop already answered: resolve the union without opening, after
      * pricing it. */
@@ -318,13 +331,19 @@ export function createEntityLongIngest(
     }
     const noun = longKind.sig.noun;
     try {
-      const { plans, kept } = await readLongPlans(
-        batch.reader,
+      const scanned = await readLongPlans(batch.reader, host, drops, longKind.sig, outcome);
+      // A file becomes one table per metric it keeps, which the picker has not
+      // chosen yet. Before it opens, a file may replace any metric it carries;
+      // after, only the ones kept, so this is asked again below.
+      const slotsOf = (metrics: readonly string[]) => () =>
+        metrics.map((variant) => ({ kind, variant }));
+      const scannedUnion = batch.union(scanned.plans);
+      let { plans, kept } = keepSpans(
         host,
-        drops,
-        longKind.sig,
-        noun,
         outcome,
+        scanned.kept,
+        scanned.plans,
+        slotsOf(scannedUnion),
       );
       if (plans.length === 0) return outcome;
 
@@ -343,6 +362,7 @@ export function createEntityLongIngest(
           noun,
           entityCount: axis.length,
           fileCount: plans.length,
+          yearCount: yearCountOf(plans),
           preselected: retained ?? [],
           everything: batch.everything(),
         });
@@ -352,7 +372,7 @@ export function createEntityLongIngest(
           outcome.stop = {
             files: kept.map((drop) => drop.file),
             notes: [
-              `No ${noun} metric was selected, so no ${kind} table was loaded. Drop the file(s) ` +
+              `No ${noun.one} metric was selected, so no ${kind} table was loaded. Drop the file(s) ` +
                 `again to choose.`,
             ],
           };
@@ -360,14 +380,16 @@ export function createEntityLongIngest(
         }
         retained = chosen;
       }
+      ({ plans, kept } = keepSpans(host, outcome, kept, plans, slotsOf(retained as string[])));
+      if (plans.length === 0) return outcome;
 
-      host.setBusy(`Parsing ${noun}s…`);
+      host.setBusy(`Parsing ${noun.many}…`);
       const result = await batch.parse<T>(
         plans,
         retained as string[],
         axis,
         longKind,
-        (done, total) => host.setBusy(`Parsing ${noun} block ${done} of ${total}…`),
+        (done, total) => host.setBusy(`Parsing ${noun.one} block ${done} of ${total}…`),
         groupByCase(kept),
       );
       pushFailures(outcome, result.failures, kept);

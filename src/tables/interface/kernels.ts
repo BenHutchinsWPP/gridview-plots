@@ -37,12 +37,17 @@ export function hasData(data: InterfaceTable, interfaceIndex: number): boolean {
   return data.presence[interfaceIndex] === 1;
 }
 
-function planeStart(interfaceIndex: number): number {
-  return interfaceIndex * YEAR_SLOT_HOURS;
+export function planeLength(data: InterfaceTable): number {
+  return data.numYears * YEAR_SLOT_HOURS;
+}
+
+/** Where an interface's plane, every year of the span, starts in the cube. */
+export function planeStart(data: InterfaceTable, interfaceIndex: number): number {
+  return interfaceIndex * planeLength(data);
 }
 
 /**
- * Copy one interface's 8,784-point plane into `out`.
+ * Copy one interface's plane into `out`.
  *
  * There is no aggregation step: the stored plane IS the series (rule 3
  * above), so the only outcomes are the plane or a refusal that names why it
@@ -73,7 +78,7 @@ export function buildSeries(
     return refuse(`${caseLabel} has no data for "${name}".`);
   }
 
-  const start = planeStart(index);
-  out.set(data.cube.subarray(start, start + YEAR_SLOT_HOURS));
+  const start = planeStart(data, index);
+  out.set(data.cube.subarray(start, start + planeLength(data)));
   return { values: out, warnings: [] };
 }

@@ -37,6 +37,7 @@ export function createBusRetainGate(): RetainGate {
       busLabelsOf(batch),
       batch.coverage,
       batch.fileCount,
+      batch.yearCount,
       state.retainedColumns ?? [],
       batch.everything,
     ),

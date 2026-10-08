@@ -4,6 +4,8 @@
 //   * A row the case lacks is blank (n = 0), never NaN among real numbers.
 //   * Blank rows sort last in both directions.
 //   * It touches only the planes it is handed.
+//   * A plane is the table's span: over a multi-year cube, `createScratch`,
+//     `applyMask` and the ranked pass use every year's hours.
 
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
@@ -46,7 +48,7 @@ function allHours() {
 
 /** The per-series path, run row by row: what the ranked pass must reproduce. */
 function oracle(cube, start, mask) {
-  const scratch = createScratch();
+  const scratch = createScratch(HOURS);
   const n = applyMask(cube.subarray(start, start + HOURS), mask, scratch);
   const summary = stats(scratch, n);
   const spread = quantiles(scratch, n);
@@ -146,7 +148,7 @@ function oracle(cube, start, mask) {
   const cube = makeCube(4, (e, h) => (h * 7 + e * 13) % 211);
   const starts = Int32Array.from({ length: 4 }, (_, e) => e * HOURS);
   const mask = allHours();
-  const scratch = createScratch();
+  const scratch = createScratch(HOURS);
   const out = new Float64Array(4 * RANKED_FIELDS);
   const shared = rankedStats(cube, starts, HOURS, mask, scratch, out);
   assert.equal(shared, out, 'the supplied output buffer is the one returned');
@@ -175,7 +177,7 @@ function oracle(cube, start, mask) {
   const next = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
   const plane = new Float32Array(HOURS);
   for (let h = 0; h < HOURS; h++) plane[h] = Math.round((next() - 0.3) * 10000) / 8;
-  const scratch = createScratch();
+  const scratch = createScratch(HOURS);
   rankedStats(plane, Int32Array.of(0), HOURS, allHours(), scratch);
   let ascending = true;
   for (let i = 1; i < HOURS && ascending; i++) ascending = scratch[i - 1] <= scratch[i];
@@ -200,7 +202,7 @@ function oracle(cube, start, mask) {
       const mask = new Uint8Array(HOURS);
       mask.fill(1, 0, n);
       const row = rankedRow(rankedStats(cube, Int32Array.of(0), HOURS, mask), 0);
-      const gathered = createScratch();
+      const gathered = createScratch(HOURS);
       const expected = quantiles(gathered, applyMask(cube, mask, gathered));
       assert.ok(row.p25 === expected.p25, `${name}, n=${n}: p25 ${row.p25} vs ${expected.p25}`);
       assert.ok(row.p75 === expected.p75, `${name}, n=${n}: p75 ${row.p75} vs ${expected.p75}`);
@@ -222,24 +224,40 @@ function oracle(cube, start, mask) {
   const mask = allHours();
   const memo = { byCube: new WeakMap() };
 
-  const first = rankedStats(cube, starts, HOURS, mask, createScratch(), undefined, memo);
+  const first = rankedStats(cube, starts, HOURS, mask, createScratch(HOURS), undefined, memo);
   const firstMean = rankedRow(first, 0).mean;
   first[RANKED.mean] = 12345; // a caller rewriting its result must not reach the memo
   cube.fill(1000, 0, HOURS);
 
-  const again = rankedStats(cube, starts, HOURS, mask, createScratch(), undefined, memo);
+  const again = rankedStats(cube, starts, HOURS, mask, createScratch(HOURS), undefined, memo);
   assert.equal(rankedRow(again, 0).mean, firstMean, 'same cube, mask and starts: the kept answer');
 
   const narrower = new Uint8Array(mask);
   narrower[0] = 0;
-  const recomputed = rankedStats(cube, starts, HOURS, narrower, createScratch(), undefined, memo);
+  const recomputed = rankedStats(
+    cube,
+    starts,
+    HOURS,
+    narrower,
+    createScratch(HOURS),
+    undefined,
+    memo,
+  );
   assert.equal(rankedRow(recomputed, 0).mean, 1000, 'a different mask is a different question');
 
-  const moved = rankedStats(cube, Int32Array.of(0), HOURS, mask, createScratch(), undefined, memo);
+  const moved = rankedStats(
+    cube,
+    Int32Array.of(0),
+    HOURS,
+    mask,
+    createScratch(HOURS),
+    undefined,
+    memo,
+  );
   assert.equal(rankedRow(moved, 0).mean, 1000, 'different plane starts are a different question');
 
   const copy = cube.slice();
-  const fresh = rankedStats(copy, starts, HOURS, mask, createScratch(), undefined, memo);
+  const fresh = rankedStats(copy, starts, HOURS, mask, createScratch(HOURS), undefined, memo);
   assert.equal(rankedRow(fresh, 0).mean, 1000, "another cube never reads this one's answers");
   ok('a kept ranking is reused only for the same cube, mask and plane starts');
 
@@ -260,6 +278,43 @@ function oracle(cube, start, mask) {
     assert.match(call[0], /browseRanks/, `${declare} is handed the kept rankings`);
   }
   ok("the browse wiring owns one kept-ranking memo and hands it to every kind's tabs");
+}
+
+// --- A multi-year plane -------------------------------------------------------
+// Three years per entity, one contiguous run each, every year its own value:
+// a pass that read only the first slot would rank 1s alone.
+{
+  const YEARS = 3;
+  const PLANE = YEARS * HOURS;
+  const cube = new Float32Array(2 * PLANE);
+  for (let e = 0; e < 2; e++) {
+    for (let y = 0; y < YEARS; y++) {
+      cube.fill((e + 1) * (y + 1), e * PLANE + y * HOURS, e * PLANE + (y + 1) * HOURS);
+    }
+  }
+  const mask = new Uint8Array(PLANE).fill(1);
+  mask[PLANE - 1] = 0; // the span's last hour, filtered out
+
+  const scratch = createScratch(PLANE);
+  assert.equal(scratch.length, PLANE, 'a scratch is the plane length it is asked for');
+  const n = applyMask(cube.subarray(PLANE, 2 * PLANE), mask, scratch);
+  assert.equal(n, PLANE - 1, 'every year gathered, the masked hour left out');
+  assert.equal(scratch[n - 1], 6, 'the last year reached');
+
+  // A one-year scratch is replaced for the call rather than gather year one.
+  const ranked = rankedStats(cube, Int32Array.of(0, PLANE), PLANE, mask, createScratch(HOURS));
+  const [first, second] = [rankedRow(ranked, 0), rankedRow(ranked, 1)];
+  assert.equal(first.n, PLANE - 1);
+  assert.equal(first.max, 3);
+  assert.equal(second.sum, (2 + 4 + 6) * HOURS - 6);
+  assert.ok(Math.abs(first.mean - (6 * HOURS - 3) / (PLANE - 1)) < 1e-9, 'mean over all years');
+
+  assert.throws(
+    () => applyMask(cube.subarray(0, PLANE), new Uint8Array(HOURS), scratch),
+    /mask of 8784 h/,
+    'a one-year mask against a span is refused, never read as year one',
+  );
+  ok('createScratch, applyMask and rankedStats use every year of a multi-year plane');
 }
 
 console.log(`\n${checks} checks passed.`);

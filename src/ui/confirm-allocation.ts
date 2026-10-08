@@ -6,6 +6,8 @@
 // served depends on the browser, device and tab, so it states the arithmetic
 // and hands the choice over.
 
+import type { CubeCost } from '../ingest';
+
 /** A judgement line, not a measured limit: above the ordinary 170-207 MB
  * full-width wide case, below the 1.65 GB long bus export. Lower trains the
  * user to click through. */
@@ -19,12 +21,19 @@ interface Wording {
   readonly go: string;
 }
 
+/** A large allocation's question: what keeping it means ("all 5,900
+ * buses"), its cost, and the count that shrinks it ("fewer buses"). */
+export interface AllocationAsk {
+  what: string;
+  cost: CubeCost;
+  lever: string;
+}
+
 /** `true` to go ahead. Under the threshold it resolves immediately, so the
- * guard is this function, not an `if` at each call site. `what` completes
- * "Keeping ...". */
-export function confirmLargeAllocation(bytes: number, what: string): Promise<boolean> {
-  return confirmLarge(bytes, {
-    readout: `Keeping ${what} asks for ${megabytes(bytes)} MB.`,
+ * guard is this function, not an `if` at each call site. */
+export function confirmLargeAllocation(ask: AllocationAsk): Promise<boolean> {
+  return confirmLarge(ask.cost.bytes, {
+    readout: `Keeping ${ask.what}: ${ask.cost.arithmetic}; ${ask.lever} is the lever.`,
     body:
       'Whether a block that size can be allocated depends on your browser, your machine and ' +
       'what this tab is already holding, so this might load fine or the tab might run out of ' +

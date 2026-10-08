@@ -31,7 +31,14 @@ function wideReader(entities, extra = {}) {
     hasSimd: () => true,
     NO_SIMD_MESSAGE: 'no simd',
     async readCasePlan(file) {
-      return { file, header: { entityNames: entities }, preamble: [], title: {}, year: 2035 };
+      return {
+        file,
+        header: { entityNames: entities },
+        preamble: [],
+        title: {},
+        firstYear: 2035,
+        numYears: 1,
+      };
     },
     async ingest(plans, retained) {
       calls.ingests.push(retained);
@@ -57,7 +64,15 @@ function longPool(metrics, entities) {
     hasSimd: () => true,
     NO_SIMD_MESSAGE: 'no simd',
     async readCasePlan(file, sig) {
-      return { file, sig, header: { metricNames: metrics }, entities, rowsPerBlock: [] };
+      return {
+        file,
+        sig,
+        header: { metricNames: metrics },
+        entities,
+        rowsPerBlock: [],
+        firstYear: 2035,
+        numYears: 1,
+      };
     },
     async discoverEntities(plans) {
       return { ok: plans.map((_, i) => i), failures: [] };
@@ -118,6 +133,7 @@ function setup({ answers = {}, readers = {}, axis = [] } = {}) {
       setBusy() {},
       caseIdForName: (name) => `case:${name}`,
       attach: (caseId, slot, table) => attached.push({ caseId, slot, table }),
+      heldSpan: () => null,
     },
     // Read by the long kinds' metric state, which forgets with the last table.
     cases: { tablesOfKind: () => [] },
@@ -158,8 +174,8 @@ await check('each (kind, shape) reaches its own reader and lands on its own slot
     assert.equal(readers[kind].calls.ingests.length, 1, `${kind} W reached its own reader`);
   }
   assert.deepEqual(
-    readers.long.calls.ingests.map((call) => call.longKind.sig.noun),
-    ['bus', 'unit'],
+    readers.long.calls.ingests.map((call) => call.longKind.sig.noun.many),
+    ['buses', 'units'],
     'the long pool is handed the long kind of the kind that was dropped',
   );
 });

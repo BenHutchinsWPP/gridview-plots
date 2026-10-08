@@ -19,6 +19,7 @@ import {
   groupByCase,
   groupFiles,
   groupMembers,
+  keepSpans,
   refusalOf,
   warningsOf,
   type Drop,
@@ -92,12 +93,12 @@ export function createWideIngest(host: IngestHost): RunWideBatch {
       const plural = drops.length === 1 ? '' : 's';
       host.setBusy(`Reading ${drops.length} ${batch.noun} header${plural}…`);
       // P1.
-      const plans: CasePlan[] = [];
-      const kept: D[] = [];
+      const read: CasePlan[] = [];
+      const readDrops: D[] = [];
       for (const drop of drops) {
         try {
-          plans.push(await batch.reader.readCasePlan(drop.file));
-          kept.push(drop);
+          read.push(await batch.reader.readCasePlan(drop.file));
+          readDrops.push(drop);
         } catch (error) {
           outcome.failures.push({
             files: [drop.file],
@@ -105,6 +106,11 @@ export function createWideIngest(host: IngestHost): RunWideBatch {
           });
         }
       }
+      // The header states the years, so a file whose span differs from its
+      // Case's is refused before its picker opens.
+      const { plans, kept } = keepSpans(host, outcome, readDrops, read, (drop) => [
+        batch.slot(drop),
+      ]);
       if (plans.length === 0) return outcome;
 
       const answer = await batch.entities(plans);

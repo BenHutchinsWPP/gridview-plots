@@ -46,7 +46,13 @@ export interface CasePlan {
   header: HeaderInfo;
   /** Byte offset of the first data row -- block 0 starts here, not at 0. */
   dataStart: number;
-  year: number;
+  /** The years this file's rows are dated in, from discoverEntities(): its
+   * own, never a merge group's. NaN and 0 until the scan has run. */
+  firstYear: number;
+  numYears: number;
+  /** Rows per year, by year, summed over every scan block; what a merge
+   * group's union of years is read from. */
+  rowsByYear: Map<number, number>;
   /** This case's entity axis, read from every row by discoverEntities(). */
   entities: string[];
   /** Rows per byte range from the same scan: an exact bound per block. */
@@ -56,13 +62,19 @@ export interface CasePlan {
 export interface CaseAccumulator {
   plan: ColumnPlan;
   entityCount: number;
+  /** The span the cube holds: the merge group's years, never one file's. */
+  firstYear: number;
+  numYears: number;
+  /** `((entity * metrics + metric) * numYears + yearOffset) * 8784 + slotHour`:
+   * one (entity, metric) plane's whole span is contiguous. */
   cube: Float32Array;
-  /** Per-hour TOU code, 0xFF until a row covers the hour. */
+  /** Per span hour TOU code, 0xFF until a row covers the hour. */
   tou: Uint8Array;
   entitySeen: Uint8Array;
+  /** Per span hour, `numYears * 8784`. */
   hourSeen: Uint8Array;
-  /** One bit per (entity, hour): a second row for a cell (two concatenated
-   * exports) is refused rather than silently overwriting. */
+  /** One bit per (entity, span hour): a second row for a cell (two
+   * concatenated exports) is refused rather than silently overwriting. */
   covered: Uint8Array;
 }
 

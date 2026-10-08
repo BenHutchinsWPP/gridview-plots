@@ -22,10 +22,12 @@ const {
   namesPeriods,
   NAMED_PERIODS_MAX,
   createIntervalAdapter,
+  periodColour,
   intervalSettings,
   restoreIntervalSettings,
 } = await import('../src/ui/panes/interval.ts');
-const { weekdayOf } = await import('../src/model/date-range.ts');
+const { weekdayOf, weekdaysOver } = await import('../src/model/date-range.ts');
+const { NO_YEAR } = await import('../src/app/boxes.ts');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relative) => readFileSync(join(root, relative), 'utf8');
@@ -133,6 +135,75 @@ check('filters blank hours inside a period and never move it', () => {
   assert.equal(months[0].values[19 * 24], 50 * 24, 'Feb 20 stays at day 20');
 });
 
+// ------------------------------------------------------------ a span
+// 2035–2037: 2035 opens on a Monday, 2036 (leap) on a Tuesday, 2037 on a
+// Thursday. Every hour's value is its span index.
+const spanIndexes = (slots) => Float32Array.from({ length: slots * 8784 }, (_, h) => h);
+const over2035 = weekdaysOver(2035, 3);
+const in2035to2037 = (day) => over2035[day];
+
+check('a span’s week across New Year is one period, its days from both slots', () => {
+  const weeks = cutPeriods(spanIndexes(3), 'week', in2035to2037, 2035);
+  // Mon Dec 29 2036 (slot day 363 of the leap slot) to Sun Jan 4 2037.
+  const newYear = weeks.find((week) => week.label === 'week of 2036 Dec 29');
+  assert.ok(newYear, weeks.map((week) => week.label).join(' | '));
+  assert.equal(newYear.startDay, 366 + 363);
+  for (let d = 0; d < 7; d++) {
+    assert.equal(newYear.values[d * 24], (366 + 363 + d) * 24, `day ${d} of the week`);
+  }
+  assert.equal(newYear.values[2 * 24 + 23], 2 * 8784 - 1, 'Wed Dec 31 2036 ends slot 2036');
+  assert.equal(newYear.values[3 * 24], 2 * 8784, 'Thu Jan 1 2037 opens slot 2037');
+  assert.equal(weeks[weeks.indexOf(newYear) + 1].label, 'week of 2037 Jan 5');
+  // Mon Dec 31 2035 and the six days of 2036 after it.
+  const first = weeks.find((week) => week.label === 'week of 2035 Dec 31');
+  assert.equal(first.values[0], 365 * 24);
+  assert.equal(first.values[24], 8784, 'Tue Jan 1 2036 is the same week');
+  assert.ok(!weeks.some((week) => week.label === 'week of 2036 Jan 1'), 'no week cut at Jan 1');
+  // A non-leap year's week across Feb 28 is seven real days, on any slot.
+  const feb2037 = weeks.find((week) => week.label === 'week of 2037 Feb 23');
+  assert.equal(feb2037.values[6 * 24], (2 * 366 + 60) * 24, 'Sun Mar 1 2037 on Sunday');
+  assert.ok(weeks.slice(1).every((week) => in2035to2037(week.startDay) === 0));
+});
+
+check('a span’s months are each (year, month), labelled with the year', () => {
+  const months = cutPeriods(spanIndexes(3), 'month', in2035to2037, 2035);
+  assert.equal(months.length, 36);
+  assert.equal(months[0].label, '2035 Jan');
+  assert.equal(months[13].label, '2036 Feb');
+  assert.equal(months[35].label, '2037 Dec');
+  assert.equal(months[13].values[28 * 24], (366 + 59) * 24, 'Feb 29 2036 at day 29');
+  assert.ok(Number.isNaN(months[25].values[28 * 24]), 'no day 29 in Feb 2037');
+  assert.equal(months[24].values[0], 2 * 8784, 'Jan 2037 opens its own slot');
+  const colour = (i) => periodColour('month', months, i, in2035to2037);
+  assert.equal(colour(1), colour(13), 'one February colour in every year');
+  assert.notEqual(colour(1), colour(2));
+});
+
+check('a span’s days skip each phantom Feb 29 and keep 2036’s', () => {
+  const days = cutPeriods(spanIndexes(3), 'day', in2035to2037, 2035);
+  assert.equal(days.length, 365 + 366 + 365);
+  const labels = days.map((day) => day.label);
+  assert.ok(!labels.some((label) => /^203[57] .* Feb 29$/.test(label)), 'no phantom day');
+  assert.ok(labels.includes('2036 Fri Feb 29'));
+  assert.equal(labels[0], '2035 Mon Jan 1');
+  assert.equal(labels[labels.length - 1], '2037 Thu Dec 31');
+  assert.equal(new Set(labels).size, labels.length, 'a label names one period');
+});
+
+check('a line with no year prints none, and counts its slots instead', () => {
+  const one = cutPeriods(indexes(), 'day', (day) => weekdayOf(NO_YEAR, day));
+  assert.equal(
+    one[0].label,
+    `${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][weekdayOf(NO_YEAR, 0)]} Jan 1`,
+  );
+  const noYear = weekdaysOver(NO_YEAR, 2);
+  const two = cutPeriods(spanIndexes(2), 'month', (day) => noYear[day]);
+  assert.deepEqual([two[0].label, two[12].label], ['year 1 Jan', 'year 2 Jan']);
+  for (const period of [...one, ...two]) {
+    assert.ok(!period.label.includes(String(NO_YEAR)), period.label);
+  }
+});
+
 check('the summary is the mean and nearest-rank p10 and p90 of the periods', () => {
   const periods = Array.from({ length: 11 }, (_, i) => ({
     label: String(i),
@@ -199,8 +270,13 @@ check('the adapter draws one series, and its Figure names the rest as left out',
     values: indexes(),
     warnings: [],
   });
-  pane.draw(frameOf([series('SAMPLE A'), series('SAMPLE B')], { yearOf: () => 2023 }));
+  pane.draw(
+    frameOf([series('SAMPLE A'), series('SAMPLE B')], {
+      spanOf: () => ({ firstYear: 2023, numYears: 1 }),
+    }),
+  );
   assert.deepEqual(record.notes, ['SAMPLE A (1 of 2)'], 'the header names the series it cut');
+  assert.equal(pane.drawsSpans, undefined, 'it declares nothing about a span: it cuts one');
   const shot = pane.figure.capture();
   assert.equal(shot.capture.pane, 'interval', 'an interval pane offers a Figure');
   assert.deepEqual(
@@ -221,6 +297,9 @@ check('the adapter draws one series, and its Figure names the rest as left out',
   assert.equal(weekdays.length, 366, 'one per day of the slot');
   assert.equal(weekdays[0], weekdayOf(2023, 0), "the weekdays are the series' own year's");
   assert.equal(weekdays[59], -1, '2023 has no Feb 29, so it has no weekday');
+  assert.equal(shot.capture.interval.firstYear, 2023, 'a one-year Case’s labels carry its year');
+  pane.draw(frameOf([series('SAMPLE A')], { spanOf: () => ({ firstYear: NO_YEAR, numYears: 1 }) }));
+  assert.equal(pane.figure.capture().capture.interval.firstYear, undefined, 'NO_YEAR is no year');
   pane.leave();
   assert.equal(pane.figure.capture(), null, 'a pane that left the type has nothing to capture');
 });

@@ -1,6 +1,6 @@
 // src/tables/generator/types.ts
 //
-// The Generator table type and its half of the v3 save envelope.
+// The Generator table type and its half of the save envelope.
 //
 // The section that draws these tables is `src/tables/generator/ui/`, what turns
 // one `SeriesSpec` into one drawn line is `src/tables/generator/series.ts`, and
@@ -21,10 +21,11 @@ import type { HoursPresent, TouCodes } from '../../model/types';
 /**
  * One wide Generator export. `cube` is indexed
  *
- *   cube[generator * 8784 + hour]
+ *   cube[(generator * numYears + yearOff) * 8784 + slotHour]
  *
  * -- one metric (the title's quantity) for every generator the file lists,
- * exactly as an Interface table is one quantity per interface. Case identity
+ * exactly as an Interface table is one quantity per interface. One
+ * generator's span is contiguous. Case identity
  * lives outside this table, in `src/model/case-model.ts`.
  */
 export interface GeneratorTable {
@@ -38,7 +39,8 @@ export interface GeneratorTable {
   hoursPresent?: HoursPresent;
   /** Every generator the source CSV carried, retained or not. */
   sourceColumns: string[];
-  year: number;
+  firstYear: number;
+  numYears: number;
   /** What this file measures, verbatim from its title line. */
   quantity: string;
 }
@@ -66,9 +68,9 @@ export function serializeGeneratorTable(table: GeneratorTable): {
 } {
   return {
     fields: {
-      year: table.year,
-      firstYear: table.year,
-      numYears: 1,
+      year: table.firstYear,
+      firstYear: table.firstYear,
+      numYears: table.numYears,
       generators: table.generators,
       sourceColumns: table.sourceColumns,
       quantity: table.quantity,
@@ -86,6 +88,7 @@ export function deserializeGeneratorTable(
 ): GeneratorTable {
   const entry = fields as {
     year: number;
+    firstYear?: number;
     numYears?: number;
     generators: string[];
     sourceColumns: string[];
@@ -96,11 +99,12 @@ export function deserializeGeneratorTable(
   };
   const slot = savedHoursOnSlot(entry, new Float32Array(cube), entry.generators.length);
   const values = slot.cube;
-  const expected = entry.generators.length * YEAR_SLOT_HOURS;
+  const { numYears } = slot.span;
+  const expected = entry.generators.length * numYears * YEAR_SLOT_HOURS;
   if (values.length !== expected) {
     throw new Error(
       `saved Generator cube is ${values.length} values, expected ${expected} ` +
-        `(${entry.generators.length} generators × ${YEAR_SLOT_HOURS} h)`,
+        `(${entry.generators.length} generators × ${numYears} years × ${YEAR_SLOT_HOURS} h)`,
     );
   }
   if (entry.presence.length !== entry.generators.length) {
@@ -116,7 +120,8 @@ export function deserializeGeneratorTable(
     tou: slot.tou,
     hoursPresent: slot.hoursPresent,
     sourceColumns: entry.sourceColumns.slice(),
-    year: entry.year,
+    firstYear: slot.span.firstYear,
+    numYears: slot.span.numYears,
     quantity: entry.quantity,
   };
 }

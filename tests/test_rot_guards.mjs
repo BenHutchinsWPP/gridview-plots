@@ -529,6 +529,35 @@ ok('no doc or comment names a removed calendar constant', () => {
   );
 });
 
+// A Case is a run of years (AGENTS.md, "Ingest"), and a sentence that says a
+// Case, cube or table is one year teaches the layout it replaced. The slot is
+// still one year's hours, so "the year slot" is left alone; what is caught is
+// a claim about what a Case holds.
+ok('no doc or comment says a Case holds one year', () => {
+  const ONE_YEAR = [
+    /\bone calendar year\b/i,
+    /\b(?:a|the|each|every|one) (?:case|cube|table|study) (?:is|holds|covers|spans) (?:one|a single) (?:calendar )?year\b/i,
+    /\bdispatched as one year\b/i,
+  ];
+  const offenders = [];
+  for (const f of FILES) {
+    if (f === 'tests/test_rot_guards.mjs') continue;
+    const doc = f.endsWith('.md');
+    read(f)
+      .split('\n')
+      .forEach((line, i) => {
+        if (!(doc || isProse(f, line)) || line.includes('rot-guard:allow')) return;
+        if (ONE_YEAR.some((re) => re.test(line))) offenders.push(`${f}:${i + 1}: ${line.trim()}`);
+      });
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    'these say a Case is one year; it is `numYears` slots from `firstYear`:\n  ' +
+      offenders.join('\n  '),
+  );
+});
+
 // ------------------------------ 8b. symbols named in a HEADER that are gone
 //
 // The same check for source headers, which route tasks to modules. It cannot
@@ -627,6 +656,17 @@ ok('the figure directory imports no table kind', () => {
     [],
     'these figure modules import a kind:\n  ' + offenders.join('\n  '),
   );
+});
+
+// A `Date` reads a slot hour in the viewer's timezone and moves it a day.
+ok('the time axis and the calendar construct no Date', () => {
+  const axisFiles = ['src/ui/chart-format.ts', 'src/model/calendar.ts', 'src/figure/time.ts'];
+  const offenders = axisFiles.filter((f) =>
+    read(f)
+      .split('\n')
+      .some((line) => !isProse(f, line) && /\bnew Date\b|\bDate\.\w/.test(line)),
+  );
+  assert.deepEqual(offenders, [], 'these axis files use Date:\n  ' + offenders.join('\n  '));
 });
 
 // ------------------------------------------------- 9. the composition root

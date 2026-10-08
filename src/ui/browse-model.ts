@@ -432,6 +432,48 @@ export function statColumns(
   });
 }
 
+/**
+ * The tab without its rows that have no value in the hours shown, as the Bus
+ * and Generator tabs leave out what a table has no hours for: an hour filter
+ * that empties a series takes its row with it, and the note counts them. A
+ * transform of the built tab, so every kind and its groups follow one rule;
+ * the Selected tab is never passed through it, so a pin cannot vanish.
+ */
+export function withoutEmptyRows(tab: BrowseTab): BrowseTab {
+  const hours = tab.columns.find((column) => column.key === 'stat.n');
+  if (!hours) return tab;
+  const kept: number[] = [];
+  for (let row = 0; row < tab.rows.length; row++) {
+    if (Number(hours.value(row) ?? 0) > 0) kept.push(row);
+  }
+  const hidden = tab.rows.length - kept.length;
+  if (hidden === 0) return tab;
+  const from = (row: number): number => kept[row];
+  return {
+    ...tab,
+    rows: kept.map((row) => tab.rows[row]),
+    columns: tab.columns.map((column) => {
+      const hint = column.cellClass;
+      return {
+        ...column,
+        value: (row: number) => column.value(from(row)),
+        ...(typeof hint === 'function' ? { cellClass: (row: number) => hint(from(row)) } : {}),
+      };
+    }),
+    notes: [
+      ...tab.notes,
+      `${hidden} row${hidden === 1 ? '' : 's'} hidden: no values in the hours shown.`,
+    ],
+    ...(tab.rowSwitches
+      ? {
+          rowSwitches: new Map(
+            [...tab.rowSwitches].map(([key, at]) => [key, (row: number) => at(from(row))] as const),
+          ),
+        }
+      : {}),
+  };
+}
+
 export type ColumnFilter =
   /** Case-insensitive substring, over the cell as it is displayed. */
   | { readonly kind: 'text'; readonly text: string }

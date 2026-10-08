@@ -25,7 +25,7 @@ import type * as interfacePool from '../tables/interface/pool';
 import type { InterfaceTable } from '../tables/interface/types';
 import type * as longPool from '../tables/long/pool';
 import type { RetainGate } from '../ui/retain-gate';
-import type { Drop, IngestHost, IngestOutcome } from './batch';
+import { yearCountOf, type Drop, type IngestHost, type IngestOutcome } from './batch';
 import { createAreaLongIngest, createEntityLongIngest, type EntityLongBatch } from './ingest-long';
 import { createWideIngest, type WideBatch } from './ingest-wide';
 
@@ -101,13 +101,14 @@ export function createIngestKinds(host: IngestKindsHost) {
     sig: AREA_KIND.sig,
     union: (plans) => unionOf(plans),
     axis: (plans) => long.unionEntities(plans, host.areaAxis()),
-    retained: (union, fileCount, axisCount) =>
+    retained: (union, fileCount, axisCount, yearCount) =>
       // Gated on the AREA kind's own retained set -- never a case count, never
       // `areaCases()[0]`, both of which count the other kinds' Cases too.
       host.retainGates.area.resolveRetained(host.cases, {
         union,
         fileCount,
         axisCount,
+        yearCount,
         coverage: new Map(),
         everything: host.keepsEverything(),
       }),
@@ -193,6 +194,7 @@ export function createIngestKinds(host: IngestKindsHost) {
       const retained = await host.retainGates.bus.resolveRetained(host.cases, {
         union: host.readers.bus.unionOf(plans),
         fileCount: plans.length,
+        yearCount: yearCountOf(plans),
         axisCount: 0,
         coverage,
         everything: host.keepsEverything(),
@@ -226,6 +228,7 @@ export function createIngestKinds(host: IngestKindsHost) {
       const retained = await host.retainGates.generator.resolveRetained(host.cases, {
         union: host.readers.generator.unionOf(plans),
         fileCount: plans.length,
+        yearCount: yearCountOf(plans),
         axisCount: 0,
         coverage: host.readers.generator.coverageOf(plans),
         everything: host.keepsEverything(),
@@ -259,6 +262,7 @@ export function createIngestKinds(host: IngestKindsHost) {
       const retained = await host.retainGates.interface.resolveRetained(host.cases, {
         union: host.readers.interface.unionOf(plans),
         fileCount: plans.length,
+        yearCount: yearCountOf(plans),
         axisCount: 0,
         coverage: host.readers.interface.coverageOf(plans),
         everything: host.keepsEverything(),

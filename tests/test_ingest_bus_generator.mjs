@@ -88,7 +88,7 @@ function fileOf(bytes, name) {
 function loadWide(bytes, plan, spec, finalize, blockBytes = 32 * 1024) {
   const columnPlan = buildColumnPlan(plan.header, plan.header.entityNames);
   const layout = layoutFor(parser.budget, columnPlan);
-  const accumulator = createAccumulator(columnPlan);
+  const accumulator = createAccumulator(columnPlan, plan);
   for (let start = plan.dataStart; start < bytes.length; start += blockBytes) {
     const from = start === plan.dataStart ? plan.dataStart : afterNextNewline(bytes, start);
     if (from < 0) continue;
@@ -97,10 +97,19 @@ function loadWide(bytes, plan, spec, finalize, blockBytes = 32 * 1024) {
     if (to <= from) continue;
     blitBlock(
       accumulator,
-      parseBytes(parser, layout, bytes, from, to, columnPlan.activePlanes, plan.year, 1),
+      parseBytes(
+        parser,
+        layout,
+        bytes,
+        from,
+        to,
+        columnPlan.activePlanes,
+        plan.firstYear,
+        plan.numYears,
+      ),
     );
   }
-  const shaped = finalizeWide(accumulator, 'case', plan.year, plan.title, spec);
+  const shaped = finalizeWide(accumulator, 'case', plan.title, spec);
   return finalize(shaped.data, plan).data;
 }
 
@@ -135,7 +144,7 @@ assert.deepEqual(
   'the generator axis is the header, in source order',
 );
 assert.equal(genTable.quantity, 'Generation (MWh)');
-assert.equal(genTable.year, 2036);
+assert.deepEqual([genTable.firstYear, genTable.numYears], [2036, 1]);
 assert.equal(genTable.cube.length, GENERATORS.length * HOURS);
 assert.ok([...genTable.presence].every((p) => p === 1));
 // Spot-check against the file: generator 1, hour 0.

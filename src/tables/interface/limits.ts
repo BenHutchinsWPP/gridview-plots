@@ -16,8 +16,8 @@
 //     nomograms). Dividing by the group's peak instead was rejected because
 //     it answers nothing about the limits the analyst loaded.
 
-import { YEAR_SLOT_HOURS } from '../../model/calendar';
 import { sideAt, type RangeLimits } from '../../series/range';
+import { planeLength } from './kernels';
 import type { InterfaceTable } from './types';
 
 /** One contributing member: its sign in the group (±1) and its own limits. */
@@ -32,18 +32,22 @@ export const SUMMED_LIMITS = 'summed limits';
 /**
  * The group's hourly limits. A side NaN in every hour is omitted, so a group
  * none of whose members has a limit is `{}`, exactly as an unlimited path.
+ * The members' hourly sides set the length and must agree; `hours` (the
+ * table's plane length) is the length when every side is a constant.
  */
-export function summedLimits(members: readonly SignedLimits[]): RangeLimits {
+export function summedLimits(members: readonly SignedLimits[], hours: number): RangeLimits {
   if (members.length === 0) return {};
-  // As long as the members' hourly limits; a constant side has no length of
-  // its own, so members with only constants span one slot.
-  let hours = 0;
+  let hourly = 0;
   for (const { limits } of members) {
     for (const side of [limits.upper, limits.lower]) {
-      if (side !== undefined && typeof side !== 'number') hours = Math.max(hours, side.length);
+      if (side === undefined || typeof side === 'number') continue;
+      if (hourly !== 0 && side.length !== hourly) {
+        throw new Error(`member limits of ${side.length} h and ${hourly} h in one group`);
+      }
+      hourly = side.length;
     }
   }
-  if (hours === 0) hours = YEAR_SLOT_HOURS;
+  if (hourly !== 0) hours = hourly;
   const upper = new Float32Array(hours);
   const lower = new Float32Array(hours);
   let anyUpper = false;
@@ -83,5 +87,5 @@ export function boundaryLimits(
       members.push({ sign, limits: rangeOf(String(data.interfaces[i])) });
     }
   }
-  return summedLimits(members);
+  return summedLimits(members, planeLength(data));
 }

@@ -1,8 +1,9 @@
 // src/model/calendar.ts
 //
-// The calendar of one year's 8,784-hour slot: one packed Uint32Array built
-// once per year and memoized. Every field is index arithmetic, never a Date
-// object: `new Date(str)` shifts rows by a day in half the world's timezones.
+// The calendar of a span of years, one 8,784-hour slot per year: one packed
+// Uint32Array built once per (first year, number of years) and memoized.
+// Every field is index arithmetic, never a Date object: `new Date(str)`
+// shifts rows by a day in half the world's timezones.
 // Every year is laid out on the leap calendar, so a date is the same index in
 // every year; a non-leap year's Feb 29 is a phantom day whose hours are NaN.
 //
@@ -12,6 +13,7 @@
 //   dayOfWeek  bits  9-11  (3 bits)  0-6, 0 = Monday .. 6 = Sunday
 //   hourOfDay  bits 12-16  (5 bits)  1-24 (hour-ending, HE)
 //   season     bits 17-18  (2 bits)  0=Winter 1=Spring 2=Summer 3=Fall
+//   year       bits 19-30 (12 bits)  absolute calendar year, 0-4095
 //   phantom    bit  31     (1 bit)   Feb 29 of a non-leap year: a slot with
 //                                    no real hours and no weekday. Bit 31 is
 //                                    the sign bit of a JS int, so read it
@@ -51,6 +53,15 @@ export interface YearSpan {
   readonly numYears: number;
 }
 
+/** The years a loaded table states, read structurally so a new kind takes
+ * part by carrying `firstYear` and `numYears`. `null` is unknown. */
+export function spanOfTable(data: unknown): YearSpan | null {
+  const table = data as Partial<YearSpan> | null;
+  return typeof table?.firstYear === 'number' && typeof table.numYears === 'number'
+    ? { firstYear: table.firstYear, numYears: table.numYears }
+    : null;
+}
+
 /** The denominator of one count taken over several Cases' lines: the most
  * real hours any of them has. Cases share the slot hour for hour, so this is
  * what their union can hold: non-leap Cases alone read 8,760, a leap Case
@@ -60,6 +71,21 @@ export function mostRealHours(spans: readonly YearSpan[]): number {
   let most = 0;
   for (const span of spans) most = Math.max(most, realHours(span.firstYear, span.numYears));
   return most;
+}
+
+/** A Years filter against the years now loaded: the chosen years still
+ * loaded, or `null` when none are left or they are every loaded year, as a
+ * chip row snaps an empty or full selection to "no constraint". `years`
+ * itself when nothing changed. Without it a filter on an unloaded year would
+ * empty every line with no chip to clear. */
+export function yearsStillLoaded(
+  years: Set<number> | null,
+  loaded: readonly number[],
+): Set<number> | null {
+  if (years === null) return null;
+  const kept = new Set(loaded.filter((year) => years.has(year)));
+  if (kept.size === 0 || kept.size === loaded.length) return null;
+  return kept.size === years.size ? years : kept;
 }
 
 const MONTH_SHIFT = 0;
@@ -82,7 +108,11 @@ const SEASON_SHIFT = HOUR_SHIFT + HOUR_BITS;
 const SEASON_BITS = 2;
 const SEASON_MASK = (1 << SEASON_BITS) - 1;
 
-export const PHANTOM_DAY_SHIFT = 31;
+const YEAR_SHIFT = SEASON_SHIFT + SEASON_BITS;
+const YEAR_BITS = 12;
+const YEAR_MASK = (1 << YEAR_BITS) - 1;
+
+export const PHANTOM_DAY_SHIFT = YEAR_SHIFT + YEAR_BITS;
 
 export const SEASON_NAMES = ['Winter', 'Spring', 'Summer', 'Fall'] as const;
 
@@ -122,6 +152,10 @@ export function getSeason(entry: number): number {
   return (entry >>> SEASON_SHIFT) & SEASON_MASK;
 }
 
+export function getYear(entry: number): number {
+  return (entry >>> YEAR_SHIFT) & YEAR_MASK;
+}
+
 export function isPhantomDay(entry: number): boolean {
   return entry >>> PHANTOM_DAY_SHIFT === 1;
 }
@@ -146,14 +180,27 @@ function dayOfWeek(year: number, month: number, day: number): number {
   return (sundayZero + 6) % 7; // remap 0=Sunday..6=Saturday -> 0=Monday..6=Sunday
 }
 
-const cache = new Map<number, Uint32Array>();
+const yearCache = new Map<number, Uint32Array>();
+const spanCache = new Map<string, Uint32Array>();
 
-/** Build (or return the memoized) packed calendar for `year`. Year-independent
- * except for day-of-week, so cases with different years (2034/2035/2044)
- * each get their own array, built once. */
-export function buildCalendar(year: number): Uint32Array {
-  const cached = cache.get(year);
+/** Build (or return the memoized) packed calendar of `numYears` slots from
+ * `firstYear`, slot after slot. Each slot differs only in its weekdays, its
+ * phantom Feb 29 and its year bits, so each span gets its own array, built
+ * once. */
+export function buildCalendar(firstYear: number, numYears: number): Uint32Array {
+  const key = `${firstYear}:${numYears}`;
+  const cached = spanCache.get(key);
   if (cached) return cached;
+  const calendar = new Uint32Array(numYears * YEAR_SLOT_HOURS);
+  for (let y = 0; y < numYears; y++) calendar.set(yearCalendar(firstYear + y), y * YEAR_SLOT_HOURS);
+  spanCache.set(key, calendar);
+  return calendar;
+}
+
+function yearCalendar(year: number): Uint32Array {
+  const cached = yearCache.get(year);
+  if (cached) return cached;
+  if (year < 0 || year > YEAR_MASK) throw new Error(`year ${year} does not fit the calendar`);
 
   const leap = isLeapYear(year);
   const calendar = new Uint32Array(YEAR_SLOT_HOURS);
@@ -173,12 +220,13 @@ export function buildCalendar(year: number): Uint32Array {
             (dow << DOW_SHIFT) |
             (hourOfDay << HOUR_SHIFT) |
             (season << SEASON_SHIFT) |
+            (year << YEAR_SHIFT) |
             ((phantom ? 1 : 0) << PHANTOM_DAY_SHIFT)) >>>
           0;
       }
     }
   }
-  cache.set(year, calendar);
+  yearCache.set(year, calendar);
   return calendar;
 }
 
@@ -190,13 +238,10 @@ export function realHoursSeen(
   firstYear: number,
   numYears: number,
 ): number {
+  const calendar = buildCalendar(firstYear, numYears);
   let count = 0;
-  for (let y = 0; y < numYears; y++) {
-    const calendar = buildCalendar(firstYear + y);
-    const base = y * YEAR_SLOT_HOURS;
-    for (let h = 0; h < YEAR_SLOT_HOURS; h++) {
-      if (seen[base + h] && !isPhantomDay(calendar[h])) count++;
-    }
+  for (let h = 0; h < calendar.length; h++) {
+    if (seen[h] && !isPhantomDay(calendar[h])) count++;
   }
   return count;
 }
@@ -204,8 +249,8 @@ export function realHoursSeen(
 /**
  * Keep-mask over the calendar (1 = keep); `null` in a Filters field means no
  * constraint. Pass `out` to reuse a buffer. Callers pass THIS table's own
- * year and TOU codes, never a shared calendar: two vintages disagree about
- * which hour is a Sunday.
+ * span calendar and TOU codes, never a shared calendar: two vintages
+ * disagree about which hour is a Sunday.
  */
 export function buildMask(
   filters: Filters,
@@ -214,9 +259,9 @@ export function buildMask(
   out?: Uint8Array,
 ): Uint8Array {
   const mask = out ?? new Uint8Array(calendar.length);
-  const { dates, hoursOfDay, daysOfWeek: daysOfWeekFilter, seasons, tou } = filters;
+  const { years, dates, hoursOfDay, daysOfWeek: daysOfWeekFilter, seasons, tou } = filters;
   // Day d of the slot is hours 24d … 24d + 23 in every year, so a day's
-  // hours need no calendar lookup.
+  // hours need no calendar lookup, and a date matches in every year slot.
   let days: Uint8Array | null = null;
   if (dates !== null) {
     days = new Uint8Array(YEAR_SLOT_DAYS);
@@ -228,6 +273,7 @@ export function buildMask(
     let keep = 1;
     // A phantom hour is no hour at all, whatever the filters ask for.
     if (isPhantomDay(entry)) keep = 0;
+    else if (years !== null && !years.has(getYear(entry))) keep = 0;
     else if (days !== null && days[Math.floor((h % YEAR_SLOT_HOURS) / 24)] === 0) keep = 0;
     else if (daysOfWeekFilter !== null && !daysOfWeekFilter.has(getDayOfWeek(entry))) keep = 0;
     else if (hoursOfDay !== null && !hoursOfDay.has(getHourOfDay(entry))) keep = 0;
@@ -243,26 +289,59 @@ const PRE_SLOT_HOURS = 8760;
 
 /** What a saved table entry carries on its hours. */
 export interface SavedHours {
+  readonly year?: unknown;
+  readonly firstYear?: unknown;
   readonly numYears?: unknown;
   readonly tou: TouCodes;
   readonly hoursPresent?: HoursPresent;
 }
 
 /**
- * A saved table's hours on the slot. A bundle entry without `numYears` was
- * written before Feb 29 was kept: each plane is 8,760 hours, Feb 29 dropped
- * even in a leap year. Feb 29 is INSERTED inside every plane (cube NaN, TOU
- * 0xff, `hoursPresent` 0), never padded at the end: that would hand Feb 29
- * Mar 1's hours and leave every later hour a day off. `planes` is the kind's
- * (Area: areas × metrics). An entry with `numYears` is returned as it is.
+ * A saved table's years and hours on the slot. An entry with `numYears` is
+ * `firstYear`..`firstYear + numYears - 1`, its TOU and hours-present arrays
+ * one slot per year, and is returned as it is. An entry without `numYears`
+ * was written before Feb 29 was kept: one year, `year`, each plane 8,760
+ * hours, Feb 29 dropped even in a leap year. Feb 29 is INSERTED inside every
+ * plane (cube NaN, TOU 0xff, `hoursPresent` 0), never padded at the end: that
+ * would hand Feb 29 Mar 1's hours and leave every later hour a day off.
+ * `planes` is the kind's (Area: areas × metrics); the caller checks the cube
+ * against `planes × numYears × 8784`.
  */
 export function savedHoursOnSlot(
   entry: SavedHours,
   cube: Float32Array,
   planes: number,
-): { cube: Float32Array; tou: TouCodes; hoursPresent?: HoursPresent } {
+): { cube: Float32Array; tou: TouCodes; hoursPresent?: HoursPresent; span: YearSpan } {
   const { tou, hoursPresent } = entry;
-  if (entry.numYears !== undefined) return { cube, tou, hoursPresent };
+  if (entry.numYears !== undefined) {
+    const { firstYear, numYears } = entry;
+    if (
+      typeof firstYear !== 'number' ||
+      !Number.isInteger(firstYear) ||
+      typeof numYears !== 'number' ||
+      !Number.isInteger(numYears) ||
+      numYears < 1
+    ) {
+      throw new Error(
+        `saved table states years ${String(firstYear)} + ${String(numYears)}; ` +
+          `expected a first year and a whole number of years`,
+      );
+    }
+    const hours = numYears * YEAR_SLOT_HOURS;
+    const sizes: [string, number][] = [
+      ['TOU array', tou.length],
+      ['hours-present array', hoursPresent?.length ?? hours],
+    ];
+    for (const [what, length] of sizes) {
+      if (length !== hours) {
+        throw new Error(
+          `saved ${what} is ${length} values, expected ${hours} ` +
+            `(${numYears} years × ${YEAR_SLOT_HOURS} h)`,
+        );
+      }
+    }
+    return { cube, tou, hoursPresent, span: { firstYear, numYears } };
+  }
   const sizes: [string, number, number][] = [
     ['cube', cube.length, planes * PRE_SLOT_HOURS],
     ['TOU array', tou.length, PRE_SLOT_HOURS],
@@ -280,6 +359,7 @@ export function savedHoursOnSlot(
     cube: insertFeb29(cube, planes, NaN),
     tou: insertFeb29(tou, 1, 0xff),
     hoursPresent: hoursPresent === undefined ? undefined : insertFeb29(hoursPresent, 1, 0),
+    span: { firstYear: entry.year as number, numYears: 1 },
   };
 }
 

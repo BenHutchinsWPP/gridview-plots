@@ -19,6 +19,7 @@ const {
   getMonth,
   getDayOfMonth,
   getDayOfWeek,
+  getYear,
   YEAR_SLOT_HOURS,
   YEAR_SLOT_DAYS,
   SLOT_MONTH_LENGTHS,
@@ -51,14 +52,14 @@ function check(label, fn) {
 // --- 1. 8,784 entries, leap-slot month histogram ----------------------
 
 check('calendar has exactly 8,784 entries in a leap and a non-leap year', () => {
-  assert.equal(buildCalendar(2035).length, YEAR_SLOT_HOURS);
-  assert.equal(buildCalendar(2035).length, 8784);
-  assert.equal(buildCalendar(2036).length, 8784);
+  assert.equal(buildCalendar(2035, 1).length, YEAR_SLOT_HOURS);
+  assert.equal(buildCalendar(2035, 1).length, 8784);
+  assert.equal(buildCalendar(2036, 1).length, 8784);
 });
 
 check('month histogram matches the slot month lengths x 24 in every year', () => {
   for (const year of [2035, 2036]) {
-    const calendar = buildCalendar(year);
+    const calendar = buildCalendar(year, 1);
     const histogram = new Array(13).fill(0); // 1-indexed, [0] unused
     for (let h = 0; h < calendar.length; h++) {
       histogram[getMonth(calendar[h])]++;
@@ -86,20 +87,20 @@ function dayOfWeekOf(calendar, month, day) {
 }
 
 check('2035-01-01 is a Monday', () => {
-  assert.equal(dayOfWeekOf(buildCalendar(2035), 1, 1), 0);
+  assert.equal(dayOfWeekOf(buildCalendar(2035, 1), 1, 1), 0);
 });
 
 check('2034-07-04 is a Tuesday', () => {
-  assert.equal(dayOfWeekOf(buildCalendar(2034), 7, 4), 1);
+  assert.equal(dayOfWeekOf(buildCalendar(2034, 1), 7, 4), 1);
 });
 
 //   >>> datetime.date(2036, 2, 29).strftime('%A')  -> 'Friday'
 //   >>> datetime.date(2036, 3, 1).strftime('%A')   -> 'Saturday'
 //   >>> datetime.date(2035, 3, 1).strftime('%A')   -> 'Thursday'
 check('Feb 29 is a real weekday in a leap year, and Mar 1 follows it', () => {
-  assert.equal(dayOfWeekOf(buildCalendar(2036), 2, 29), 4);
-  assert.equal(dayOfWeekOf(buildCalendar(2036), 3, 1), 5);
-  assert.equal(dayOfWeekOf(buildCalendar(2035), 3, 1), 3);
+  assert.equal(dayOfWeekOf(buildCalendar(2036, 1), 2, 29), 4);
+  assert.equal(dayOfWeekOf(buildCalendar(2036, 1), 3, 1), 5);
+  assert.equal(dayOfWeekOf(buildCalendar(2035, 1), 3, 1), 3);
 });
 
 // --- 3. Mask count, computed by hand -------------------------------------
@@ -113,8 +114,9 @@ check('Feb 29 is a real weekday in a leap year, and Mar 1 follows it', () => {
 //   expected = 23 weekdays * 16 hours/day = 368
 
 check('mask for August, weekdays, HE 7-22 has a hand-computed count', () => {
-  const calendar = buildCalendar(2035);
+  const calendar = buildCalendar(2035, 1);
   const filters = {
+    years: null,
     dates: [{ start: 213, end: 243 }], // August
     hoursOfDay: new Set([7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]),
     daysOfWeek: new Set([0, 1, 2, 3, 4]), // Monday..Friday
@@ -141,27 +143,27 @@ check('mask for August, weekdays, HE 7-22 has a hand-computed count', () => {
 
 check('a date range keeps the same hours in every year, and intersects', () => {
   const touBitmap = new Uint8Array(YEAR_SLOT_HOURS); // unused: filters.tou is null
-  const base = { hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
+  const base = { years: null, hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
   const kept = (mask) => [...mask.keys()].filter((h) => mask[h] === 1);
 
   // Feb 20 (day 50) to Mar 10 (day 69): 20 slot days, 19 of them real in a
   // non-leap year.
   const dates = [{ start: 50, end: 69 }];
-  const in2035 = kept(buildMask({ ...base, dates }, buildCalendar(2035), touBitmap));
-  const in2045 = kept(buildMask({ ...base, dates }, buildCalendar(2045), touBitmap));
-  const in2036 = kept(buildMask({ ...base, dates }, buildCalendar(2036), touBitmap));
+  const in2035 = kept(buildMask({ ...base, dates }, buildCalendar(2035, 1), touBitmap));
+  const in2045 = kept(buildMask({ ...base, dates }, buildCalendar(2045, 1), touBitmap));
+  const in2036 = kept(buildMask({ ...base, dates }, buildCalendar(2036, 1), touBitmap));
   assert.equal(in2035.length, 19 * 24);
   assert.equal(in2036.length, 20 * 24, 'a leap year keeps its Feb 29 too');
   assert.deepEqual(in2045, in2035, 'the same hours whatever the year');
   assert.equal(in2035[0], 50 * 24, 'from HE 1 of Feb 20');
   assert.equal(in2035.at(-1), 70 * 24 - 1, 'to HE 24 of Mar 10');
-  const first = buildCalendar(2035)[in2035[0]];
+  const first = buildCalendar(2035, 1)[in2035[0]];
   assert.equal([getMonth(first), getDayOfMonth(first)].join('/'), '2/20');
 
   // It intersects with the other dimensions rather than replacing them.
   const narrow = buildMask(
     { ...base, dates: [{ start: 213, end: 215 }], hoursOfDay: new Set([17]) },
-    buildCalendar(2035),
+    buildCalendar(2035, 1),
     touBitmap,
   );
   assert.equal(kept(narrow).length, 3, 'Aug 1-3, HE 17');
@@ -169,7 +171,7 @@ check('a date range keeps the same hours in every year, and intersects', () => {
 
 check('scattered dates keep each run’s hours, the same in every year', () => {
   const touBitmap = new Uint8Array(YEAR_SLOT_HOURS);
-  const base = { hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
+  const base = { years: null, hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
   const kept = (mask) => [...mask.keys()].filter((h) => mask[h] === 1);
   // Feb 20, Jul 14 and Aug 3: three days, 72 hours.
   const dates = [
@@ -177,11 +179,11 @@ check('scattered dates keep each run’s hours, the same in every year', () => {
     { start: 195, end: 195 },
     { start: 215, end: 215 },
   ];
-  const in2035 = kept(buildMask({ ...base, dates }, buildCalendar(2035), touBitmap));
+  const in2035 = kept(buildMask({ ...base, dates }, buildCalendar(2035, 1), touBitmap));
   assert.equal(in2035.length, 72);
-  assert.deepEqual(kept(buildMask({ ...base, dates }, buildCalendar(2045), touBitmap)), in2035);
+  assert.deepEqual(kept(buildMask({ ...base, dates }, buildCalendar(2045, 1), touBitmap)), in2035);
   assert.deepEqual([in2035[0], in2035[24], in2035[48]], [50 * 24, 195 * 24, 215 * 24]);
-  const days = [in2035[0], in2035[24], in2035[48]].map((h) => buildCalendar(2035)[h]);
+  const days = [in2035[0], in2035[24], in2035[48]].map((h) => buildCalendar(2035, 1)[h]);
   assert.deepEqual(
     days.map((e) => `${getMonth(e)}/${getDayOfMonth(e)}`),
     ['2/20', '7/14', '8/3'],
@@ -232,8 +234,8 @@ check('the phantom-day flag reads bit 31 without a sign', () => {
 });
 
 check('Feb 29 is phantom in a non-leap year and real in a leap year', () => {
-  const in2035 = buildCalendar(2035);
-  const in2036 = buildCalendar(2036);
+  const in2035 = buildCalendar(2035, 1);
+  const in2036 = buildCalendar(2036, 1);
   for (let h = 0; h < YEAR_SLOT_HOURS; h++) {
     const feb29 = h >= 1416 && h <= 1439;
     assert.equal(isPhantomDay(in2035[h]), feb29, `2035 hour ${h}`);
@@ -248,16 +250,23 @@ check('Feb 29 is phantom in a non-leap year and real in a leap year', () => {
 
 check('Mar 1 is slot day 60 in a leap and a non-leap year', () => {
   for (const year of [2035, 2036]) {
-    const entry = buildCalendar(year)[60 * 24];
+    const entry = buildCalendar(year, 1)[60 * 24];
     assert.equal(`${getMonth(entry)}/${getDayOfMonth(entry)}`, '3/1', String(year));
   }
 });
 
 check('buildMask keeps no phantom hour, even with no filters at all', () => {
   const touBitmap = new Uint8Array(YEAR_SLOT_HOURS);
-  const none = { dates: null, hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
-  const in2035 = buildMask(none, buildCalendar(2035), touBitmap);
-  const in2036 = buildMask(none, buildCalendar(2036), touBitmap);
+  const none = {
+    years: null,
+    dates: null,
+    hoursOfDay: null,
+    daysOfWeek: null,
+    seasons: null,
+    tou: null,
+  };
+  const in2035 = buildMask(none, buildCalendar(2035, 1), touBitmap);
+  const in2036 = buildMask(none, buildCalendar(2036, 1), touBitmap);
   assert.equal(
     in2035.reduce((a, b) => a + b, 0),
     realHours(2035, 1),
@@ -269,21 +278,78 @@ check('buildMask keeps no phantom hour, even with no filters at all', () => {
   for (let h = 1416; h <= 1439; h++) assert.equal(in2035[h], 0, `2035 hour ${h}`);
   // A phantom day has no weekday: asking for every weekday still keeps none.
   const everyDay = { ...none, daysOfWeek: new Set([0, 1, 2, 3, 4, 5, 6]) };
-  const weekdays = buildMask(everyDay, buildCalendar(2035), touBitmap);
+  const weekdays = buildMask(everyDay, buildCalendar(2035, 1), touBitmap);
   for (let h = 1416; h <= 1439; h++) assert.equal(weekdays[h], 0, `2035 hour ${h}`);
 });
 
 check('a dates filter on day 59 keeps 2036’s Feb 29 and nothing in 2035', () => {
   const touBitmap = new Uint8Array(YEAR_SLOT_HOURS);
-  const base = { hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
+  const base = { years: null, hoursOfDay: null, daysOfWeek: null, seasons: null, tou: null };
   const kept = (mask) => [...mask.keys()].filter((h) => mask[h] === 1);
   const dates = [{ start: 59, end: 59 }];
-  assert.deepEqual(kept(buildMask({ ...base, dates }, buildCalendar(2035), touBitmap)), []);
-  const in2036 = kept(buildMask({ ...base, dates }, buildCalendar(2036), touBitmap));
+  assert.deepEqual(kept(buildMask({ ...base, dates }, buildCalendar(2035, 1), touBitmap)), []);
+  const in2036 = kept(buildMask({ ...base, dates }, buildCalendar(2036, 1), touBitmap));
   assert.deepEqual(
     in2036,
     Array.from({ length: 24 }, (_, i) => 1416 + i),
   );
+});
+
+// --- 3c. A span of years ------------------------------------------------------
+//
+// A Case of several years is one calendar of slot after slot, each laid out as
+// its own one-year calendar, with its year in the entry.
+
+check('a 2035-2037 span is three slots, each its own year', () => {
+  const span = buildCalendar(2035, 3);
+  assert.equal(span.length, 3 * YEAR_SLOT_HOURS);
+  assert.equal(buildCalendar(2035, 3), span, 'memoized on (firstYear, numYears)');
+  assert.notEqual(buildCalendar(2035, 2), span);
+  [2035, 2036, 2037].forEach((year, y) => {
+    const base = y * YEAR_SLOT_HOURS;
+    const own = buildCalendar(year, 1);
+    for (let h = 0; h < YEAR_SLOT_HOURS; h++) {
+      assert.equal(getYear(span[base + h]), year, `slot ${y} hour ${h}`);
+      assert.equal(span[base + h], own[h], `slot ${y} hour ${h} matches ${year} alone`);
+    }
+    // Feb 29 is phantom in 2035 and 2037 only.
+    for (let h = 1416; h <= 1439; h++) {
+      assert.equal(isPhantomDay(span[base + h]), year !== 2036, `${year} hour ${h}`);
+    }
+  });
+  // Year two keeps its own weekdays: Feb 29, 2036 is a Friday.
+  assert.equal(getDayOfWeek(span[YEAR_SLOT_HOURS + 1416]), 4);
+});
+
+check('a years filter keeps only its slot, and a date matches in every year', () => {
+  const span = buildCalendar(2035, 3);
+  const touBitmap = new Uint8Array(span.length);
+  const none = {
+    years: null,
+    dates: null,
+    hoursOfDay: null,
+    daysOfWeek: null,
+    seasons: null,
+    tou: null,
+  };
+  const kept = (mask) => [...mask.keys()].filter((h) => mask[h] === 1);
+
+  const only2036 = kept(buildMask({ ...none, years: new Set([2036]) }, span, touBitmap));
+  assert.equal(only2036.length, realHours(2036, 1));
+  assert.equal(only2036[0], YEAR_SLOT_HOURS);
+  assert.equal(only2036.at(-1), 2 * YEAR_SLOT_HOURS - 1);
+
+  // Jul 4 is day 185 of the slot in every year.
+  const dates = [{ start: 185, end: 185 }];
+  const july4 = kept(buildMask({ ...none, dates }, span, touBitmap));
+  const expected = [0, 1, 2].flatMap((y) =>
+    Array.from({ length: 24 }, (_, i) => y * YEAR_SLOT_HOURS + 185 * 24 + i),
+  );
+  assert.deepEqual(july4, expected);
+  for (const h of july4) {
+    assert.equal(getMonth(span[h]), 7);
+    assert.equal(getDayOfMonth(span[h]), 4);
+  }
 });
 
 // --- 4. Groupings ---------------------------------------------------------

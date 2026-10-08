@@ -6,6 +6,12 @@
 // same series. Cells are SVG rectangles, not an embedded bitmap, so the
 // figure stays vector.
 //
+// A Case spanning several years is one band per year, first year on top,
+// each labelled with its year above it (`say`, so an edit renames it) and
+// all on one colour scale. The bands are laid out on the y axis itself, an
+// hour a unit with a gap above each band for its label, so the hour ticks build draws
+// land on each band's rows.
+//
 // A heatmap paints one series, so its key moves into the context line and a
 // colour bar takes the legend's place. An hour with no value is painted as
 // the pane paints it, and a footnote says what that grey means: a blank cell
@@ -16,10 +22,12 @@ import {
   SLOT_MONTH_LENGTHS,
   SLOT_MONTH_STARTS,
   YEAR_SLOT_DAYS,
+  YEAR_SLOT_HOURS,
 } from '../model/calendar';
 import { formatNumber } from '../ui/chart-format';
 import {
   HEATMAP_EMPTY,
+  bandHourTicks,
   heatmapColor,
   heatmapEnds,
   heatmapScale,
@@ -30,7 +38,9 @@ import { line, outlinedRect, rect, text } from './svg';
 import type { FigureCapture, PaneRenderer } from './build';
 
 const HOURS_IN_DAY = 24;
-const HOUR_TICKS = [1, 6, 12, 18, 24];
+/** The room above a labelled band for its year. */
+const YEAR_GAP_PT = 11;
+const YEAR_PT = 8;
 const BAR_PT = 7;
 const BAR_MAX_PT = 200;
 const BAR_STEPS = 64;
@@ -56,6 +66,22 @@ function scaleLabel(value: number): string {
   return value === 0 ? '0' : formatNumber(value).replace('-', '−');
 }
 
+/**
+ * Where `bands` bands sit on the y axis of a plot `plotHeight` tall: band k
+ * from the bottom holds hour ending h at `k * stride + h`, and a labelled
+ * band has room above it for its year. One unlabelled band is the
+ * axis 0.5..24.5.
+ */
+function bandLayout(
+  bands: number,
+  labelled: boolean,
+  plotHeight: number,
+): { stride: number; bandPt: number } {
+  const gapPt = labelled ? YEAR_GAP_PT : 0;
+  const perHour = Math.max(0.1, (plotHeight - bands * gapPt) / (bands * HOURS_IN_DAY));
+  return { stride: HOURS_IN_DAY + gapPt / perHour, bandPt: perHour * HOURS_IN_DAY };
+}
+
 export function heatmapPane(
   capture: FigureCapture,
   drawnIndex: (captured: number) => number,
@@ -63,6 +89,9 @@ export function heatmapPane(
   const at = drawnIndex(0);
   if (at < 0) throw new Error('a heatmap figure needs its series drawn');
   const values = capture.lines[0].values ?? [];
+  const years = capture.years ?? null;
+  const bands = years?.length ?? Math.max(1, Math.ceil(values.length / YEAR_SLOT_HOURS));
+  const labelled = years !== null;
   const scale: HeatmapScale = heatmapScale(values) ?? { min: 0, max: 1, diverging: false };
   let empty = false;
   let shown = 0;
@@ -77,12 +106,19 @@ export function heatmapPane(
     context: (shared, keys) => [shared, keys[0] ?? ''].filter(Boolean).join(' · '),
     yAxis: {
       title: 'Hour ending',
-      scale: () => ({
-        min: 0.5,
-        max: HOURS_IN_DAY + 0.5,
-        ticks: HOUR_TICKS,
-        labels: HOUR_TICKS.map(String),
-      }),
+      scale(_count, plotHeight) {
+        const { stride, bandPt } = bandLayout(bands, labelled, plotHeight);
+        const hours = bandHourTicks(bandPt, bands > 1);
+        const ticks: number[] = [];
+        const labels: string[] = [];
+        for (let k = 0; k < bands; k++) {
+          for (const hour of hours) {
+            ticks.push(k * stride + hour);
+            labels.push(String(hour));
+          }
+        }
+        return { min: 0.5, max: bands * stride + 0.5, ticks, labels };
+      },
     },
 
     extent(line) {
@@ -156,29 +192,44 @@ export function heatmapPane(
       };
     },
 
-    marks(lines, _window, frame) {
+    marks(lines, _window, frame, say) {
       const y = lines[at].y;
+      const { stride } = bandLayout(bands, labelled, frame.height);
       const cellWidth = frame.width / YEAR_SLOT_DAYS;
       const out: string[] = [];
-      for (let day = 0; day < YEAR_SLOT_DAYS; day++) {
-        const x = frame.left + day * cellWidth;
-        const w = cellWidth + (day < YEAR_SLOT_DAYS - 1 ? SEAM_PT : 0);
-        for (let hour = 0; hour < HOURS_IN_DAY; hour++) {
-          // Hour ending `hour + 1` spans half an hour either side of it;
-          // the top row is drawn exactly to the frame.
-          const top = y(hour + 1.5);
-          const h = y(hour + 0.5) - top + (hour > 0 ? SEAM_PT : 0);
-          const value = values[day * HOURS_IN_DAY + hour];
-          const fill = Number.isFinite(value) ? hex(heatmapColor(value, scale)) : HEATMAP_EMPTY;
-          out.push(rect(x, top, w, h, fill));
+      for (let band = 0; band < bands; band++) {
+        // The first year on top: band 0 is the highest on the axis.
+        const base = (bands - 1 - band) * stride;
+        const slot = band * YEAR_SLOT_HOURS;
+        for (let day = 0; day < YEAR_SLOT_DAYS; day++) {
+          const x = frame.left + day * cellWidth;
+          const w = cellWidth + (day < YEAR_SLOT_DAYS - 1 ? SEAM_PT : 0);
+          for (let hour = 0; hour < HOURS_IN_DAY; hour++) {
+            // Hour ending `hour + 1` spans half an hour either side of it;
+            // a band's top row is drawn exactly to its edge.
+            const top = y(base + hour + 1.5);
+            const h = y(base + hour + 0.5) - top + (hour > 0 ? SEAM_PT : 0);
+            const value = values[slot + day * HOURS_IN_DAY + hour];
+            const fill = Number.isFinite(value) ? hex(heatmapColor(value, scale)) : HEATMAP_EMPTY;
+            out.push(rect(x, top, w, h, fill));
+          }
+        }
+        const top = y(base + HOURS_IN_DAY + 0.5);
+        out.push(
+          outlinedRect(frame.left, top, frame.width, y(base + 0.5) - top, 'none', {
+            color: '#d0d0d0',
+            width: 0.5,
+          }),
+        );
+        if (years) {
+          out.push(
+            text(say(`axis.year[${band}]`, String(years[band])), frame.left, top - 2.5, {
+              size: YEAR_PT,
+              fill: INK,
+            }),
+          );
         }
       }
-      out.push(
-        outlinedRect(frame.left, frame.top, frame.width, frame.height, 'none', {
-          color: '#d0d0d0',
-          width: 0.5,
-        }),
-      );
       // Month boundaries, below the plot as the pane marks them.
       const bottom = frame.top + frame.height;
       for (const day of SLOT_MONTH_STARTS.slice(1)) {

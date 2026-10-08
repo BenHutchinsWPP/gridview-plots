@@ -56,7 +56,7 @@ export interface HeaderInfo {
 export interface TitleInfo {
   /** The quoted quantity, e.g. `Power Flow (MW)` -- '' when unreadable. */
   quantity: string;
-  /** The title's year, or null; a cross-check on the first data row's. */
+  /** The title's year, or null; a cross-check on the span's first year. */
   year: number | null;
   /**
    * The FIRST WORD of line 1 (`Interface` in `Interface Hourly ...`), or ''.
@@ -104,6 +104,28 @@ export function parseTitleLine(line: string): TitleInfo {
     year: year ? Number(year[1]) : null,
     entity: entity ? entity[1] : '',
   };
+}
+
+/** Which preamble line is the date-range note (title, blank, date line, …). */
+export const DATE_LINE_INDEX = 2;
+
+/**
+ * Read the endpoint years from the date line:
+ *
+ *   (From the first hour of 1/1/2034 to the last hour of 12/31/2036. Column identifier -- AreaName)
+ *                                ^^^^                                ^^^^
+ *                                firstYear                           lastYear
+ *
+ * null when the line does not read that way: the caller falls back to the
+ * first row's year. The years only size the table; the parser refuses a row
+ * dated outside them.
+ */
+export function parseDateLine(line: string): { firstYear: number; lastYear: number } | null {
+  const match =
+    /first hour of\s+\d{1,2}\/\d{1,2}\/(\d{4})\s+to the last hour of\s+\d{1,2}\/\d{1,2}\/(\d{4})/i.exec(
+      stripCR(line),
+    );
+  return match ? { firstYear: Number(match[1]), lastYear: Number(match[2]) } : null;
 }
 
 /**

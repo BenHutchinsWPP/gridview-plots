@@ -8,7 +8,6 @@
 // The sort is monotonic, so thinning a curve keeps its shape exactly: each
 // output column's lowest and highest point are its first and last.
 
-import { YEAR_SLOT_HOURS } from '../model/calendar';
 import { circle, polyline } from './svg';
 import { thinLine } from './thin';
 import { COLUMNS_PER_PT } from './time';
@@ -65,11 +64,13 @@ export const DURATION_PANE: PaneRenderer = {
   },
 
   // A duration curve reorders hours, so a zoom narrows the ranks shown, not
-  // which hours are in them: every kept hour is part of the curve.
+  // which hours are in them: every kept hour is part of the curve, over
+  // every year the longest line spans.
   hoursShown(lines) {
+    const length = Math.max(0, ...lines.map((values) => values.length));
     let count = 0;
-    for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
-      if (lines.some((values) => !Number.isNaN(values[hour]))) count++;
+    for (let hour = 0; hour < length; hour++) {
+      if (lines.some((values) => hour < values.length && !Number.isNaN(values[hour]))) count++;
     }
     return count;
   },

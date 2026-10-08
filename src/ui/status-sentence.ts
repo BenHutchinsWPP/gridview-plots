@@ -44,6 +44,15 @@ export function summarise<T>(
   return parts.join(', ');
 }
 
+/** A Years filter as runs: {2035, 2036, 2038} -> "2035–2036, 2038". */
+export function yearsLabel(years: ReadonlySet<number>): string {
+  const sorted = [...years].sort((a, b) => a - b);
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  const every = Array.from({ length: last - first + 1 }, (_, i) => first + i);
+  return summarise(years, every, String, first === last ? String(first) : `${first}–${last}`);
+}
+
 /** What the sentence states: the hour filters and how many Cases they cut. */
 export interface StatusView {
   readonly filters: Filters;
@@ -51,7 +60,9 @@ export interface StatusView {
 }
 
 /** `keptHours` of `ofHours`: the caller's count and the real hours it was
- * counted out of, never the slot's length. */
+ * counted out of, never the slot's length. The Years and dates filters shrink
+ * the count and leave the whole: "8,784 of 26,304 h · 2036" is 2036 of a
+ * three-year Case. */
 export function statusSentence(view: StatusView, keptHours: number, ofHours: number): string {
   const { filters } = view;
   const hours = Array.from({ length: 24 }, (_, i) => i + 1);
@@ -59,6 +70,7 @@ export function statusSentence(view: StatusView, keptHours: number, ofHours: num
 
   const parts = [
     `${keptHours.toLocaleString()} of ${ofHours.toLocaleString()} h`,
+    ...(filters.years === null ? [] : [yearsLabel(filters.years)]),
     filters.dates === null ? 'all dates' : setLabel(filters.dates, 4),
     summarise(filters.daysOfWeek, days, (d) => DAY_NAMES[d], 'all days'),
   ];

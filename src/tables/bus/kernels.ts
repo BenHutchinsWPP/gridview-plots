@@ -39,9 +39,13 @@ export function hasData(data: BusTable, busIdx: number): boolean {
   return data.presence[busIdx] === 1;
 }
 
-/** Where a bus's 8,784-point plane starts in the cube. */
-export function planeStart(busIdx: number): number {
-  return busIdx * YEAR_SLOT_HOURS;
+export function planeLength(data: BusTable): number {
+  return data.numYears * YEAR_SLOT_HOURS;
+}
+
+/** Where a bus's plane, every year of the span, starts in the cube. */
+export function planeStart(data: BusTable, busIdx: number): number {
+  return busIdx * planeLength(data);
 }
 
 /**
@@ -71,7 +75,7 @@ export function buildSeries(
     return refuse(`${caseLabel} has no data for ${busLabel(data.names[busIdx], busId)}.`);
   }
 
-  const start = planeStart(busIdx);
-  out.set(data.cube.subarray(start, start + YEAR_SLOT_HOURS));
+  const start = planeStart(data, busIdx);
+  out.set(data.cube.subarray(start, start + planeLength(data)));
   return { values: out, warnings: [] };
 }

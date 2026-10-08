@@ -10,9 +10,8 @@
 // its own unfiltered peak/trough (an area has no limit), a group after it is
 // combined.
 
-import { YEAR_SLOT_HOURS } from '../../../model/calendar';
 import { CASE_GROUP_BY } from '../../../series/model';
-import { createScratch, type RankMemo } from '../../../kernels';
+import { createScratch, fitScratch, type RankMemo } from '../../../kernels';
 import { rankScopedRows } from '../../../ui/browse-planes';
 import { normalizedCopy } from '../../../series/range';
 import {
@@ -30,7 +29,7 @@ import {
   type BrowseTab,
 } from '../../../ui/browse-model';
 import { areasIn, groupingNames } from '../groupings';
-import { applyMask, buildSeries, quantiles, stats } from '../kernels';
+import { applyMask, buildSeries, planeLength, planeStart, quantiles, stats } from '../kernels';
 import { ruleFor, RATIO_METRICS, withheldFromGroups } from '../rules';
 import type { AreaTable } from '../types';
 import { MEMBER_NOUN as AREA_NOUN } from '../series';
@@ -169,10 +168,13 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
         actions,
       };
     }
-    const seriesScratch = input.scratch ?? createScratch();
-    const weightsScratch = createScratch();
-    const gatheredScratch = createScratch();
-    const rangeScratch = createScratch();
+    // Sized to the longest plane in scope and cut to each table's own, so
+    // Cases of different spans share them.
+    const longest = Math.max(0, ...tables.map((table) => planeLength(table.data)));
+    const seriesScratch = fitScratch(input.scratch, longest);
+    const weightsScratch = createScratch(longest);
+    const gatheredScratch = createScratch(longest);
+    const rangeScratch = createScratch(longest);
 
     // The Case bucket is every area its table carries.
     const bucketsOf = (table: AreaBrowseTable) =>
@@ -198,8 +200,8 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
           table.data,
           variable,
           scopedMembers,
-          seriesScratch,
-          weightsScratch,
+          seriesScratch.subarray(0, planeLength(table.data)),
+          weightsScratch.subarray(0, planeLength(table.data)),
           table.caseLabel,
         );
         if (built.values === null) continue;
@@ -302,10 +304,10 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
       }
       return {
         presence,
-        planeStart: (axisIndex) => (axisIndex * numMetrics + metricIndex) * YEAR_SLOT_HOURS,
+        planeStart: (axisIndex) => planeStart(data, axisIndex, metricIndex),
       };
     },
-    scratch: input.scratch ?? createScratch(),
+    scratch: input.scratch,
     memo: input.memo,
     ...(perUnit ? { rangeOf: () => ({}) } : {}),
   });

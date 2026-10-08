@@ -12,8 +12,17 @@
 import assert from 'node:assert/strict';
 import './test_loader.mjs';
 
-const { applyMask, buildSeries, createScratch, hasData, isAllZero, quantiles, sortAsc, stats } =
-  await import('../src/tables/interface/kernels.ts');
+const {
+  applyMask,
+  buildSeries,
+  createScratch,
+  hasData,
+  isAllZero,
+  planeStart,
+  quantiles,
+  sortAsc,
+  stats,
+} = await import('../src/tables/interface/kernels.ts');
 const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 const {
   combinesAcrossInterfaces,
@@ -51,21 +60,24 @@ function makeCase({
   quantity = 'Power Flow (MW)',
   unit = 'MW',
   year = 2035,
+  years = 1,
 } = {}) {
-  const cube = new Float32Array(interfaces.length * HOURS).fill(NaN);
+  const plane = years * HOURS;
+  const cube = new Float32Array(interfaces.length * plane).fill(NaN);
   const presence = new Uint8Array(interfaces.length);
   interfaces.forEach((iface, index) => {
     if (absent.includes(iface)) return;
     presence[index] = 1;
-    for (let hour = 0; hour < HOURS; hour++) cube[index * HOURS + hour] = fill(index, hour);
+    for (let hour = 0; hour < plane; hour++) cube[index * plane + hour] = fill(index, hour);
   });
   return {
     cube,
     interfaces,
     presence,
-    tou: new Uint8Array(HOURS),
+    tou: new Uint8Array(plane),
     sourceColumns,
-    year,
+    firstYear: year,
+    numYears: years,
     quantity,
     unit,
   };
@@ -75,7 +87,7 @@ function makeCase({
 
 {
   const data = makeCase({ interfaces: ['P01', 'P02', 'P03'], absent: ['P03'] });
-  const out = createScratch();
+  const out = createScratch(HOURS);
 
   const built = buildSeries(data, 'P02', out);
   assert.ok(built.values, 'a monitored path builds');
@@ -112,13 +124,13 @@ function makeCase({
 // ---------------------------------------------------------------- applyMask
 
 {
-  const series = createScratch();
+  const series = createScratch(HOURS);
   const mask = new Uint8Array(HOURS);
   for (let hour = 0; hour < HOURS; hour++) {
     series[hour] = hour % 5 === 0 ? NaN : hour;
     mask[hour] = hour % 2 === 0 ? 1 : 0;
   }
-  const gathered = createScratch();
+  const gathered = createScratch(HOURS);
   const n = applyMask(series, mask, gathered);
 
   let expected = 0;
@@ -331,6 +343,32 @@ function makeCase({
       unruled.join('\n  '),
   );
   ok('every column the rules file records resolves to a unit it carries a rule for');
+}
+
+// ---------------------------------------------------------------- a span
+//
+// A path over three years; see the bus suite for why the years differ.
+
+{
+  const YEARS = 3;
+  const PLANE = YEARS * HOURS;
+  const data = makeCase({
+    interfaces: ['P01', 'P02'],
+    years: YEARS,
+    fill: (i, h) => (i + 1) * (1 + Math.floor(h / HOURS)),
+  });
+  assert.equal(planeStart(data, 1), PLANE);
+  const out = createScratch(PLANE);
+  const built = buildSeries(data, 'P02', out);
+  assert.equal(built.values[0], 2);
+  assert.equal(built.values[PLANE - 1], 6, 'the last year of the second plane');
+  const mask = new Uint8Array(PLANE).fill(1);
+  const gathered = createScratch(PLANE);
+  const n = applyMask(built.values, mask, gathered);
+  assert.equal(n, PLANE);
+  assert.equal(stats(gathered, n).sum, (2 + 4 + 6) * HOURS);
+  assert.ok(Math.abs(stats(gathered, n).mean - 4) < 1e-9, 'the mean of every year, not year one');
+  ok('a interface plane over a three-year span is copied and summed whole');
 }
 
 console.log(`\n${checks} checks passed.`);

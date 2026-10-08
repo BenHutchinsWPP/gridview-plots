@@ -1,8 +1,15 @@
 // src/ui/year-overview.ts
 //
-// A time pane's year overview: the whole year's daily values under the chart,
-// with each run of the dates as a window to drag. It writes the same `Filters.dates` as
-// the rail, so the rail, the pane and the overview show one range.
+// A time pane's year overview: daily values over every year slot the pane's
+// axis spans, under the chart, with each run of the dates as a window to drag.
+// It writes the same `Filters.dates` as the rail, so the rail, the pane and
+// the overview show one range. The dates are slot days that apply in every
+// year, so each run is drawn in every slot and a drag in any slot moves them
+// all; a drag stops at its slot's ends rather than carry a run into the next
+// year, which would be a different set of slot days.
+//
+// The pane hands it its axis and each line's offset on it, so a day sits
+// under its own hours without the strip working out a Case's years again.
 //
 // The lines it draws are resolved with the dates cleared (`main.ts`), since
 // the pane's own lines are masked outside them and would leave the year
@@ -10,7 +17,9 @@
 // strip is for finding days, not for reading values.
 //
 // A drag moves the dates as it goes, like the rail's strip, at most once a
-// frame: each change re-renders every pane and the browse drawer.
+// frame: each change re-renders every pane and the browse drawer. A click on
+// a run that moves nothing picks its year instead: the pane shows one year's
+// days at a time, and the click names which.
 
 import {
   MONTH_NAMES,
@@ -18,13 +27,22 @@ import {
   SLOT_MONTH_STARTS,
   YEAR_SLOT_DAYS,
 } from '../model/calendar';
+import { axisHour } from './chart-format';
 import { rangeOf, replaceRun, sameSet, type DateRange, type DateSet } from '../model/date-range';
 
 export interface OverviewLine {
   color: string;
   unit: string;
-  /** 8,784 values (the year slot), NaN where filtered out or missing. */
+  /** From axis hour `offset` on, NaN where filtered out or missing. */
   values: Float32Array;
+  offset: number;
+}
+
+/** The pane's time axis: the year at x = 0 (none when no drawn line has
+ * one) and its length in hours, whole year slots. */
+export interface OverviewAxis {
+  readonly origin: number | undefined;
+  readonly length: number;
 }
 
 export interface YearOverview {
@@ -34,6 +52,7 @@ export interface YearOverview {
     lines: readonly OverviewLine[],
     dates: DateSet | null,
     plot: { left: number; width: number },
+    axis: OverviewAxis,
   ): void;
   /** Repaint at the host's current width. */
   redraw(): void;
@@ -45,6 +64,13 @@ const TOP = 4;
 const BOTTOM = 14;
 /** A pointer this close to a window edge, in px, drags the edge. */
 const EDGE = 6;
+/** The px a month or year label needs before the strip thins them, over
+ * more than one year: one year always labels its twelve months. */
+const MONTH_ROOM = 28;
+const YEAR_ROOM = 36;
+/** Past this many year slots the strip marks years, not months, as the time
+ * axis ticks do (`timeTicks`). */
+const MONTHS_UP_TO = 2;
 
 function svgEl(name: string, attrs: Record<string, string | number>, parent: Element): Element {
   const node = document.createElementNS(NS, name);
@@ -53,20 +79,26 @@ function svgEl(name: string, attrs: Record<string, string | number>, parent: Ele
   return node;
 }
 
-/** Each day's mean, min and max over its kept hours; NaN for a day with
- * none. */
-function daily(values: Float32Array): { mean: Float32Array; min: Float32Array; max: Float32Array } {
-  const mean = new Float32Array(YEAR_SLOT_DAYS);
-  const min = new Float32Array(YEAR_SLOT_DAYS);
-  const max = new Float32Array(YEAR_SLOT_DAYS);
-  for (let d = 0; d < YEAR_SLOT_DAYS; d++) {
+/** Each axis day's mean, min and max over its kept hours; NaN for a day with
+ * none, and for a phantom Feb 29 whatever its values say. */
+function daily(
+  line: OverviewLine,
+  days: number,
+  phantom: (day: number) => boolean,
+): { mean: Float32Array; min: Float32Array; max: Float32Array } {
+  const mean = new Float32Array(days);
+  const min = new Float32Array(days);
+  const max = new Float32Array(days);
+  const { values, offset } = line;
+  for (let d = 0; d < days; d++) {
     let lo = Infinity;
     let hi = -Infinity;
     let sum = 0;
     let n = 0;
-    for (let h = d * 24; h < d * 24 + 24; h++) {
-      const v = values[h];
-      if (Number.isNaN(v)) continue;
+    const none = phantom(d);
+    for (let h = d * 24; !none && h < d * 24 + 24; h++) {
+      const v = values[h - offset];
+      if (v === undefined || Number.isNaN(v)) continue;
       lo = Math.min(lo, v);
       hi = Math.max(hi, v);
       sum += v;
@@ -83,7 +115,7 @@ function daily(values: Float32Array): { mean: Float32Array; min: Float32Array; m
 function trace(ys: Float32Array, x: (d: number) => number, y: (v: number) => number): string {
   let path = '';
   let pen = false;
-  for (let d = 0; d < YEAR_SLOT_DAYS; d++) {
+  for (let d = 0; d < ys.length; d++) {
     if (Number.isNaN(ys[d])) {
       pen = false;
       continue;
@@ -94,69 +126,127 @@ function trace(ys: Float32Array, x: (d: number) => number, y: (v: number) => num
   return path;
 }
 
+/** One copy of a run of the dates: run `index` of the set, in year slot
+ * `slot`. */
+interface Copy {
+  readonly index: number;
+  readonly slot: number;
+  readonly run: DateRange;
+}
+
 export function createYearOverview(
   host: HTMLElement,
   onChange: (dates: DateSet) => void,
+  onPick: (slot: number) => void,
 ): YearOverview {
   let lines: readonly OverviewLine[] = [];
   let stats: ReturnType<typeof daily>[] = [];
   let committed: DateSet | null = null;
   let shown: DateSet | null = null;
   let plot = { left: 0, width: 0 };
-  /** The run under the pointer at the press, and the set it came from: a
-   * drag moves or resizes that run only. A press outside every run starts
-   * over with an empty `base`. */
+  let axis: OverviewAxis = { origin: undefined, length: YEAR_SLOT_DAYS * 24 };
+  /** The run under the pointer at the press, the slot it was grabbed in,
+   * and the set it came from: a drag moves or resizes that run only, in slot
+   * days. A press outside every run starts over with an empty `base`. */
   let drag: {
     mode: 'move' | 'left' | 'right';
     from: number;
     index: number;
+    slot: number;
     range: DateRange;
     base: DateSet;
+    grabbed: boolean;
   } | null = null;
 
+  const days = (): number => axis.length / 24;
+  const slots = (): number => Math.max(1, Math.round(days() / YEAR_SLOT_DAYS));
   const width = (): number => Math.max(1, Math.floor(host.clientWidth));
   const plotWidth = (): number => (plot.width > 0 ? plot.width : width() - plot.left);
-  const x = (d: number): number => plot.left + (d / YEAR_SLOT_DAYS) * plotWidth();
+  /** The px of axis day `d`. */
+  const x = (d: number): number => plot.left + (d / days()) * plotWidth();
+  /** The axis day under `px`, kept on the strip. */
   const dayAt = (px: number): number =>
+    Math.max(0, Math.min(days() - 1, Math.floor(((px - plot.left) / plotWidth()) * days())));
+  /** The slot day of year slot `slot` under `px`, kept inside that slot. */
+  const slotDayAt = (px: number, slot: number): number =>
     Math.max(
       0,
-      Math.min(YEAR_SLOT_DAYS - 1, Math.floor(((px - plot.left) / plotWidth()) * YEAR_SLOT_DAYS)),
+      Math.min(
+        YEAR_SLOT_DAYS - 1,
+        Math.floor(((px - plot.left) / plotWidth()) * days()) - slot * YEAR_SLOT_DAYS,
+      ),
     );
+  const phantom = (d: number): boolean =>
+    axis.origin !== undefined && axisHour(d * 24, axis.origin).phantom;
+
+  /** Every run of `set` in every year slot, in axis order. */
+  function copies(set: DateSet): Copy[] {
+    const all: Copy[] = [];
+    for (let slot = 0; slot < slots(); slot++) {
+      set.forEach((run, index) => all.push({ index, slot, run }));
+    }
+    return all;
+  }
+  const startOf = (copy: Copy): number => copy.slot * YEAR_SLOT_DAYS + copy.run.start;
+  const endOf = (copy: Copy): number => copy.slot * YEAR_SLOT_DAYS + copy.run.end + 1;
+
+  /** Month lines and labels for one or two year slots, year lines and labels
+   * past that, thinned to fit; one year keeps its twelve months as they are. */
+  function paintCalendar(svg: Element, bottom: number): void {
+    const count = slots();
+    const label = (at: number, text: string): void => {
+      const node = svgEl(
+        'text',
+        { x: x(at), y: HEIGHT - 3, 'text-anchor': 'middle', 'font-size': 10, fill: '#666666' },
+        svg,
+      );
+      node.textContent = text;
+    };
+    const rule = (at: number, stroke: string): void => {
+      svgEl('line', { x1: x(at), x2: x(at), y1: TOP, y2: bottom, stroke }, svg);
+    };
+    const yearName = (slot: number): string =>
+      axis.origin === undefined ? `year ${slot + 1}` : String(axis.origin + slot);
+
+    if (count <= MONTHS_UP_TO) {
+      const monthPx = plotWidth() / (count * 12);
+      const step = count === 1 ? 1 : ([1, 2, 3, 6].find((n) => n * monthPx >= MONTH_ROOM) ?? 12);
+      for (let slot = 0; slot < count; slot++) {
+        const first = slot * YEAR_SLOT_DAYS;
+        for (let m = 0; m < 12; m++) {
+          rule(first + SLOT_MONTH_STARTS[m], '#f0f0f0');
+          if (m % step !== 0) continue;
+          // Jan names its year once the strip holds more than one.
+          const text = count > 1 && m === 0 ? yearName(slot) : MONTH_NAMES[m];
+          label(first + SLOT_MONTH_STARTS[m] + SLOT_MONTH_LENGTHS[m] / 2, text);
+        }
+      }
+    } else {
+      const step = Math.max(1, Math.ceil(YEAR_ROOM / (plotWidth() / count)));
+      for (let slot = 0; slot < count; slot += step) {
+        label(slot * YEAR_SLOT_DAYS + YEAR_SLOT_DAYS / 2, yearName(slot));
+      }
+    }
+    // Over the month lines, so a year reads as a year.
+    for (let slot = 1; slot < count; slot++) rule(slot * YEAR_SLOT_DAYS, '#bbbbbb');
+  }
 
   function paint(): void {
     const w = width();
+    const total = days();
     const svg = document.createElementNS(NS, 'svg');
     svg.setAttribute('width', String(w));
     svg.setAttribute('height', String(HEIGHT));
     svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', 'The whole year, by day, with the dates as a window');
+    svg.setAttribute(
+      'aria-label',
+      slots() === 1
+        ? 'The whole year, by day, with the dates as a window'
+        : 'Every year drawn, by day, with the dates as a window in each year',
+    );
     const bottom = HEIGHT - BOTTOM;
 
-    for (let m = 0; m < 12; m++) {
-      svgEl(
-        'line',
-        {
-          x1: x(SLOT_MONTH_STARTS[m]),
-          x2: x(SLOT_MONTH_STARTS[m]),
-          y1: TOP,
-          y2: bottom,
-          stroke: '#f0f0f0',
-        },
-        svg,
-      );
-      const label = svgEl(
-        'text',
-        {
-          x: x(SLOT_MONTH_STARTS[m] + SLOT_MONTH_LENGTHS[m] / 2),
-          y: HEIGHT - 3,
-          'text-anchor': 'middle',
-          'font-size': 10,
-          fill: '#666666',
-        },
-        svg,
-      );
-      label.textContent = MONTH_NAMES[m];
-    }
+    paintCalendar(svg, bottom);
 
     // One scale per unit, over what that unit's lines draw.
     const band = lines.length === 1;
@@ -164,7 +254,7 @@ export function createYearOverview(
     lines.forEach((line, i) => {
       const scale = scales.get(line.unit) ?? { lo: Infinity, hi: -Infinity };
       const [lows, highs] = band ? [stats[i].min, stats[i].max] : [stats[i].mean, stats[i].mean];
-      for (let d = 0; d < YEAR_SLOT_DAYS; d++) {
+      for (let d = 0; d < total; d++) {
         if (!Number.isNaN(lows[d])) scale.lo = Math.min(scale.lo, lows[d]);
         if (!Number.isNaN(highs[d])) scale.hi = Math.max(scale.hi, highs[d]);
       }
@@ -180,8 +270,8 @@ export function createYearOverview(
         // Each run of kept days as its own closed band.
         const runs: string[] = [];
         let start = -1;
-        for (let d = 0; d <= YEAR_SLOT_DAYS; d++) {
-          const kept = d < YEAR_SLOT_DAYS && !Number.isNaN(stats[i].max[d]);
+        for (let d = 0; d <= total; d++) {
+          const kept = d < total && !Number.isNaN(stats[i].max[d]);
           if (kept && start < 0) start = d;
           if (!kept && start >= 0) {
             let path = '';
@@ -205,24 +295,26 @@ export function createYearOverview(
     });
 
     if (shown) {
-      // Dim every gap outside the runs, then a window per run.
+      // Dim every gap outside the runs, then a window per run, in every
+      // year slot.
       const right = plot.left + plotWidth();
       const dim = { y: TOP, height: bottom - TOP, fill: '#ffffff', 'fill-opacity': 0.6 };
+      const all = copies(shown);
       let gap = plot.left;
-      for (const run of shown) {
-        svgEl('rect', { ...dim, x: gap, width: Math.max(0, x(run.start) - gap) }, svg);
-        gap = x(run.end + 1);
+      for (const copy of all) {
+        svgEl('rect', { ...dim, x: gap, width: Math.max(0, x(startOf(copy)) - gap) }, svg);
+        gap = x(endOf(copy));
       }
       svgEl('rect', { ...dim, x: gap, width: Math.max(0, right - gap) }, svg);
-      for (const run of shown) drawWindow(svg, run, bottom);
+      for (const copy of all) drawWindow(svg, copy, bottom);
     }
     host.replaceChildren(svg);
   }
 
   /** One run's outline and its two edge handles. */
-  function drawWindow(svg: Element, run: DateRange, bottom: number): void {
-    const x0 = x(run.start);
-    const x1 = x(run.end + 1);
+  function drawWindow(svg: Element, copy: Copy, bottom: number): void {
+    const x0 = x(startOf(copy));
+    const x1 = x(endOf(copy));
     svgEl(
       'rect',
       {
@@ -253,20 +345,23 @@ export function createYearOverview(
     }
   }
 
-  /** The run a pointer at `px` grabs, and how: an edge, or its middle. */
-  function hit(px: number): { index: number; mode: 'move' | 'left' | 'right' } | null {
+  /** The run a pointer at `px` grabs, in which slot, and how: an edge, or
+   * its middle. */
+  function hit(
+    px: number,
+  ): { index: number; slot: number; mode: 'move' | 'left' | 'right' } | null {
     if (!committed) return null;
-    for (let index = 0; index < committed.length; index++) {
-      const run = committed[index];
-      const x0 = x(run.start);
-      const x1 = x(run.end + 1);
+    const all = copies(committed);
+    for (const copy of all) {
+      const x0 = x(startOf(copy));
+      const x1 = x(endOf(copy));
       // A narrow run's edges shrink, so its middle still moves it.
       const edge = Math.min(EDGE, (x1 - x0) / 4);
-      if (Math.abs(px - x0) <= edge) return { index, mode: 'left' };
-      if (Math.abs(px - x1) <= edge) return { index, mode: 'right' };
+      if (Math.abs(px - x0) <= edge) return { index: copy.index, slot: copy.slot, mode: 'left' };
+      if (Math.abs(px - x1) <= edge) return { index: copy.index, slot: copy.slot, mode: 'right' };
     }
-    const index = committed.findIndex((run) => px > x(run.start) && px < x(run.end + 1));
-    return index < 0 ? null : { index, mode: 'move' };
+    const inside = all.find((copy) => px > x(startOf(copy)) && px < x(endOf(copy)));
+    return inside ? { index: inside.index, slot: inside.slot, mode: 'move' } : null;
   }
 
   let frame = 0;
@@ -284,12 +379,27 @@ export function createYearOverview(
 
   host.addEventListener('pointerdown', (event) => {
     const px = localX(event);
-    const day = dayAt(px);
     const grabbed = hit(px);
+    const slot = grabbed?.slot ?? Math.floor(dayAt(px) / YEAR_SLOT_DAYS);
+    const day = slotDayAt(px, slot);
     // Outside every run: one new run, grown by dragging its right edge.
     drag = grabbed
-      ? { ...grabbed, from: day, range: committed![grabbed.index], base: committed! }
-      : { mode: 'right', from: day, index: 0, range: rangeOf(day, day), base: [] };
+      ? {
+          ...grabbed,
+          from: day,
+          range: committed![grabbed.index],
+          base: committed!,
+          grabbed: true,
+        }
+      : {
+          mode: 'right',
+          from: day,
+          index: 0,
+          slot,
+          range: rangeOf(day, day),
+          base: [],
+          grabbed: false,
+        };
     shown = grabbed ? committed : [drag.range];
     host.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -302,8 +412,8 @@ export function createYearOverview(
       host.style.cursor = !grabbed ? '' : grabbed.mode === 'move' ? 'grab' : 'ew-resize';
       return;
     }
-    const day = dayAt(localX(event));
-    const { mode, from, range, base, index } = drag;
+    const { mode, from, range, base, index, slot } = drag;
+    const day = slotDayAt(localX(event), slot);
     let next: DateRange;
     if (mode === 'move') {
       const len = range.end - range.start;
@@ -325,19 +435,22 @@ export function createYearOverview(
   });
   const release = (): void => {
     if (!drag) return;
+    const { grabbed, slot } = drag;
     drag = null;
     cancelAnimationFrame(frame);
     frame = 0;
     if (shown && !sameSet(shown, committed)) onChange(shown);
+    else if (grabbed) onPick(slot);
   };
   host.addEventListener('pointerup', release);
   host.addEventListener('pointercancel', release);
 
   return {
-    draw(nextLines, dates, plotArea) {
+    draw(nextLines, dates, plotArea, nextAxis) {
+      axis = nextAxis;
       // Recomputed every draw: the values are pool buffers, reused in place.
       lines = nextLines;
-      stats = lines.map((line) => daily(line.values));
+      stats = lines.map((line) => daily(line, days(), phantom));
       committed = dates;
       if (!drag) shown = dates;
       plot = plotArea;

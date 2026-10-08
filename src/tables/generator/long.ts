@@ -29,7 +29,7 @@ const GENERATOR_LONG_ENTITY_COL = 3;
 export const GENERATOR_LONG: LongSignature = {
   keys: GENERATOR_LONG_KEYS,
   entityCol: GENERATOR_LONG_ENTITY_COL,
-  noun: 'unit',
+  noun: { one: 'unit', many: 'units' },
 };
 
 // ------------------------------------------------------------------- ingest
@@ -64,10 +64,11 @@ export const finalizeGeneratorLong: Finalize<GeneratorLongResult> = (
     tou: accumulator.tou,
     hoursPresent: accumulator.hourSeen,
     sourceColumns: generators,
-    year: plan.year,
+    firstYear: accumulator.firstYear,
+    numYears: accumulator.numYears,
     quantity: plane.quantity,
   }));
-  return { data, warnings: coverageWarnings(accumulator, plan.label, plan.year) };
+  return { data, warnings: coverageWarnings(accumulator, plan.label) };
 };
 
 /** Generator, as the long reader takes it. No `retention` note: nothing in

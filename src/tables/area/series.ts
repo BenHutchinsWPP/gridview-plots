@@ -17,7 +17,7 @@
 //   * **Weighted mean pooled value.** If `buildSeries` returns weights, the
 //     pooled weighted mean across the kept hours is computed and attached.
 
-import { YEAR_SLOT_HOURS, buildCalendar, buildMask } from '../../model/calendar';
+import { buildCalendar, buildMask } from '../../model/calendar';
 import {
   CASE_GROUP_BY,
   refusedSeries,
@@ -28,7 +28,15 @@ import {
 import type { Filters } from '../../model/types';
 import type { CaseSeries } from '../../ui/charts';
 import { areasIn } from './groupings';
-import { applyMask, buildSeries, isAllZero, pooledWeightedMean, quantiles, stats } from './kernels';
+import {
+  applyMask,
+  buildSeries,
+  isAllZero,
+  planeLength,
+  pooledWeightedMean,
+  quantiles,
+  stats,
+} from './kernels';
 import { ruleFor } from './rules';
 import type { AreaTable } from './types';
 import { PERCENT, normalizeToRange, rangeLabel } from '../../series/range';
@@ -79,10 +87,12 @@ export function resolveAreaSeries(
     );
   }
 
-  // Caller-owned or buffer-attached weights buffer for weighted mean
-  const weightsOut =
-    (buffers as { weights?: Float32Array }).weights ??
-    ((buffers as { weights?: Float32Array }).weights = new Float32Array(YEAR_SLOT_HOURS));
+  // Caller-owned or buffer-attached weights buffer for weighted mean, one
+  // plane long like the rest of the set.
+  const hours = planeLength(data);
+  const held = buffers as { weights?: Float32Array };
+  if (held.weights?.length !== hours) held.weights = new Float32Array(hours);
+  const weightsOut = held.weights;
 
   const built = buildSeries(data, metric, areas, buffers.series, weightsOut, options.tableLabel);
   if (built.values === null) {
@@ -90,12 +100,12 @@ export function resolveAreaSeries(
     return { ...refused, metric, warnings: built.warnings };
   }
 
-  buildMask(filters, buildCalendar(data.year), data.tou, buffers.mask);
+  buildMask(filters, buildCalendar(data.firstYear, data.numYears), data.tou, buffers.mask);
   const rangeText = spec.perUnit
     ? rangeLabel(normalizeToRange(built.values, {}, PERCENT, buffers.mask))
     : undefined;
 
-  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+  for (let hour = 0; hour < hours; hour++) {
     buffers.display[hour] = buffers.mask[hour] === 1 ? built.values[hour] : NaN;
   }
 

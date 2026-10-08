@@ -26,15 +26,18 @@ export interface ChipItem<T> {
 
 export interface ChipGridController<T> {
   /** Redraw chip contents for the given selection. `null` = no constraint,
-   * rendered as every chip active (src/model/types.ts's Filters convention). */
-  render(selection: ReadonlySet<T> | null): void;
+   * rendered as every chip active (src/model/types.ts's Filters convention).
+   * `choices` replaces the chips, for a row whose choices are what is loaded:
+   * "every chip" is then every chip shown, so the snap to `null` follows. */
+  render(selection: ReadonlySet<T> | null, choices?: readonly ChipItem<T>[]): void;
 }
 
 export function createChipGrid<T>(
   container: HTMLElement,
-  items: readonly ChipItem<T>[],
+  initial: readonly ChipItem<T>[],
   onChange: (next: Set<T> | null) => void,
 ): ChipGridController<T> {
+  let items = initial;
   let current: ReadonlySet<T> | null = null;
   let anchorIndex: number | null = null;
   let gestureBase: Set<T> | null = null; // selection snapshot at gesture start
@@ -125,7 +128,12 @@ export function createChipGrid<T>(
   container.addEventListener('pointercancel', endGesture);
 
   return {
-    render(selection) {
+    render(selection, choices) {
+      if (choices && choices.map((c) => c.value).join() !== items.map((c) => c.value).join()) {
+        items = choices;
+        // An index into the old chips names a different chip now.
+        anchorIndex = null;
+      }
       current = selection;
       container.innerHTML = '';
       items.forEach((item, idx) => {

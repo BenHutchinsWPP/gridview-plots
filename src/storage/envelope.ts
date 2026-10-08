@@ -43,7 +43,8 @@ import { savePins, type SavedPin, type SelectionEntry } from '../ui/browse-model
 
 /** The envelope's version. Version plus magic is what tells a legacy v1
  * (`GVAP`) or v2 (`GVIP`) file apart. A v4 table entry carries
- * `firstYear`/`numYears` beside `year` and holds 8,784 hours per plane. */
+ * `firstYear`/`numYears` beside `year` and holds `numYears` × 8,784 hours
+ * per plane. */
 export const BUNDLE_VERSION = 4;
 /** The same envelope with each plane 8,760 hours, Feb 29 dropped. Read, never
  * written: a table entry without `numYears` is put on the slot by
@@ -98,6 +99,9 @@ export interface ManifestV3 {
   /** Each chart pane's interval settings, by pane. Absent in older bundles,
    * whose interval panes start on the defaults. */
   intervals?: readonly SavedInterval[];
+  /** Each chart pane's "overlay years", by pane. Absent in older bundles,
+   * whose time panes draw their years end to end. */
+  overlayYears?: readonly boolean[];
   /** The drawer's dragged height in pixels; absent on a detent. Optional. */
   drawerHeight?: number;
   /** Generator group map, by GeneratorList name, with its column mapping. */
@@ -243,6 +247,8 @@ export interface BundleContents extends Partial<SessionReference> {
   readonly boxDims?: readonly string[];
   /** Each chart pane's interval settings. */
   readonly intervals?: readonly SavedInterval[];
+  /** Each chart pane's "overlay years". */
+  readonly overlayYears?: readonly boolean[];
   /** The drawer's dragged height in pixels; null when it sits on a detent. */
   readonly drawerHeight?: number | null;
   /** The session's inventory, keyed by live Case id; written by index. */
@@ -269,6 +275,7 @@ export function buildManifest(
     layout = ['time', 'duration', 'box', 'stacked'],
     boxDims = [],
     intervals = [],
+    overlayYears = [],
     drawerHeight = null,
     inventory,
   } = contents;
@@ -342,6 +349,9 @@ export function buildManifest(
   }
   if (intervals.length > 0) {
     manifest.intervals = intervals;
+  }
+  if (overlayYears.length > 0) {
+    manifest.overlayYears = overlayYears;
   }
   if (drawerHeight !== null) {
     manifest.drawerHeight = drawerHeight;

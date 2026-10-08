@@ -20,7 +20,10 @@
 //       hours, a non-leap year's Feb 29 column blank;
 //   (f) hover interaction: hit-testing resolves the correct day, hour, and value;
 //   (g) the Figure takes the painted series first and names the rest as
-//       left out.
+//       left out;
+//   (h) a Case over several years is a band per year, first on top, each
+//       labelled and on one colour scale; hover names the year, the Years
+//       filter chooses the bands, and too many for the pane is refused.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -143,8 +146,8 @@ assert.equal(tip.style.display, '', 'hover inside plot bounds displays tooltip')
 assert.ok(tip.children.length >= 2, 'tooltip populates header and row content');
 assert.equal(
   tip.children[0].textContent,
-  `${hourLabel(4403)} (Hour 4404)`,
-  'tooltip reflects the mid-slot midday hour, index 4403',
+  hourLabel(4403),
+  'tooltip names the mid-slot midday hour, index 4403, by its date alone',
 );
 
 // Test hover outside the plot area
@@ -184,6 +187,121 @@ heatmap.leave();
 heatmap.hover(testPx, testPy);
 assert.equal(tip.style.display, 'none', 'after leave() the heatmap answers no hover');
 assert.equal(heatmap.figure.capture(), null);
+
+// ------------------------------------------------------------------- (h) Stacked years
+// One line over 2035-2037: hour of day plus ten a year, so a value recurs
+// in another year's band at another hour. 2035 and 2037 are non-leap.
+const spanValues = new Float32Array(3 * YEAR_SLOT_HOURS);
+for (let i = 0; i < spanValues.length; i++) {
+  spanValues[i] = (i % 24) + 10 * Math.floor(i / YEAR_SLOT_HOURS);
+}
+for (const year of [0, 2])
+  spanValues.fill(NaN, year * YEAR_SLOT_HOURS + 1416, year * YEAR_SLOT_HOURS + 1440);
+const spanSeries = { ...testSeries, name: 'Test Span', values: spanValues };
+const spanInput = (over = {}) => ({ spanOf: () => ({ firstYear: 2035, numYears: 3 }), ...over });
+
+{
+  const { host, record } = stubHost();
+  const pane = createHeatmapAdapter(host);
+  pane.draw(frameOf([spanSeries], spanInput()));
+  assert.deepEqual(record.banners, [], 'three years fit a 300px pane');
+  const cells = host.canvas.context.calls.filter((c) => c.op === 'fillRect');
+  assert.equal(cells.length, 3 * YEAR_SLOT_HOURS + 1, 'three bands of 8,784 cells, one colour bar');
+  const texts = host.canvas.context.calls.filter((c) => c.op === 'fillText').map((c) => c.text);
+  for (const year of ['2035', '2036', '2037']) assert.ok(texts.includes(year), `labelled ${year}`);
+  const band = (b) => cells.slice(b * YEAR_SLOT_HOURS, (b + 1) * YEAR_SLOT_HOURS);
+  const feb29 = (b) => band(b).slice(59 * 24, 60 * 24);
+  assert.ok(
+    feb29(0).every((c) => c.fill === HEATMAP_EMPTY),
+    '2035’s Feb 29 is blank',
+  );
+  assert.ok(
+    feb29(1).every((c) => c.fill !== HEATMAP_EMPTY),
+    '2036’s Feb 29 is drawn',
+  );
+  assert.ok(
+    feb29(2).every((c) => c.fill === HEATMAP_EMPTY),
+    '2037’s Feb 29 is blank',
+  );
+  const tops = band(0).map((c) => c.y);
+  assert.ok(Math.max(...tops) < Math.min(...band(1).map((c) => c.y)), '2035 above 2036');
+  // Cells go a day at a time from HE 24 down: index 23 - h is hour h.
+  const cellOf = (b, day, h) => band(b)[day * 24 + 23 - h];
+  assert.equal(
+    cellOf(0, 0, 15).fill,
+    cellOf(1, 0, 5).fill,
+    'one colour scale: 15 is one colour in 2035 and in 2036',
+  );
+  assert.equal(cellOf(2, 0, 23).fill, viridisColor(1), 'the top of the scale is 2037’s peak');
+  assert.notEqual(cellOf(0, 0, 23).fill, viridisColor(1), 'not each band’s own peak');
+
+  // The bands of a 400 x 300 pane: 71.3px each under a 14px label gap.
+  const bandHeight = (242 - 2 * 14) / 3;
+  const px = 34 + Math.round(288 / 2);
+  pane.hover(px, Math.round(22 + bandHeight + 14 + bandHeight / 2));
+  assert.equal(host.tip.children[0].textContent, hourLabel(4403, 2036), 'hover names the year');
+  assert.match(host.tip.children[0].textContent, /^2036 Jul 2 · HE 12$/);
+  pane.hover(px, Math.round(22 + 2 * (bandHeight + 14) + 1));
+  assert.match(host.tip.children[0].textContent, /^2037 Jul 2 · HE 24$/);
+  pane.hover(px, Math.round(22 + bandHeight + 7));
+  assert.equal(host.tip.style.display, 'none', 'a label gap holds no hour');
+
+  const { capture } = pane.figure.capture();
+  assert.deepEqual(capture.years, [2035, 2036, 2037], 'the figure stacks the same years');
+  assert.equal(capture.lines[0].values.length, 3 * YEAR_SLOT_HOURS);
+  assert.equal(capture.realHours, 8760 + 8784 + 8760, 'out of the real hours of those years');
+}
+
+{
+  // The Years filter chooses the bands; the one kept still names its year.
+  const { host, record } = stubHost();
+  const pane = createHeatmapAdapter(host);
+  pane.draw(frameOf([spanSeries], spanInput({ years: new Set([2036]) })));
+  assert.deepEqual(record.banners, []);
+  const cells = host.canvas.context.calls.filter((c) => c.op === 'fillRect');
+  assert.equal(cells.length, YEAR_SLOT_HOURS + 1, 'one band for one kept year');
+  const texts = host.canvas.context.calls.filter((c) => c.op === 'fillText').map((c) => c.text);
+  assert.ok(texts.includes('2036') && !texts.includes('2035') && !texts.includes('2037'));
+  pane.hover(testPx, testPy);
+  assert.equal(host.tip.children[0].textContent, hourLabel(4403, 2036));
+  const { capture } = pane.figure.capture();
+  assert.deepEqual(capture.years, [2036]);
+  assert.equal(capture.realHours, 8784);
+  assert.deepEqual(capture.lines[0].values, spanValues.slice(YEAR_SLOT_HOURS, 2 * YEAR_SLOT_HOURS));
+}
+
+{
+  // Ten years leave a 300px pane under a pixel an hour: refused, by banner.
+  const { host, record } = stubHost();
+  const pane = createHeatmapAdapter(host);
+  const ten = { ...spanSeries, values: new Float32Array(10 * YEAR_SLOT_HOURS).fill(1) };
+  pane.draw(frameOf([ten], { spanOf: () => ({ firstYear: 2035, numYears: 10 }) }));
+  assert.equal(record.banners.length, 1);
+  assert.equal(record.banners[0].kind, 'refusal');
+  assert.match(record.banners[0].text, /^10 years of Test Span do not fit this pane/);
+  assert.match(record.banners[0].text, /Years filter/);
+  assert.equal(host.canvas.style.display, 'none');
+  assert.equal(pane.figure.capture(), null, 'and offers no figure');
+  pane.draw(
+    frameOf([ten], {
+      spanOf: () => ({ firstYear: 2035, numYears: 10 }),
+      years: new Set([2036, 2037]),
+    }),
+  );
+  assert.equal(record.banners.length, 1, 'two kept years fit');
+}
+
+{
+  // A one-year Case with a year names it on hover and draws no band label.
+  const { host } = stubHost();
+  const pane = createHeatmapAdapter(host);
+  pane.draw(frameOf([testSeries], { spanOf: () => ({ firstYear: 2035, numYears: 1 }) }));
+  const texts = host.canvas.context.calls.filter((c) => c.op === 'fillText').map((c) => c.text);
+  assert.ok(!texts.includes('2035'), 'one year, one unlabelled band');
+  pane.hover(testPx, testPy);
+  assert.equal(host.tip.children[0].textContent, hourLabel(4403, 2035));
+  assert.equal(pane.figure.capture().capture.years, undefined);
+}
 
 console.log(
   'ok - diurnal heatmap: SlotType registration, hand-drawn uPlot-free canvas, color palettes, 8,784 geometry, interactive hover inspection and its figure',

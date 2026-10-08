@@ -1,8 +1,8 @@
 // src/tables/area/axis.ts
 //
 // The Area axis math, lifted out of main.ts unchanged. Both functions
-// are pure -- they depend on nothing but YEAR_SLOT_HOURS and the table handed
-// in -- which is what makes them testable in plain Node with no Worker, no
+// are pure -- they depend on nothing but the table handed in and its span
+// -- which is what makes them testable in plain Node with no Worker, no
 // fetch and no DOM (tests/test_axis.mjs).
 //
 // The area axis is BATCH-COUPLED and shared by every Area table: it is the
@@ -39,7 +39,9 @@ export function reindexCase(data: AreaTable, axis: readonly string[]): AreaTable
   if (sameAxis(data.areas, axis)) return data;
 
   const numMetrics = data.metrics.length;
-  const cube = new Float32Array(axis.length * numMetrics * YEAR_SLOT_HOURS);
+  // A plane is every year of the span, so the whole span moves with it.
+  const hours = data.numYears * YEAR_SLOT_HOURS;
+  const cube = new Float32Array(axis.length * numMetrics * hours);
   cube.fill(NaN);
   const presence = new Uint8Array(axis.length * numMetrics);
   const destByArea = new Map<string, number>();
@@ -49,9 +51,9 @@ export function reindexCase(data: AreaTable, axis: readonly string[]): AreaTable
     const nextArea = destByArea.get(data.areas[oldArea]);
     if (nextArea === undefined) continue;
     for (let metric = 0; metric < numMetrics; metric++) {
-      const oldPlane = (oldArea * numMetrics + metric) * YEAR_SLOT_HOURS;
-      const nextPlane = (nextArea * numMetrics + metric) * YEAR_SLOT_HOURS;
-      cube.set(data.cube.subarray(oldPlane, oldPlane + YEAR_SLOT_HOURS), nextPlane);
+      const oldPlane = (oldArea * numMetrics + metric) * hours;
+      const nextPlane = (nextArea * numMetrics + metric) * hours;
+      cube.set(data.cube.subarray(oldPlane, oldPlane + hours), nextPlane);
       presence[nextArea * numMetrics + metric] = data.presence[oldArea * numMetrics + metric];
     }
   }

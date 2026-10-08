@@ -24,12 +24,17 @@ const {
   scanAxis: scanAxisRaw,
 } = await import('../src/tables/long/block.ts');
 
-/** One byte range through both passes, as the pool runs them. The Case year
- * is read off the range's first row, as readCasePlan reads it off the file's. */
-function parseRange(instance, bytes, from, to, plan, entityCount) {
+/** The span the pool gives a file: every range's scanned years. */
+function spanOfRanges(instance, bytes, ranges) {
+  const rowsByYear = new Map();
+  for (const [from, to] of ranges) addYearRows(rowsByYear, scanAxisRaw(instance, bytes, from, to));
+  return yearSpanOf('this file has', rowsByYear).span;
+}
+
+/** One byte range through both passes, as the pool runs them, against the
+ * Case's span. */
+function parseRange(instance, bytes, from, to, plan, entityCount, span) {
   const scan = scanAxisRaw(instance, bytes, from, to);
-  const firstRow = new TextDecoder().decode(bytes.subarray(from, Math.min(to, from + 64)));
-  const year = Number(firstRow.split(',', 1)[0].split('/')[2]);
   return parseBytes(
     instance,
     bytes,
@@ -39,8 +44,8 @@ function parseRange(instance, bytes, from, to, plan, entityCount) {
     entityCount,
     plan.sourceMetricCount,
     scan.rows,
-    year,
-    1,
+    span.firstYear,
+    span.numYears,
   );
 }
 
@@ -51,6 +56,8 @@ function scanAxis(bytes, parser) {
 }
 const { finalizeCase, applyDerived, AREA_LONG } = await import('../src/tables/area/long.ts');
 const { createAccumulator, blitBlock } = await import('../src/tables/long/pool.ts');
+const { addYearRows } = await import('../src/tables/long/merge.ts');
+const { yearSpanOf } = await import('../src/ingest.ts');
 const { allAreas } = await import('../src/tables/area/groupings.ts');
 const { YEAR_SLOT_HOURS, TOU_LABELS } = await import('../src/model/calendar.ts');
 
@@ -216,17 +223,18 @@ function ingestBuffer(bytes, blockBytes, { reverse = false } = {}) {
   const headerEnd = bytes.indexOf(NEWLINE);
   const header = parseHeaderLine(new TextDecoder().decode(bytes.subarray(0, headerEnd)), AREA_LONG);
   const plan = buildColumnPlan(header, header.metricNames);
-  const accumulator = createAccumulator(plan, AREA_COUNT);
-
   const ranges = wholeRowRanges(bytes, headerEnd + 1, blockBytes);
+  const span = spanOfRanges(parser, bytes, ranges);
+  const accumulator = createAccumulator(plan, AREA_COUNT, span);
+
   const order = reverse ? [...ranges].reverse() : ranges;
   let rows = 0;
   for (const [from, to] of order) {
-    const payload = parseRange(parser, bytes, from, to, plan, AREA_COUNT);
+    const payload = parseRange(parser, bytes, from, to, plan, AREA_COUNT, span);
     rows += payload.rows;
     blitBlock(accumulator, payload);
   }
-  return { header, plan, accumulator, ranges, rows };
+  return { header, plan, accumulator, ranges, rows, span };
 }
 
 // ---------------------------------------------------------------- the fixture
@@ -365,15 +373,17 @@ function syntheticCsv(axis, metricCount, { hours = 2, order = null, pad = '' } =
 
 /** Parse a whole synthetic buffer against `axis`, on its own parser instance
  * -- the area hash table is per-axis, exactly as the pool rebuilds it. */
-async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
+async function runShape(bytes, axis, retained = null, blockBytes = 4096, span = null) {
   const headerEnd = bytes.indexOf(NEWLINE);
   const header = parseHeaderLine(new TextDecoder().decode(bytes.subarray(0, headerEnd)), AREA_LONG);
   const plan = buildColumnPlan(header, retained ?? header.metricNames);
   const shapeParser = await instantiateParser(wasmModule, entityHashes(axis));
-  const accumulator = createAccumulator(plan, axis.length);
+  const ranges = wholeRowRanges(bytes, headerEnd + 1, blockBytes);
+  span ??= spanOfRanges(shapeParser, bytes, ranges);
+  const accumulator = createAccumulator(plan, axis.length, span);
   let rows = 0;
-  for (const [from, to] of wholeRowRanges(bytes, headerEnd + 1, blockBytes)) {
-    const payload = parseRange(shapeParser, bytes, from, to, plan, axis.length);
+  for (const [from, to] of ranges) {
+    const payload = parseRange(shapeParser, bytes, from, to, plan, axis.length, span);
     rows += payload.rows;
     blitBlock(accumulator, payload);
   }
@@ -454,14 +464,15 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
   const header = parseHeaderLine(new TextDecoder().decode(bytes.subarray(0, headerEnd)), AREA_LONG);
   const shapeParser = await instantiateParser(wasmModule, entityHashes(axis));
   const ranges = wholeRowRanges(bytes, headerEnd + 1, 4096);
+  const span = spanOfRanges(shapeParser, bytes, ranges);
 
   // Same instance, alternating plans, exactly as the pool interleaves cases.
   const runs = [];
   for (const retained of [first, second, first]) {
     const plan = buildColumnPlan(header, retained);
-    const accumulator = createAccumulator(plan, axis.length);
+    const accumulator = createAccumulator(plan, axis.length, span);
     for (const [from, to] of ranges) {
-      blitBlock(accumulator, parseRange(shapeParser, bytes, from, to, plan, axis.length));
+      blitBlock(accumulator, parseRange(shapeParser, bytes, from, to, plan, axis.length, span));
     }
     runs.push({ plan, accumulator });
   }
@@ -631,10 +642,14 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
 {
   const axis = ['A', 'B'];
   const good = ['1/1/2035,1,OffPeak,A,1', '1/1/2035,1,OffPeak,B,2'];
+  // Parsed against 2035 alone: a Feb 29 2036 row would widen a scanned span.
   const load = (extra) =>
     runShape(
       new TextEncoder().encode(['Date,Hour,TOU,Name,M'].concat(good, extra).join('\r\n') + '\r\n'),
       axis,
+      null,
+      4096,
+      { firstYear: 2035, numYears: 1 },
     );
   for (const [bad, what] of [
     ['1/1/2035,0,OffPeak,A,9', 'hour 0'],
@@ -656,13 +671,8 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
 
 // Presence, and the leap-year statement ingest must make.
 {
-  const finalized = finalizeCase(
-    run.accumulator,
-    'sample.csv',
-    run.header.metricNames,
-    2036,
-    areas,
-  );
+  assert.deepEqual(run.span, { firstYear: 2036, numYears: 1 });
+  const finalized = finalizeCase(run.accumulator, 'sample.csv', run.header.metricNames, areas);
   // The table carries NO name: the filename labels warnings only, and
   // identity belongs to the Case.
   assert.equal(
@@ -691,15 +701,9 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
 {
   const FEB_29 = 59 * 24;
   const covers = (year, fill) => {
-    const accumulator = createAccumulator(run.plan, AREA_COUNT);
+    const accumulator = createAccumulator(run.plan, AREA_COUNT, { firstYear: year, numYears: 1 });
     fill(accumulator.hourSeen);
-    const { warnings } = finalizeCase(
-      accumulator,
-      'cover.csv',
-      run.header.metricNames,
-      year,
-      areas,
-    );
+    const { warnings } = finalizeCase(accumulator, 'cover.csv', run.header.metricNames, areas);
     return warnings.filter((w) => w.includes('covers'));
   };
   const realOnly = (seen) => seen.fill(1).fill(0, FEB_29, FEB_29 + 24);
@@ -724,9 +728,9 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
   const DERIVED = 'Gen - Load';
   const metrics = [...run.header.metricNames, DERIVED];
   const plan = buildColumnPlan(run.header, metrics);
-  const accumulator = createAccumulator(plan, AREA_COUNT);
+  const accumulator = createAccumulator(plan, AREA_COUNT, run.span);
   for (const [from, to] of run.ranges) {
-    blitBlock(accumulator, parseRange(parser, sampleBytes, from, to, plan, AREA_COUNT));
+    blitBlock(accumulator, parseRange(parser, sampleBytes, from, to, plan, AREA_COUNT, run.span));
   }
 
   const derivedIndex = plan.metrics.indexOf(DERIVED);
@@ -772,9 +776,9 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
     run.header,
     [...run.header.metricNames, DERIVED].filter((name) => name !== 'Load (MWh)'),
   );
-  const partial = createAccumulator(without, AREA_COUNT);
+  const partial = createAccumulator(without, AREA_COUNT, run.span);
   for (const [from, to] of run.ranges) {
-    blitBlock(partial, parseRange(parser, sampleBytes, from, to, without, AREA_COUNT));
+    blitBlock(partial, parseRange(parser, sampleBytes, from, to, without, AREA_COUNT, run.span));
   }
   applyDerived(partial);
   assert.equal(
@@ -788,9 +792,9 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
   // warns when one is signed.
   const NET = 'Export - Import';
   const netPlan = buildColumnPlan(run.header, [...run.header.metricNames, NET]);
-  const netAcc = createAccumulator(netPlan, AREA_COUNT);
+  const netAcc = createAccumulator(netPlan, AREA_COUNT, run.span);
   for (const [from, to] of run.ranges) {
-    blitBlock(netAcc, parseRange(parser, sampleBytes, from, to, netPlan, AREA_COUNT));
+    blitBlock(netAcc, parseRange(parser, sampleBytes, from, to, netPlan, AREA_COUNT, run.span));
   }
   const netWarnings = applyDerived(netAcc);
   const netIndex = netPlan.metrics.indexOf(NET);
@@ -839,9 +843,9 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096) {
 {
   const RATIO = 'Generation / Installed Capacity';
   const plan = buildColumnPlan(run.header, [...run.header.metricNames, RATIO]);
-  const accumulator = createAccumulator(plan, AREA_COUNT);
+  const accumulator = createAccumulator(plan, AREA_COUNT, run.span);
   for (const [from, to] of run.ranges) {
-    blitBlock(accumulator, parseRange(parser, sampleBytes, from, to, plan, AREA_COUNT));
+    blitBlock(accumulator, parseRange(parser, sampleBytes, from, to, plan, AREA_COUNT, run.span));
   }
 
   const ratioIndex = plan.metrics.indexOf(RATIO);

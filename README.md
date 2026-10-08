@@ -22,6 +22,11 @@ pasting into Excel: numbers copy at full precision and percentages as 0–1. The
 **Selected** tab lists what is pinned. Its Variable dropdown moves every pin
 to another quantity at once, and its "% of range" button switches them all.
 
+A Case can span several years. Time Series shows the whole run on a date
+axis, the **Years** filter keeps the years you want, and a pane's **Overlay
+years** lays each series' years over one Jan–Dec axis, each year a shade of
+the series' colour.
+
 **Save** writes a `.gvmb` bundle of everything loaded, including groups and
 reference lists. **Load** restores one. Older `.gvap` and `.gvip` bundles also
 load. The browser keeps a copy of the session between visits, but the `.gvmb`
@@ -38,14 +43,17 @@ file is the one to keep.
 
 ### Rules worth knowing
 
-- **Every case lays its year out on a fixed 8,784-hour leap calendar.** Feb 29
-  is kept, and is blank in a non-leap year, so the same date is the same hour
-  in every case. Hour counts are real hours: 8,760 in a non-leap year. Hours
-  are read as hour-ending 1-24.
+- **A case is a run of consecutive years, each on a fixed 8,784-hour leap
+  calendar.** Feb 29 is kept, and is blank in a non-leap year, so the same
+  date is the same hour in every year and every case. Hour counts are real
+  hours: 8,760 in a non-leap year. Hours are read as hour-ending 1-24. A year
+  inside the run with no rows is refused rather than read as no data, and
+  every table of a case must cover the same years.
 - **Row order does not matter**, but the same entity-hour appearing twice is
   refused. That usually means two exports were concatenated.
 - **Files given the same study name load as one table.** This is how a year
-  exported in halves goes back together. Drop the halves together.
+  exported in halves, or a run exported a year per file, goes back together.
+  Drop the parts together.
 - **Quantities combine only where their unit allows it.** Energy, cost and
   flow sum across entities. A price or percentage does not, and the control
   says why. Area prices are load-weighted using `data/area/aggregation-rules.json`.

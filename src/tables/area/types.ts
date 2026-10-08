@@ -7,11 +7,12 @@ import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import { allAreas } from './groupings';
 import type { Filters, HoursPresent, TouCodes } from '../../model/types';
 
-export type BoxDim = 'case' | 'month' | 'hourOfDay' | 'dayOfWeek' | 'season' | 'area';
+export type BoxDim = 'case' | 'year' | 'month' | 'hourOfDay' | 'dayOfWeek' | 'season' | 'area';
 
 /** Every box dimension, for checking one a bundle names. */
 export const BOX_DIMS: readonly BoxDim[] = [
   'case',
+  'year',
   'month',
   'hourOfDay',
   'dayOfWeek',
@@ -75,7 +76,8 @@ export interface ColumnRule {
 
 /**
  * One case's Area table. `cube` is indexed
- * `(area * numMetrics + metric) * 8784 + hour`. It carries NO name: the Case
+ * `((area * numMetrics + metric) * numYears + yearOff) * 8784 + slotHour`, so
+ * one (area, metric) plane's span is contiguous. It carries NO name: the Case
  * owns identity and label (src/model/case-model.ts).
  */
 export interface AreaTable {
@@ -90,8 +92,10 @@ export interface AreaTable {
   /** Every column the source carried, retained or not, so "never existed"
    * and "not kept" stay distinguishable. */
   sourceColumns: string[];
-  /** The case's calendar year, which selects `buildCalendar(year)`. */
-  year: number;
+  /** The span this table covers, one 8,784-hour slot per year from
+   * `firstYear`; it selects `buildCalendar(firstYear, numYears)`. */
+  firstYear: number;
+  numYears: number;
 }
 
 // An `AreaTable`'s half of the save envelope, reached through the registry.
@@ -104,9 +108,9 @@ export function serializeAreaTable(table: AreaTable): {
 } {
   return {
     fields: {
-      year: table.year,
-      firstYear: table.year,
-      numYears: 1,
+      year: table.firstYear,
+      firstYear: table.firstYear,
+      numYears: table.numYears,
       metrics: table.metrics,
       sourceColumns: table.sourceColumns,
       areas: table.areas,
@@ -124,6 +128,7 @@ export function deserializeAreaTable(
 ): AreaTable {
   const entry = fields as {
     year: number;
+    firstYear?: number;
     numYears?: number;
     metrics: string[];
     sourceColumns: string[];
@@ -138,11 +143,13 @@ export function deserializeAreaTable(
   const areas = entry.areas.length > 0 ? entry.areas.slice() : allAreas();
   const slot = savedHoursOnSlot(entry, new Float32Array(cube), areas.length * entry.metrics.length);
   const values = slot.cube;
-  const expected = areas.length * entry.metrics.length * YEAR_SLOT_HOURS;
+  const { numYears } = slot.span;
+  const expected = areas.length * entry.metrics.length * numYears * YEAR_SLOT_HOURS;
   if (values.length !== expected) {
     throw new Error(
       `saved Area cube is ${values.length} values, expected ${expected} ` +
-        `(${areas.length} areas × ${entry.metrics.length} metrics × ${YEAR_SLOT_HOURS} h)`,
+        `(${areas.length} areas × ${entry.metrics.length} metrics × ${numYears} years × ` +
+        `${YEAR_SLOT_HOURS} h)`,
     );
   }
   if (entry.presence.length !== areas.length * entry.metrics.length) {
@@ -160,6 +167,7 @@ export function deserializeAreaTable(
     tou: slot.tou,
     hoursPresent: slot.hoursPresent,
     sourceColumns: entry.sourceColumns.slice(),
-    year: entry.year,
+    firstYear: slot.span.firstYear,
+    numYears: slot.span.numYears,
   };
 }

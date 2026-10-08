@@ -9,7 +9,8 @@
 //   * A click previews, the checkbox pins, and the preview ends when the
 //     pinned set changes.
 //   * The join never drops the unexpected; units with no hours are dropped
-//     from the Generator tab with a counted note.
+//     from the Generator tab with a counted note, and every kind tab drops a
+//     row the hour filter leaves with no values, the same way.
 //   * A filter carries into a group once: as a keep-set over ungrouped rows,
 //     restated as context columns, never re-applied to the aggregate.
 //   * Numbers render whole (ratios as percent), a text filter matches the
@@ -63,6 +64,7 @@ const {
   statColumnsFrom,
   visibleColumns,
   visibleRows,
+  withoutEmptyRows,
 } = await import('../src/ui/browse-model.ts');
 const { buildGeneratorTab } = await import('../src/tables/generator/ui/browse.ts');
 const { browseDescriptor, browseTableCsv } = await import('../src/ui/browse-csv.ts');
@@ -524,7 +526,8 @@ function generatorTable(generators, fill, absent = []) {
     presence,
     tou: new Uint8Array(HOURS),
     sourceColumns: [...generators],
-    year: 2031,
+    firstYear: 2031,
+    numYears: 1,
     quantity: 'Generation (MWh)',
   };
 }
@@ -857,7 +860,8 @@ function busTable(buses, names, fill, absent = []) {
     presence,
     tou: new Uint8Array(HOURS),
     sourceColumns: [...buses],
-    year: 2031,
+    firstYear: 2031,
+    numYears: 1,
     quantity: 'LMP ($/MWh)',
   };
 }
@@ -1114,7 +1118,8 @@ function areaTable(areas, metrics, fill, absent = []) {
     presence,
     tou: new Uint8Array(HOURS),
     sourceColumns: ['Name', 'Date', 'Hour', ...metrics],
-    year: 2031,
+    firstYear: 2031,
+    numYears: 1,
   };
 }
 
@@ -1292,7 +1297,8 @@ function interfaceTable(interfaces, fill, absent = []) {
     presence,
     tou: new Uint8Array(HOURS),
     sourceColumns: [...interfaces],
-    year: 2031,
+    firstYear: 2031,
+    numYears: 1,
     quantity: 'Power Flow (MW)',
     unit: 'MW',
   };
@@ -1696,6 +1702,7 @@ const interfaceTableIn = (data) => ({
     let label = 'Case 1';
     const context = {
       filters: {
+        years: null,
         dates: null,
         hoursOfDay: null,
         daysOfWeek: null,
@@ -1750,6 +1757,7 @@ const interfaceTableIn = (data) => ({
     const [drawn] = resolveDraws(
       {
         filters: {
+          years: null,
           dates: null,
           hoursOfDay: null,
           daysOfWeek: null,
@@ -2385,6 +2393,7 @@ const interfaceTableIn = (data) => ({
 
   const { createBrowseScopes: makeScopes } = await import('../src/app/browse-scope.ts');
   const noHourFilters = {
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
@@ -2399,7 +2408,7 @@ const interfaceTableIn = (data) => ({
           key: 'a1',
           caseId: 'c1',
           slotKey: 'area',
-          data: { metrics, year: 2031, tou: new Uint8Array(HOURS) },
+          data: { metrics, firstYear: 2031, numYears: 1, tou: new Uint8Array(HOURS) },
         },
       ],
       kind,
@@ -2734,6 +2743,7 @@ const interfaceTableIn = (data) => ({
   // ------------------------------------------- the resolver draws group rows
   loadGeneratorGroups(MEMBERSHIP, NAME_MAPPING, undefined);
   const NO_HOUR_FILTERS = {
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
@@ -2741,7 +2751,7 @@ const interfaceTableIn = (data) => ({
     tou: null,
   };
   const drawGen = (specish, data = genData) =>
-    resolveGeneratorSeries(specish, data, NO_HOUR_FILTERS, createSeriesBuffers(), {
+    resolveGeneratorSeries(specish, data, NO_HOUR_FILTERS, createSeriesBuffers(HOURS), {
       name: 'river',
       detail: 'river',
       tableLabel: 'Case 1 · Generation (MWh)',
@@ -3029,18 +3039,24 @@ const interfaceTableIn = (data) => ({
       key: 'k1',
       caseId: 'c1',
       slotKey: 'generator Generation (MWh)',
-      data: { quantity: 'Generation (MWh)', year: 2031, tou: new Uint8Array(HOURS) },
+      data: {
+        quantity: 'Generation (MWh)',
+        firstYear: 2031,
+        numYears: 1,
+        tou: new Uint8Array(HOURS),
+      },
     },
     {
       key: 'k2',
       caseId: 'c1',
       slotKey: 'generator Fuel Cost ($)',
-      data: { quantity: 'Fuel Cost ($)', year: 2031, tou: new Uint8Array(HOURS) },
+      data: { quantity: 'Fuel Cost ($)', firstYear: 2031, numYears: 1, tou: new Uint8Array(HOURS) },
     },
   ];
   const names = new Map([['c1', { name: 'Case 1', label: 'Case 1' }]]);
   const cases = ['c1'];
   const noFilters = {
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
@@ -3082,13 +3098,13 @@ const interfaceTableIn = (data) => ({
       key: 'k3',
       caseId: 'c1',
       slotKey: 'generator LMP ($/MWh)',
-      data: { quantity: 'LMP ($/MWh)', year: 2031, tou: new Uint8Array(HOURS) },
+      data: { quantity: 'LMP ($/MWh)', firstYear: 2031, numYears: 1, tou: new Uint8Array(HOURS) },
     },
     {
       key: 'k4',
       caseId: 'c1',
       slotKey: 'generator Commit Status',
-      data: { quantity: 'Commit Status', year: 2031, tou: new Uint8Array(HOURS) },
+      data: { quantity: 'Commit Status', firstYear: 2031, numYears: 1, tou: new Uint8Array(HOURS) },
     },
   ];
   const offeredScopes = createBrowseScopes();
@@ -3345,6 +3361,7 @@ const interfaceTableIn = (data) => ({
   assert.notEqual(narrowed.id, whole.id, 'two member sets under one Case are two pins');
 
   const NO_HOUR_FILTERS = {
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
@@ -3352,7 +3369,7 @@ const interfaceTableIn = (data) => ({
     tou: null,
   };
   const drawArea = (row) =>
-    resolveAreaSeries(specFromRow(row), areaData, NO_HOUR_FILTERS, createSeriesBuffers(), {
+    resolveAreaSeries(specFromRow(row), areaData, NO_HOUR_FILTERS, createSeriesBuffers(HOURS), {
       name: 'case',
       detail: 'case',
       tableLabel: 'Case 1 · Load (MWh)',
@@ -3393,6 +3410,7 @@ const interfaceTableIn = (data) => ({
   ok('a grouped row built under a filter freezes its member set, and the spec carries it');
 
   const NO_HOUR_FILTERS = {
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
@@ -3400,7 +3418,7 @@ const interfaceTableIn = (data) => ({
     tou: null,
   };
   const drawGen = (specish) =>
-    resolveGeneratorSeries(specish, genData, NO_HOUR_FILTERS, createSeriesBuffers(), {
+    resolveGeneratorSeries(specish, genData, NO_HOUR_FILTERS, createSeriesBuffers(HOURS), {
       name: 'coal',
       detail: 'coal',
       tableLabel: 'Case 1 · Generation (MWh)',
@@ -3470,6 +3488,7 @@ const interfaceTableIn = (data) => ({
   assert.deepEqual(nw.members, ['AREA_AV']);
 
   const NO_HOUR_FILTERS = {
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
@@ -3477,7 +3496,7 @@ const interfaceTableIn = (data) => ({
     tou: null,
   };
   const drawArea = (specish) =>
-    resolveAreaSeries(specish, areaData, NO_HOUR_FILTERS, createSeriesBuffers(), {
+    resolveAreaSeries(specish, areaData, NO_HOUR_FILTERS, createSeriesBuffers(HOURS), {
       name: 'nw',
       detail: 'nw',
       tableLabel: 'Case 1 · Load (MWh)',
@@ -3733,6 +3752,7 @@ const interfaceTableIn = (data) => ({
   // order: this is the text the descriptor prints, and a reader re-deriving
   // the mask from the file has to be able to trust its names.
   const NONE = {
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
@@ -4396,6 +4416,65 @@ const interfaceTableIn = (data) => ({
   );
 }
 
+// ------------------------------------------------- rows the hours empty
+
+{
+  const tab = fakeTab(
+    [
+      { key: 'name', label: 'Name', kind: 'text' },
+      { key: 'stat.n', label: 'Hours', kind: 'number', computed: true },
+      { key: 'stat.max', label: 'Max', kind: 'number', computed: true },
+    ],
+    [
+      ['A', 3, 10],
+      ['B', 0, null],
+      ['C', null, null],
+      ['D', 5, 20],
+    ],
+  );
+  const classes = ['quantity', 'ratio', 'count', 'ratio'];
+  const switched = [];
+  const shaped = {
+    ...tab,
+    columns: tab.columns.map((c) =>
+      c.key === 'stat.max' ? { ...c, cellClass: (r) => classes[r] } : c,
+    ),
+    rowSwitches: new Map([['name', (r) => switched.push(r)]]),
+  };
+  const kept = withoutEmptyRows(shaped);
+  assert.deepEqual(
+    kept.rows.map((r) => r.id),
+    ['row0', 'row3'],
+  );
+  ok('a row with no hours in the hours shown is dropped, zero or blank');
+  const cell = (key, row) => kept.columns.find((c) => c.key === key).value(row);
+  assert.equal(cell('name', 1), 'D');
+  assert.equal(cell('stat.max', 1), 20);
+  assert.equal(
+    cellClassOf(
+      kept.columns.find((c) => c.key === 'stat.max'),
+      1,
+    ),
+    'ratio',
+  );
+  kept.rowSwitches.get('name')(1);
+  assert.deepEqual(switched, [3]);
+  ok('every row-indexed column, class and switch reads the kept row');
+  assert.deepEqual(kept.notes, ['2 rows hidden: no values in the hours shown.']);
+  ok('the hidden rows are counted in a note');
+  const full = fakeTab([{ key: 'stat.n', label: 'Hours', kind: 'number' }], [[1], [2]]);
+  assert.equal(withoutEmptyRows(full), full);
+  const statless = fakeTab([{ key: 'name', label: 'Name', kind: 'text' }], [['A']]);
+  assert.equal(withoutEmptyRows(statless), statless);
+  ok('a tab with every row valued, or no Hours column, is returned as is');
+
+  const drawer = readFileSync(new URL('../src/ui/browse-drawer.ts', import.meta.url), 'utf8');
+  assert.equal(drawer.match(/withoutEmptyRows\(source\.build\(/g)?.length, 2);
+  const selected = drawer.slice(drawer.indexOf('function buildSelectedTab'));
+  assert.ok(!selected.slice(0, selected.indexOf('\n  function ', 1)).includes('withoutEmptyRows'));
+  ok('the drawer drops empty rows from both builds of a kind tab, never from Selected');
+}
+
 console.log(`\n${checks} checks passed.`);
 
 // ------------------------------------- the three fuel columns on the tab
@@ -4483,13 +4562,19 @@ console.log(`\n${checks} checks passed.`);
   const { createBrowseScopes } = await import('../src/app/browse-scope.ts');
   const scopes = createBrowseScopes();
   const noFilters = {
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
     seasons: null,
     tou: null,
   };
-  const table = () => ({ quantity: 'Load (MW)', year: 2031, tou: new Uint8Array(HOURS) });
+  const table = () => ({
+    quantity: 'Load (MW)',
+    firstYear: 2031,
+    numYears: 1,
+    tou: new Uint8Array(HOURS),
+  });
   const rows = (data) => [{ key: 'c1 bus', caseId: 'c1', slotKey: 'bus', data }];
   const signatureOf = (data, name = 'Case 1', label = name) =>
     scopes.scope(rows(data), 'bus', ['c1'], noFilters, new Map([['c1', { name, label }]]))
@@ -4672,6 +4757,7 @@ console.log(`\n${checks} checks passed.`);
   const { createBrowseScopes } = await import('../src/app/browse-scope.ts');
   const scopes = createBrowseScopes();
   const filters = {
+    years: null,
     dates: null,
     hoursOfDay: null,
     daysOfWeek: null,
@@ -4683,7 +4769,7 @@ console.log(`\n${checks} checks passed.`);
       key: `${caseId}\u0000bus Load (MW)`,
       caseId,
       slotKey: 'bus Load (MW)',
-      data: { quantity: 'Load (MW)', year: 2031, tou: new Uint8Array(HOURS) },
+      data: { quantity: 'Load (MW)', firstYear: 2031, numYears: 1, tou: new Uint8Array(HOURS) },
     },
   ];
   const scopeOf = (rows) =>
@@ -5981,4 +6067,246 @@ console.log(`\n${checks} checks passed.`);
     null,
   );
   ok('statValue answers only for the stat columns');
+}
+
+// A row's mask is its table's plane long, every year of its span, so a
+// multi-year table is scoped whole beside a one-year one in another Case.
+{
+  const { createBrowseScopes } = await import('../src/app/browse-scope.ts');
+  const row = (caseId, numYears) => ({
+    key: `${caseId}-bus`,
+    caseId,
+    slotKey: 'bus',
+    data: {
+      quantity: 'LMP ($/MWh)',
+      firstYear: 2031,
+      numYears,
+      tou: new Uint8Array(numYears * HOURS),
+    },
+  });
+  const names = new Map([
+    ['c1', { name: 'One', label: 'One' }],
+    ['c2', { name: 'Two', label: 'Two' }],
+  ]);
+  const filters = {
+    years: new Set([2032]),
+    dates: null,
+    hoursOfDay: null,
+    daysOfWeek: null,
+    seasons: null,
+    tou: null,
+  };
+  const scopes = createBrowseScopes();
+  const scope = scopes.scope([row('c1', 1), row('c2', 2)], 'bus', ['c1', 'c2'], filters, names);
+  const [single, span] = scope.tables.map((table) => table.mask);
+  assert.equal(single.length, HOURS);
+  assert.equal(span.length, 2 * HOURS, 'two years of hours');
+  assert.equal(span[0], 0, 'the year filter drops 2031');
+  assert.equal(span[HOURS], 1, 'and keeps 2032, the second year of the span');
+  assert.equal(span[2 * HOURS - 1], 1, 'to its last hour');
+  ok('a multi-year row is masked over its whole span');
+}
+
+// ------------------------------------------------ Cases of different spans
+//
+// A one-year Case and a three-year Case ranked in one tab: each row is
+// ranked over its own table's plane, every year of it. Values rise by year,
+// so a row read over year one alone ranks lower. The shared one-slot scratch
+// main.ts hands in is passed, as the app passes it.
+{
+  const { rangeLimitsOf } = await import('../src/limits/draw.ts');
+  const { CASE_COLUMN_KEY } = await import('../src/ui/browse-model.ts');
+  const { isLeapYear } = await import('../src/model/calendar.ts');
+  const { clearInterfaceGroups, setInterfaceMembership } =
+    await import('../src/tables/interface/groups.ts');
+  const FIRST = 2032;
+  /** `levels[path][year]`; a non-leap year's Feb 29 is NaN, as ingest leaves
+   * it, so no phantom hour is divided by a missing limit. */
+  const spanTable = (years, levels) => {
+    const plane = years * HOURS;
+    const cube = new Float32Array(levels.length * plane);
+    levels.forEach((byYear, index) => {
+      for (let year = 0; year < years; year++) {
+        const start = index * plane + year * HOURS;
+        cube.fill(byYear[year], start, start + HOURS);
+        if (!isLeapYear(FIRST + year)) cube.fill(Number.NaN, start + 1416, start + 1440);
+      }
+    });
+    return {
+      cube,
+      interfaces: ['P01', 'P02'].slice(0, levels.length),
+      presence: new Uint8Array(levels.length).fill(1),
+      tou: new Uint8Array(plane),
+      sourceColumns: ['P01', 'P02'],
+      firstYear: FIRST,
+      numYears: years,
+      quantity: 'Power Flow (MW)',
+      unit: 'MW',
+    };
+  };
+  const tableIn = (caseId, data) => ({
+    caseId,
+    caseName: caseId,
+    caseLabel: caseId,
+    slotKey: 'interface',
+    data,
+    mask: new Uint8Array(data.numYears * HOURS).fill(1),
+  });
+  const tables = [
+    tableIn('c1', spanTable(1, [[10], [1]])),
+    tableIn(
+      'c2',
+      spanTable(3, [
+        [10, 20, 30],
+        [1, 2, 3],
+      ]),
+    ),
+  ];
+  const scratch = new Float32Array(HOURS);
+  const realSpan = realHours(FIRST, 3);
+  const spanMean = (byYear) =>
+    byYear.reduce((sum, level, year) => sum + level * realHours(FIRST + year, 1), 0) / realSpan;
+
+  const tab = buildInterfaceTab({ tables, areas: null, scratch });
+  const stat = (key, row) => tab.columns.find((c) => c.key === key).value(row);
+  assert.deepEqual(
+    tab.rows.map((row) => `${row.caseId} ${row.entity}`),
+    ['c1 P01', 'c1 P02', 'c2 P01', 'c2 P02'],
+  );
+  assert.equal(stat('stat.n', 0), HOURS, "c1's one leap year");
+  assert.equal(stat('stat.n', 2), realSpan, "c2's three years, phantom Feb 29s left out");
+  assert.equal(stat('stat.max', 0), 10);
+  assert.equal(stat('stat.max', 2), 30, "c2's last year");
+  assert.ok(Math.abs(stat('stat.mean', 2) - spanMean([10, 20, 30])) < 1e-9);
+  assert.equal(stat('stat.min', 3), 1);
+  assert.equal(stat('stat.max', 3), 3);
+  ok('one tab ranks a one-year and a three-year Case, each over its own plane');
+
+  // A Years filter: c2's statistics take only 2033's hours, by its mask.
+  const { buildCalendar, buildMask } = await import('../src/model/calendar.ts');
+  const only2033 = tables.map((table) => ({
+    ...table,
+    mask: buildMask(
+      {
+        years: new Set([FIRST + 1]),
+        dates: null,
+        hoursOfDay: null,
+        daysOfWeek: null,
+        seasons: null,
+        tou: null,
+      },
+      buildCalendar(FIRST, table.data.numYears),
+      table.data.tou,
+    ),
+  }));
+  const yearTab = buildInterfaceTab({ tables: only2033, areas: null, scratch });
+  const yearStat = (key, row) => yearTab.columns.find((c) => c.key === key).value(row);
+  assert.equal(yearStat('stat.n', 2), realHours(FIRST + 1, 1), "2033's real hours only");
+  assert.equal(yearStat('stat.min', 2), 20);
+  assert.equal(yearStat('stat.max', 2), 20);
+  ok('a Years filter takes only its years into the statistics');
+
+  // "% of range" over the span: the monthly limits repeat in every year.
+  const monthly = (value) => ({
+    max: new Float32Array(12).fill(value),
+    min: new Float32Array(12).fill(-value),
+  });
+  const limits = { P01: monthly(40), P02: monthly(4) };
+  const limitsOf = (_caseId, name, year, numYears) => rangeLimitsOf(limits[name], year, numYears);
+  const pct = buildInterfaceTab({ tables, areas: null, scratch, perUnit: true, limitsOf });
+  const pctStat = (key, row) => pct.columns.find((c) => c.key === key).value(row);
+  assert.equal(pctStat('stat.max', 0), 0.25, 'c1: 10 over 40');
+  assert.equal(pctStat('stat.min', 2), 0.25, 'c2 year one: 10 over 40');
+  assert.equal(pctStat('stat.max', 2), 0.75, 'c2 year three: 30 over the same 40');
+  assert.equal(pctStat('stat.max', 3), 0.75, 'P02: 3 over 4');
+  ok('a three-year path ranks as a % of its limits in every year');
+
+  setInterfaceMembership(
+    new Map([
+      [
+        'Both',
+        [
+          { name: 'P01', direction: 'forward' },
+          { name: 'P02', direction: 'forward' },
+        ],
+      ],
+    ]),
+  );
+  const groups = buildInterfaceTab({ tables, areas: null, scratch, isGroupTab: true });
+  const groupStat = (key, row) => groups.columns.find((c) => c.key === key).value(row);
+  assert.deepEqual(
+    groups.rows.map((row) => row.caseId),
+    ['c1', 'c2'],
+  );
+  assert.equal(groupStat('stat.max', 0), 11);
+  assert.equal(groupStat('stat.max', 1), 33, "c2's group summed in its last year");
+  assert.ok(Math.abs(groupStat('stat.mean', 1) - spanMean([11, 22, 33])) < 1e-4);
+  const groupPct = buildInterfaceTab({
+    tables,
+    areas: null,
+    scratch,
+    isGroupTab: true,
+    perUnit: true,
+    limitsOf,
+  });
+  const groupPctStat = (key, row) => groupPct.columns.find((c) => c.key === key).value(row);
+  assert.equal(groupPctStat('stat.max', 0), 0.25, 'c1: 11 over the summed 44');
+  assert.equal(groupPctStat('stat.max', 1), 0.75, 'c2 year three: 33 over 44');
+  ok('a boundary over Cases of different spans sums and divides each Case over its own');
+  clearInterfaceGroups();
+
+  // Area: the metric is folded into the plane start, so a span moves both.
+  const areaSpan = (years) => {
+    const metrics = ['Load (MWh)', 'Generation (MWh)'];
+    const plane = years * HOURS;
+    const cube = new Float32Array(2 * metrics.length * plane);
+    for (let a = 0; a < 2; a++) {
+      for (let m = 0; m < metrics.length; m++) {
+        for (let year = 0; year < years; year++) {
+          const start = (a * metrics.length + m) * plane + year * HOURS;
+          cube.fill((a + 1) * (m + 1) * (year + 1), start, start + HOURS);
+          if (!isLeapYear(FIRST + year)) cube.fill(Number.NaN, start + 1416, start + 1440);
+        }
+      }
+    }
+    return {
+      cube,
+      areas: ['NORTH', 'SOUTH'],
+      metrics,
+      presence: new Uint8Array(2 * metrics.length).fill(1),
+      tou: new Uint8Array(plane),
+      sourceColumns: metrics,
+      firstYear: FIRST,
+      numYears: years,
+    };
+  };
+  const areaTables = [
+    { ...tableIn('c1', areaSpan(1)), slotKey: 'area' },
+    { ...tableIn('c2', areaSpan(3)), slotKey: 'area' },
+  ];
+  const areaTab = buildAreaTab({
+    tables: areaTables,
+    variable: 'Generation (MWh)',
+    areas: null,
+    scratch,
+  });
+  const areaStat = (key, row) => areaTab.columns.find((c) => c.key === key).value(row);
+  assert.deepEqual(
+    areaTab.rows.map((row) => `${row.caseId} ${row.entity}`),
+    ['c1 NORTH', 'c1 SOUTH', 'c2 NORTH', 'c2 SOUTH'],
+  );
+  assert.equal(areaStat('stat.max', 1), 4, 'c1 SOUTH generation');
+  assert.equal(areaStat('stat.max', 3), 12, 'c2 SOUTH generation, last year');
+  assert.ok(Math.abs(areaStat('stat.mean', 3) - spanMean([4, 8, 12])) < 1e-9);
+  const byCase = buildAreaTab({
+    tables: areaTables,
+    variable: 'Generation (MWh)',
+    areas: null,
+    scratch,
+    groupBy: CASE_COLUMN_KEY,
+  });
+  const caseStat = (key, row) => byCase.columns.find((c) => c.key === key).value(row);
+  assert.equal(caseStat('stat.max', 0), 6, 'c1: 2 + 4');
+  assert.equal(caseStat('stat.max', 1), 18, 'c2: 6 + 12 in its last year');
+  ok('the Area tab ranks and combines each Case over its own span');
 }

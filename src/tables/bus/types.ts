@@ -1,6 +1,6 @@
 // src/tables/bus/types.ts
 //
-// The Bus table type and its half of the v3 save envelope. A bus export
+// The Bus table type and its half of the save envelope. A bus export
 // carries an id row above the header:
 //
 // BusNumber,10001,10002,...
@@ -12,7 +12,8 @@
 import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import type { HoursPresent, TouCodes } from '../../model/types';
 
-/** One wide Bus export: `cube[bus * 8784 + hour]`, `bus` indexing `buses`. */
+/** One wide Bus export: `cube[(bus * numYears + yearOff) * 8784 + slotHour]`,
+ * `bus` indexing `buses`. One bus's span is contiguous. */
 export interface BusTable {
   cube: Float32Array;
   /** The cube's bus axis: BusNumber ids in cube-index order. The IDENTITY. */
@@ -25,7 +26,8 @@ export interface BusTable {
   hoursPresent?: HoursPresent;
   /** Every bus id the source CSV carried, retained or not. */
   sourceColumns: number[];
-  year: number;
+  firstYear: number;
+  numYears: number;
   quantity: string;
 }
 
@@ -51,9 +53,9 @@ export function serializeBusTable(table: BusTable): {
 } {
   return {
     fields: {
-      year: table.year,
-      firstYear: table.year,
-      numYears: 1,
+      year: table.firstYear,
+      firstYear: table.firstYear,
+      numYears: table.numYears,
       // A plain number array, not the Int32Array: `storage.ts` base64s
       // `Uint8Array` values and JSON-encodes everything else, so an Int32Array
       // would go out as an object with numeric keys and come back as one.
@@ -72,6 +74,7 @@ export function serializeBusTable(table: BusTable): {
 export function deserializeBusTable(fields: Record<string, unknown>, cube: ArrayBuffer): BusTable {
   const entry = fields as {
     year: number;
+    firstYear?: number;
     numYears?: number;
     buses: number[];
     names: string[];
@@ -83,11 +86,12 @@ export function deserializeBusTable(fields: Record<string, unknown>, cube: Array
   };
   const slot = savedHoursOnSlot(entry, new Float32Array(cube), entry.buses.length);
   const values = slot.cube;
-  const expected = entry.buses.length * YEAR_SLOT_HOURS;
+  const { numYears } = slot.span;
+  const expected = entry.buses.length * numYears * YEAR_SLOT_HOURS;
   if (values.length !== expected) {
     throw new Error(
       `saved Bus cube is ${values.length} values, expected ${expected} ` +
-        `(${entry.buses.length} buses × ${YEAR_SLOT_HOURS} h)`,
+        `(${entry.buses.length} buses × ${numYears} years × ${YEAR_SLOT_HOURS} h)`,
     );
   }
   if (entry.presence.length !== entry.buses.length) {
@@ -110,7 +114,8 @@ export function deserializeBusTable(fields: Record<string, unknown>, cube: Array
     tou: slot.tou,
     hoursPresent: slot.hoursPresent,
     sourceColumns: entry.sourceColumns.slice(),
-    year: entry.year,
+    firstYear: slot.span.firstYear,
+    numYears: slot.span.numYears,
     quantity: entry.quantity,
   };
 }

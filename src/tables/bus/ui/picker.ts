@@ -3,13 +3,13 @@
 // The bus picker. Unlike Interface's, **nothing is selected by default**: a
 // full-width bus case is hundreds of MB per metric, so Enter must not be able
 // to produce that allocation. "Keep everything" states the exact cost
-// (`cubeBytesFor`) on hover instead.
+// (`cubeCost`) on hover instead.
 //
 // The value is the id as a string (what `bus/wide.ts` rewrites the header
 // to), shown as `name (id)`, and the filter matches the id too, because two
 // buses may share a name.
 
-import { cubeBytesFor } from '../wide';
+import { cubeCost, type CubeCost } from '../../../ingest';
 import { busLabel } from '../rules';
 import { showWideEntityPicker } from '../../../ui/wide-entity-picker';
 
@@ -28,10 +28,13 @@ export function showBusPicker(
   labels: Map<string, string>,
   coverage: Map<string, string[]>,
   caseCount: number,
+  yearCount: number,
   preselected: readonly string[] = [],
   everything: boolean,
 ): Promise<string[] | null> {
   const label = (id: string): string => busLabel(labels.get(id) ?? '', Number(id));
+  const costOf = (count: number): CubeCost =>
+    cubeCost([{ count, one: 'bus', many: 'buses' }], yearCount);
 
   return showWideEntityPicker({
     union,
@@ -60,18 +63,13 @@ export function showBusPicker(
     mode: 'cancelable',
     everything,
     keepAllCost: (unionCount) => ({
-      bytes: cubeBytesFor(unionCount) * caseCount,
       what: `all ${unionCount.toLocaleString()} buses`,
+      cost: costOf(unionCount),
+      lever: 'fewer buses',
     }),
-    readout: (chosenCount, unionCount, cases) => {
-      const bytes = cubeBytesFor(chosenCount) * cases;
-      const allBytes = cubeBytesFor(unionCount) * cases;
-      return (
-        `${chosenCount.toLocaleString()} of ${unionCount.toLocaleString()} bus` +
-        `${unionCount === 1 ? '' : 'es'} × ${cases} case${cases === 1 ? '' : 's'} = ` +
-        `${(bytes / (1024 * 1024)).toFixed(1)} MB` +
-        ` (all of them would be ${(allBytes / (1024 * 1024)).toFixed(0)} MB)`
-      );
-    },
+    readout: (chosenCount, unionCount) =>
+      `${chosenCount.toLocaleString()} of ${unionCount.toLocaleString()} bus` +
+      `${unionCount === 1 ? '' : 'es'}: ${costOf(chosenCount).arithmetic}` +
+      ` (all of them would be ${(costOf(unionCount).bytes / (1024 * 1024)).toFixed(0)} MB)`,
   });
 }

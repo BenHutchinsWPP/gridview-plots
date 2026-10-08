@@ -13,7 +13,13 @@ export interface BrowseKindRow {
   key: string;
   caseId: string;
   slotKey: string;
-  data: { quantity?: string; metrics?: string[]; year: number; tou: Uint8Array };
+  data: {
+    quantity?: string;
+    metrics?: string[];
+    firstYear: number;
+    numYears: number;
+    tou: Uint8Array;
+  };
 }
 /** What a Case is called, by id, at scope time. */
 export interface ScopedCase {
@@ -69,6 +75,7 @@ function filtersKey(filters: Filters): string {
   const part = (set: ReadonlySet<number | string> | null): string =>
     set === null ? '*' : [...set].map(String).sort().join('+');
   return [
+    part(filters.years),
     // Every run: a key naming only the first would keep the old ranking.
     filters.dates === null ? '*' : filters.dates.map((run) => `${run.start}-${run.end}`).join(','),
     part(filters.hoursOfDay),
@@ -89,6 +96,8 @@ export function filtersLabel(filters: Filters): string {
   const words = (set: ReadonlySet<string> | null): string =>
     set === null ? '' : [...set].sort().join(', ');
   const parts: string[] = [];
+  const years = numbers(filters.years);
+  if (years) parts.push(`Years: ${years}`);
   if (filters.dates) parts.push(`Dates: ${setLabel(filters.dates)}`);
   const hours = numbers(filters.hoursOfDay);
   if (hours) parts.push(`Hour (HE): ${hours}`);
@@ -173,12 +182,20 @@ export function createBrowseScopes(): BrowseScopes {
       );
 
       const tables = scoped.map((row) => {
+        // One plane long, every year of the row's span; a held mask of
+        // another length is replaced, never partly rewritten.
+        const hours = row.data.numYears * YEAR_SLOT_HOURS;
         let mask = masks.get(row.data);
-        if (!mask) {
-          mask = new Uint8Array(YEAR_SLOT_HOURS);
+        if (mask?.length !== hours) {
+          mask = new Uint8Array(hours);
           masks.set(row.data, mask);
         }
-        buildMask(filters, buildCalendar(row.data.year), row.data.tou, mask);
+        buildMask(
+          filters,
+          buildCalendar(row.data.firstYear, row.data.numYears),
+          row.data.tou,
+          mask,
+        );
         const named = caseNames.get(row.caseId);
         return {
           caseId: row.caseId,

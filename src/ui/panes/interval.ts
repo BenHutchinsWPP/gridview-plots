@@ -4,15 +4,17 @@
 // (`src/series/interval.ts`), every period drawn over one shared axis and
 // coloured from the earliest period to the latest, so a drift through the
 // year reads as a change of colour. Hand-drawn, because uPlot would need a
-// series per period and a year of days is 366 of them.
+// series per period and a year of days is 366 of them, ten years 3,653. A
+// Case spanning several years is cut over its whole span; the Years filter
+// narrows it.
 //
 // One series, as the heatmap: the pane names which of the drawn lines it
 // took. `periodColour` is the one colour rule the pane and its print figure
 // share. A clicked period stays picked while it is still drawn.
 
 import type { CaseSeries, PaneInterval } from '../charts';
-import { DAY_NAMES, MONTH_NAMES, YEAR_SLOT_DAYS } from '../../model/calendar';
-import { weekdayOf } from '../../model/date-range';
+import { DAY_NAMES, MONTH_NAMES, YEAR_SLOT_HOURS } from '../../model/calendar';
+import { weekdaysOver } from '../../model/date-range';
 import { NO_YEAR } from '../../app/boxes';
 import {
   axisHours,
@@ -27,7 +29,10 @@ import { clip, formatNumber } from '../chart-format';
 import { viridisColor } from './heatmap';
 import {
   figureShot,
+  hasYear,
+  keptRealHours,
   pinnedOf,
+  yearsKept,
   type PaneAdapter,
   type PaneElements,
   type PaneFrame,
@@ -49,8 +54,12 @@ interface IntervalGeometry {
   periods: Period[];
   span: number;
   summary: ReturnType<typeof periodSummary>;
-  /** The series' own weekdays, 0 = Monday, -1 for a phantom Feb 29. */
+  /** The series' own weekdays over its span, 0 = Monday, -1 for a phantom
+   * Feb 29. */
+  weekdays: Int8Array;
   weekday: (day: number) => number;
+  /** The first slot's year, when the line has one to print. */
+  firstYear: number | undefined;
   low: number;
   high: number;
   plotLeft: number;
@@ -200,13 +209,15 @@ export function createIntervalAdapter(host: PaneHost): PaneAdapter {
     tip.style.display = 'none';
   }
 
-  function draw(
-    series: CaseSeries,
-    options: IntervalOptions,
-    weekday: (day: number) => number,
-  ): void {
+  function draw(series: CaseSeries, options: IntervalOptions, first: number | undefined): void {
     const previous = current;
-    const periods = cutPeriods(series.values ?? [], options.length, weekday);
+    const values = series.values ?? [];
+    const slots = Math.max(1, Math.ceil(values.length / YEAR_SLOT_HOURS));
+    const firstYear = hasYear(first) ? first : undefined;
+    // With no year, weekdays are the box plot's.
+    const weekdays = weekdaysOver(firstYear ?? NO_YEAR, slots);
+    const weekday = (day: number): number => weekdays[day];
+    const periods = cutPeriods(values, options.length, weekday, firstYear);
     const span = axisHours(options.length);
     const summary = periodSummary(periods, span);
     let low = Infinity;
@@ -237,7 +248,9 @@ export function createIntervalAdapter(host: PaneHost): PaneAdapter {
       periods,
       span,
       summary,
+      weekdays,
       weekday,
+      firstYear,
       low: ticks.low,
       high: ticks.high === ticks.low ? ticks.low + ticks.step : ticks.high,
       plotLeft: MARGIN.left,
@@ -536,7 +549,6 @@ export function createIntervalAdapter(host: PaneHost): PaneAdapter {
       // would give no colour to tell them apart.
       const s = drawable[0];
       host.note(`${s.name}${drawable.length > 1 ? ` (1 of ${drawable.length})` : ''}`);
-      const year = input.yearOf?.(s);
       draw(
         s,
         {
@@ -545,8 +557,7 @@ export function createIntervalAdapter(host: PaneHost): PaneAdapter {
           mean: intervalMean.checked,
           band: intervalBand.checked,
         },
-        // With no year, weekdays are the box plot's.
-        (day) => weekdayOf(year ?? NO_YEAR, day),
+        input.spanOf?.(s).firstYear,
       );
       if (zeroText) host.banner('note', zeroText);
     },
@@ -569,17 +580,28 @@ export function createIntervalAdapter(host: PaneHost): PaneAdapter {
         if (!frame || !current || !painted || painted.dashed) return null;
         const drawn = current;
         const pinned = pinnedOf(frame.input.series);
-        return figureShot(host, frame.input, {
+        // The span is cut whole, the years the filter drops left blank, so
+        // the caption names only the kept years.
+        const cut: CaseSeries = {
+          ...painted,
+          facets: yearsKept(painted.facets, frame.input.years),
+        };
+        const shot = figureShot(host, frame.input, {
           pane: 'interval',
-          ordered: [painted, ...pinned.filter((s) => s !== painted)],
+          ordered: [cut, ...pinned.filter((s) => s !== painted)],
           xWindow: [0, 1],
           onlyOne: 'An interval chart draws one series.',
           interval: {
             ...drawn.options,
             picked: drawn.picked,
-            weekdays: Array.from({ length: YEAR_SLOT_DAYS }, (_, day) => drawn.weekday(day)),
+            weekdays: Array.from(drawn.weekdays),
+            ...(drawn.firstYear === undefined ? {} : { firstYear: drawn.firstYear }),
           },
         });
+        const counted = keptRealHours(painted.facets, frame.input.years);
+        return counted === null
+          ? shot
+          : { ...shot, capture: { ...shot.capture, realHours: counted } };
       },
     },
   };

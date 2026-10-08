@@ -11,8 +11,9 @@
 // times and drop later columns, and N dispatches on one pool could let a
 // stale reply land in the wrong cube.
 
+import type { YearSpan } from '../model/calendar';
 import type { TableSlotKey } from '../model/case-model';
-import type { PlanWarning } from '../ingest';
+import { spanLabel, type PlanWarning } from '../ingest';
 
 /** One dropped table file as the Import Dialog left it: its Case name and slot
  * variant (possibly undefined). Nothing downstream re-derives either. */
@@ -36,6 +37,17 @@ export interface IngestHost {
    * known, so it is where the root records them; axis widening re-attaches
    * through the Case store directly and must not record again. */
   attach(caseId: string, slot: TableSlotKey, table: unknown, sources: readonly TableSource[]): void;
+  /** The years the named Case's tables span outside `replacing`, the slots a
+   * table about to attach would take, and which table says so. `null` when
+   * the Case is not loaded or holds no other table. */
+  heldSpan(caseName: string, replacing: readonly TableSlotKey[]): HeldSpan | null;
+}
+
+/** A Case's years as one of its loaded tables states them. */
+export interface HeldSpan {
+  span: YearSpan;
+  /** "SAMPLE_X's Area table". */
+  holder: string;
 }
 
 /** What a file's own header or scan offered, and how much of it the batch
@@ -182,4 +194,72 @@ export function groupByCase(drops: readonly Drop[]): number[] {
     ids.set(key, ids.size);
     return ids.size - 1;
   });
+}
+
+/**
+ * Refuse every merge group whose years differ from its Case's, before its
+ * files are parsed or a picker is asked about them. A Case is one run of
+ * years: a pane, a download and the date filter all read one span off it.
+ * The Case's span is what its tables outside the group's slots state (a
+ * replaced table's years go with it), else what an earlier group of this
+ * batch for the same Case spans. The refused files fail with the refusal;
+ * the survivors come back in order.
+ */
+export function keepSpans<D extends Drop, P extends YearSpan>(
+  host: Pick<IngestHost, 'heldSpan'>,
+  outcome: IngestOutcome,
+  kept: readonly D[],
+  plans: readonly P[],
+  slotsOf: (drop: D) => readonly TableSlotKey[],
+): { kept: D[]; plans: P[] } {
+  const groupOf = groupByCase(kept);
+  /** The first group of this batch to claim each Case. */
+  const claimed = new Map<string, HeldSpan>();
+  const refused = new Set<number>();
+  for (const group of new Set(groupOf)) {
+    const members = groupOf.flatMap((id, i) => (id === group ? [i] : []));
+    const span = spanOfMembers(members.map((i) => plans[i]));
+    const drop = kept[members[0]];
+    const held = claimed.get(drop.caseName) ?? host.heldSpan(drop.caseName, slotsOf(drop));
+    const files = members.map((i) => kept[i].file);
+    const names = files.map((file) => file.name);
+    if (held !== null && !sameSpan(held.span, span)) {
+      refused.add(group);
+      const who = names.length === 1 ? `${names[0]} spans` : `${names.join(' and ')} together span`;
+      outcome.failures.push({
+        files,
+        note:
+          `${who} ${spanLabel(span)}, but ${held.holder} spans ${spanLabel(held.span)}. One ` +
+          `Case holds one run of years; load ${names.length === 1 ? 'it as its' : 'them as their'} ` +
+          `own Case.`,
+      });
+      continue;
+    }
+    if (!claimed.has(drop.caseName)) {
+      claimed.set(drop.caseName, {
+        span,
+        holder: `${names.join(' and ')}, in this drop for the same Case,`,
+      });
+    }
+  }
+  const survivors = kept.flatMap((_, i) => (refused.has(groupOf[i]) ? [] : [i]));
+  return { kept: survivors.map((i) => kept[i]), plans: survivors.map((i) => plans[i]) };
+}
+
+/** The run of years a merge group's members cover together. A gap between
+ * them is the merge check's refusal, not this one's. */
+function spanOfMembers(members: readonly YearSpan[]): YearSpan {
+  const first = Math.min(...members.map((span) => span.firstYear));
+  const last = Math.max(...members.map((span) => span.firstYear + span.numYears - 1));
+  return { firstYear: first, numYears: last - first + 1 };
+}
+
+function sameSpan(a: YearSpan, b: YearSpan): boolean {
+  return a.firstYear === b.firstYear && a.numYears === b.numYears;
+}
+
+/** The years a batch's files span, summed: each file's cube holds one slot
+ * per year of its own span, which is what a picker prices. */
+export function yearCountOf(plans: readonly YearSpan[]): number {
+  return plans.reduce((sum, plan) => sum + plan.numYears, 0);
 }

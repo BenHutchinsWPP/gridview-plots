@@ -13,8 +13,15 @@
 // A boundary divides by its members' limits summed in its directions
 // (`../limits.ts`).
 
-import { YEAR_SLOT_HOURS } from '../../../model/calendar';
-import { applyMask, createScratch, quantiles, stats, type RankMemo } from '../../../kernels';
+import {
+  applyMask,
+  createScratch,
+  fitScratch,
+  quantiles,
+  stats,
+  type RankMemo,
+} from '../../../kernels';
+import { planeLength, planeStart } from '../kernels';
 import { reduceSignedMembers } from '../../../lookups/reduce';
 import { rankScopedRows } from '../../../ui/browse-planes';
 import {
@@ -65,8 +72,9 @@ export interface InterfaceBrowseInput {
   keep?: ReadonlySet<string>;
   /** "% of range": stats of each path over its limit, else its peak. */
   perUnit?: boolean;
-  /** One path's hourly limits in one Case; absent means none anywhere. */
-  limitsOf?: (caseId: string, interfaceName: string, year: number) => RangeLimits;
+  /** One path's hourly limits in one Case over `numYears` from `year`, as
+   * long as its table's plane; absent means none anywhere. */
+  limitsOf?: (caseId: string, interfaceName: string, year: number, numYears: number) => RangeLimits;
 }
 
 export function buildInterfaceTab(input: InterfaceBrowseInput): BrowseTab {
@@ -117,9 +125,9 @@ export function buildInterfaceTab(input: InterfaceBrowseInput): BrowseTab {
     axisIndexOf: (row) => refs[row].axisIndex,
     planesOf: (data) => ({
       presence: data.presence,
-      planeStart: (axisIndex) => axisIndex * YEAR_SLOT_HOURS,
+      planeStart: (axisIndex) => planeStart(data, axisIndex),
     }),
-    scratch: input.scratch ?? createScratch(),
+    scratch: input.scratch,
     memo: input.memo,
     ...(perUnit ? { rangeOf: rangeOfRow } : {}),
   });
@@ -128,7 +136,7 @@ export function buildInterfaceTab(input: InterfaceBrowseInput): BrowseTab {
   function rangeOfRow(row: number): RangeLimits {
     const { data, caseId } = tableOf[row];
     if (!input.limitsOf || !isRated(data.unit)) return {};
-    return input.limitsOf(caseId, String(refs[row].entity), data.year);
+    return input.limitsOf(caseId, String(refs[row].entity), data.firstYear, data.numYears);
   }
 
   // ---------------------------------------------------------- the columns
@@ -259,9 +267,10 @@ function groupTabRows(input: InterfaceBrowseInput, notes: string[]): BrowseTab {
     };
   }
 
-  const seriesScratch = input.scratch ?? createScratch();
-  const gatheredScratch = createScratch();
-  const rangeScratch = createScratch();
+  const longest = Math.max(0, ...tables.map((table) => planeLength(table.data)));
+  const seriesScratch = fitScratch(input.scratch, longest);
+  const gatheredScratch = createScratch(longest);
+  const rangeScratch = createScratch(longest);
   const narrowed = keep !== undefined;
   const perUnit = Boolean(input.perUnit);
   const limited = perUnit && isRated(unit);
@@ -287,19 +296,22 @@ function groupTabRows(input: InterfaceBrowseInput, notes: string[]): BrowseTab {
       const coefficients = new Map<string | number, number>(
         scopedMembers.map((member) => [member.name, signOf(member.direction)] as const),
       );
+      const hours = planeLength(table.data);
+      const summed = seriesScratch.subarray(0, hours);
       const contributing = reduceSignedMembers(
         table.data.cube,
+        hours,
         table.data.presence,
         table.data.interfaces,
         coefficients,
-        seriesScratch,
+        summed,
       );
       if (contributing === 0) continue;
 
       const reversed = scopedMembers.filter((member) => member.direction === 'reversed').length;
       if (reversed > 0 && !isDirectional(unit)) reversedOnNonFlow++;
 
-      let series = seriesScratch;
+      let series = summed;
       if (perUnit) {
         // Every scoped member is present, so each one entered the sum.
         const { limitsOf } = input;
@@ -308,11 +320,17 @@ function groupTabRows(input: InterfaceBrowseInput, notes: string[]): BrowseTab {
             ? summedLimits(
                 scopedMembers.map((member) => ({
                   sign: signOf(member.direction),
-                  limits: limitsOf(table.caseId, member.name, table.data.year),
+                  limits: limitsOf(
+                    table.caseId,
+                    member.name,
+                    table.data.firstYear,
+                    table.data.numYears,
+                  ),
                 })),
+                hours,
               )
             : {};
-        series = normalizedCopy(seriesScratch, limits, rangeScratch);
+        series = normalizedCopy(summed, limits, rangeScratch);
       }
       const n = applyMask(series, table.mask, gatheredScratch);
       const s = stats(gatheredScratch, n);

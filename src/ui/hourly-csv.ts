@@ -15,7 +15,14 @@
 //     `0.42100000000000004`, and the percent was already the exact text.
 
 import { dayOfMonth, monthOf } from './chart-format';
-import { MONTH_NAMES, SLOT_MONTH_STARTS, YEAR_SLOT_HOURS } from '../model/calendar';
+import {
+  MONTH_NAMES,
+  SLOT_MONTH_STARTS,
+  YEAR_SLOT_HOURS,
+  isLeapYear,
+  type YearSpan,
+} from '../model/calendar';
+import { NO_YEAR } from '../app/boxes';
 import { kindNoun, shortLabels, type SeriesFacets } from '../series/label';
 
 /** The hour columns, in the order `hourFields` writes them. HourOfYear is
@@ -100,19 +107,27 @@ export function formatRatioCell(percent: number): string {
 // series, the warnings and the refusals) and its hour rows on the year slot:
 //
 //   * **wide**: one row per hour of the 8,784-hour slot, one column per
-//     series. Feb 29 is always a row, blank for a series of a non-leap year,
-//     because the row is shared with every other column.
+//     series and year of its Case. Feb 29 is always a row, blank for a
+//     non-leap year's column, because the row is shared with every other
+//     column.
 //   * **long**: `Series, Month, Day, HE, HourOfYear, Value`, one row per
-//     series-hour, written one series at a time. A series writes its own
-//     year's days only: 8,784 rows in a leap year, 8,760 without Feb 29
-//     otherwise, since a row for a day that did not happen reads as a gap.
+//     series-hour, written one series at a time, year after year. A year
+//     writes its own days only: 8,784 rows in a leap year, 8,760 without
+//     Feb 29 otherwise, since a row for a day that did not happen reads as a
+//     gap.
+//
+// **A file names years only when it holds more than one** (`namesYears`):
+// then each wide column ends in its year and long gains a `Year` column.
+// A file of one year is laid out as it was before Cases spanned years, so a
+// reader of those files reads the same bytes; with two years and no name a
+// column or row would not say which it holds.
 //
 // Two layouts and never an automatic switch between them: one click must
 // produce one file shape. A masked hour is a blank cell, never a missing row,
 // so two exports of one Case line up row for row.
 
 /** Excel's 16,384 columns, less the four hour columns. */
-export const WIDE_MAX_SERIES = 16_380;
+export const WIDE_MAX_COLUMNS = 16_380;
 /** The most series whose long rows fit Excel's 1,048,576 whatever their
  * years: 119 x 8,784 does, 120 x 8,760 does not. */
 export const LONG_EXCEL_SERIES = 119;
@@ -130,8 +145,52 @@ export interface HourlyEntry {
   readonly warnings: readonly string[];
   /** Its values are drawn "% of range" percents, written as ratios. */
   readonly ratio: boolean;
-  /** Its Case's year has a Feb 29, so long writes that day's rows. */
-  readonly leap: boolean;
+  /** Its Case's years: one column (wide) or one run of rows (long) each,
+   * Feb 29's rows (long) only in a leap year. */
+  readonly span: YearSpan;
+}
+
+/** A span's years, first to last. */
+function yearsOf(span: YearSpan): number[] {
+  return Array.from({ length: span.numYears }, (_, i) => span.firstYear + i);
+}
+
+/** Whether a file of these series holds more than one year, so its columns
+ * and rows name theirs. A series with no Case year counts none. */
+export function namesYears(entries: readonly { readonly span: YearSpan }[]): boolean {
+  const years = new Set<number>();
+  for (const { span } of entries) {
+    if (span.numYears > 1) return true;
+    if (span.firstYear !== NO_YEAR) years.add(span.firstYear);
+  }
+  return years.size > 1;
+}
+
+/** A year as a column name or `Year` cell names it: blank for a series with
+ * no Case year, whose stand-in must never print. */
+function yearText(year: number): string {
+  return year === NO_YEAR ? '' : String(year);
+}
+
+/** A column header under `namesYears`: the series' name and its year. */
+export function yearColumnName(name: string, year: string): string {
+  return year ? `${name} ${year}` : name;
+}
+
+/** The wide columns, in file order: each series' years in turn. `series` is
+ * the entry, `year` the year's index in its span. */
+export function wideColumns(
+  entries: readonly HourlyEntry[],
+  names: readonly string[],
+): { readonly series: number; readonly year: number; readonly name: string }[] {
+  const withYears = namesYears(entries);
+  return entries.flatMap((entry, series) =>
+    yearsOf(entry.span).map((year, i) => ({
+      series,
+      year: i,
+      name: withYears ? yearColumnName(names[series], yearText(year)) : names[series],
+    })),
+  );
 }
 
 /** The unit a series' cells are in. */
@@ -156,9 +215,17 @@ export function hourlyNames(entries: readonly HourlyEntry[]): string[] {
 
 const orNone = (text: string | undefined): string => (text ? text : 'none');
 
-/** The facets that name one series, in the key's order. */
-function keyFields(entry: HourlyEntry): [string, string][] {
-  const { facets } = entry;
+/** The facets that name one series, in the key's order; its years when
+ * the file names them. */
+function keyFields(entry: HourlyEntry, withYears: boolean): [string, string][] {
+  const { facets, span } = entry;
+  const last = span.firstYear + span.numYears - 1;
+  const years =
+    span.firstYear === NO_YEAR
+      ? 'none'
+      : span.numYears > 1
+        ? `${span.firstYear}–${last}`
+        : String(span.firstYear);
   return [
     ['Kind', kindNoun(facets.kind)],
     ['Case', facets.caseLabel],
@@ -172,13 +239,14 @@ function keyFields(entry: HourlyEntry): [string, string][] {
     ['Unit', unitOf(entry)],
     // `% of limit` names a percent's divisor; the cells are ratios of it.
     ['Divisor', orNone(facets.range?.replace(/^% of /, ''))],
+    ...(withYears ? [['Years', years] as [string, string]] : []),
   ];
 }
 
 /** The facets every series shares, stated once rather than in every name. */
-function sharedLine(entries: readonly HourlyEntry[]): string[] {
+function sharedLine(entries: readonly HourlyEntry[], withYears: boolean): string[] {
   if (entries.length === 0) return [];
-  const fields = entries.map(keyFields);
+  const fields = entries.map((entry) => keyFields(entry, withYears));
   const shared = fields[0].filter(
     ([label, value], i) =>
       label !== 'Subject' &&
@@ -224,8 +292,15 @@ function refusalLines(entries: readonly HourlyEntry[], names: readonly string[])
   });
 }
 
-/** The long layout's column header. */
-const LONG_COLUMNS = ['Series', ...HOUR_COLUMNS, 'Value'] as const;
+/** The long layout's column header; `Year` only when the file names years. */
+function longColumns(withYears: boolean): string {
+  return ['Series', ...(withYears ? ['Year'] : []), ...HOUR_COLUMNS, 'Value'].join(',');
+}
+
+/** The wide layout's column header over these column names. */
+export function wideHeaderLine(names: readonly string[]): string {
+  return [...HOUR_COLUMNS, ...names.map(csvField)].join(',');
+}
 
 /**
  * Everything above the first hour row: the descriptor, the shared facets, a
@@ -239,12 +314,13 @@ export function hourlyHeader(
   names: readonly string[],
   notes: readonly string[],
 ): string {
+  const withYears = namesYears(entries);
   const lines = [
     ...descriptor,
-    ...sharedLine(entries),
+    ...sharedLine(entries, withYears),
     ...entries.map(
       (entry, i) =>
-        `# Series: ${names[i]} | ${keyFields(entry)
+        `# Series: ${names[i]} | ${keyFields(entry, withYears)
           .map(([label, value]) => `${label}: ${value}`)
           .join(' | ')}`,
     ),
@@ -252,8 +328,8 @@ export function hourlyHeader(
     ...refusalLines(entries, names),
     '',
     layout === 'wide'
-      ? [...HOUR_COLUMNS, ...names.map(csvField)].join(',')
-      : LONG_COLUMNS.join(','),
+      ? wideHeaderLine(wideColumns(entries, names).map((column) => column.name))
+      : longColumns(withYears),
   ];
   return lines.join('\n') + '\n';
 }
@@ -264,7 +340,19 @@ function cellAt(values: Float32Array | null, ratio: boolean, hour: number): stri
   return ratio ? formatRatioCell(values[hour]) : formatCell(values[hour]);
 }
 
-/** Wide rows for hours `[from, to)`, one line per hour. */
+/** One wide row: the slot hour's fields, then each column's cell, each
+ * column one year slot long. No newline. */
+export function wideRow(
+  columns: readonly (Float32Array | null)[],
+  ratio: readonly boolean[],
+  hour: number,
+): string {
+  let line = hourFields(hour);
+  for (let i = 0; i < columns.length; i++) line += ',' + cellAt(columns[i], ratio[i], hour);
+  return line;
+}
+
+/** Wide rows for slot hours `[from, to)`, one line per hour. */
 export function wideRows(
   columns: readonly (Float32Array | null)[],
   ratio: readonly boolean[],
@@ -272,35 +360,41 @@ export function wideRows(
   to: number,
 ): string {
   let out = '';
-  for (let hour = from; hour < to; hour++) {
-    let line = hourFields(hour);
-    for (let i = 0; i < columns.length; i++) line += ',' + cellAt(columns[i], ratio[i], hour);
-    out += line + '\n';
-  }
+  for (let hour = from; hour < to; hour++) out += wideRow(columns, ratio, hour) + '\n';
   return out;
 }
 
 /** Feb 29's hours in the slot, `[FEB_29_FROM, FEB_29_FROM + 24)`. */
 export const FEB_29_FROM = (SLOT_MONTH_STARTS[1] + 28) * 24;
 
-/** How many long rows a series writes: its year's real hours. */
-export function longRowCount(leap: boolean): number {
-  return leap ? YEAR_SLOT_HOURS : YEAR_SLOT_HOURS - 24;
+/** How many long rows a span writes: its years' real hours. */
+export function longRowCount(span: YearSpan): number {
+  let rows = 0;
+  for (const year of yearsOf(span))
+    rows += isLeapYear(year) ? YEAR_SLOT_HOURS : YEAR_SLOT_HOURS - 24;
+  return rows;
 }
 
-/** One series' long rows, Feb 29's only in a leap year. */
+/** One series' long rows, year after year, Feb 29's only in a leap year.
+ * `withYears` leads each row's hour fields with its `Year`. */
 export function longRows(
   name: string,
   values: Float32Array | null,
   ratio: boolean,
-  leap: boolean,
+  span: YearSpan,
+  withYears: boolean,
 ): string {
-  const lead = csvField(name) + ',';
+  const head = csvField(name) + ',';
   let out = '';
-  for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
-    if (!leap && hour === FEB_29_FROM) hour += 24;
-    out += `${lead}${hourFields(hour)},${cellAt(values, ratio, hour)}\n`;
-  }
+  yearsOf(span).forEach((year, i) => {
+    const lead = withYears ? `${head}${yearText(year)},` : head;
+    const slot = values?.subarray(i * YEAR_SLOT_HOURS, (i + 1) * YEAR_SLOT_HOURS) ?? null;
+    const leap = isLeapYear(year);
+    for (let hour = 0; hour < YEAR_SLOT_HOURS; hour++) {
+      if (!leap && hour === FEB_29_FROM) hour += 24;
+      out += `${lead}${hourFields(hour)},${cellAt(slot, ratio, hour)}\n`;
+    }
+  });
   return out;
 }
 
@@ -309,6 +403,8 @@ export function longRows(
 export const CELL_MAX_CHARS = 19;
 /** The widest hour fields: `Dec,31,24,8783`. */
 const HOUR_FIELDS_MAX_CHARS = 14;
+/** A long row's `Year` cell and its separator, at its widest (`99999,`). */
+const YEAR_FIELD_MAX_CHARS = 6;
 
 const utf8 = new TextEncoder();
 /** Bytes of a string as UTF-8, which is what the Blob holds. */
@@ -327,36 +423,46 @@ export function hourlyFileBound(
   // Each hour row: hour fields and one separator and cell per column, then a
   // newline.
   if (layout === 'wide') {
+    const columns = wideColumnCount(entries);
     return (
-      headerBytes +
-      YEAR_SLOT_HOURS * (HOUR_FIELDS_MAX_CHARS + names.length * (1 + CELL_MAX_CHARS) + 1)
+      headerBytes + YEAR_SLOT_HOURS * (HOUR_FIELDS_MAX_CHARS + columns * (1 + CELL_MAX_CHARS) + 1)
     );
   }
+  const year = namesYears(entries) ? YEAR_FIELD_MAX_CHARS : 0;
   let rowsBytes = 0;
   names.forEach((name, i) => {
     rowsBytes +=
-      longRowCount(entries[i].leap) *
-      (utf8Bytes(csvField(name)) + 1 + HOUR_FIELDS_MAX_CHARS + 1 + CELL_MAX_CHARS + 1);
+      longRowCount(entries[i].span) *
+      (utf8Bytes(csvField(name)) + 1 + year + HOUR_FIELDS_MAX_CHARS + 1 + CELL_MAX_CHARS + 1);
   });
   return headerBytes + rowsBytes;
 }
 
+/** How many columns wide writes: one per series and year. */
+export function wideColumnCount(entries: readonly { readonly span: YearSpan }[]): number {
+  let columns = 0;
+  for (const { span } of entries) columns += span.numYears;
+  return columns;
+}
+
 /**
  * An upper bound on what writing the file holds at its peak: wide's float32
- * copy of every series, the text as UTF-16 (at most two bytes per UTF-8
- * byte), and the Blob. Long streams its series and holds no copies.
+ * copy of every column (a series' every year), the text as UTF-16 (at most
+ * two bytes per UTF-8 byte), and the Blob. Long streams its series and holds
+ * no copies.
  */
-export function hourlyPeakBytes(layout: HourlyLayout, fileBound: number, series: number): number {
-  const copies = layout === 'wide' ? series * YEAR_SLOT_HOURS * Float32Array.BYTES_PER_ELEMENT : 0;
+export function hourlyPeakBytes(layout: HourlyLayout, fileBound: number, columns: number): number {
+  const copies = layout === 'wide' ? columns * YEAR_SLOT_HOURS * Float32Array.BYTES_PER_ELEMENT : 0;
   return copies + 2 * fileBound + fileBound;
 }
 
-/** Why wide cannot write `series` columns, or `''` when it can. */
-export function wideWithheld(series: number): string {
-  if (series <= WIDE_MAX_SERIES) return '';
+/** Why wide cannot write `columns` columns (`wideColumnCount`), or `''`
+ * when it can. */
+export function wideWithheld(columns: number): string {
+  if (columns <= WIDE_MAX_COLUMNS) return '';
   return (
-    `Withheld: ${series.toLocaleString()} series is more columns than Excel holds ` +
-    `(${WIDE_MAX_SERIES.toLocaleString()} beside the hour columns). Filter the tab to fewer ` +
+    `Withheld: ${columns.toLocaleString()} columns is more than Excel holds ` +
+    `(${WIDE_MAX_COLUMNS.toLocaleString()} beside the hour columns). Filter the tab to fewer ` +
     'rows, or take the long layout.'
   );
 }
@@ -367,7 +473,7 @@ export function wideWithheld(series: number): string {
 export function longNote(series: number): string {
   if (series <= LONG_EXCEL_SERIES) return '';
   return (
-    `For pandas or R: at least ${(series * longRowCount(false)).toLocaleString()} rows ` +
+    `For pandas or R: at least ${(series * (YEAR_SLOT_HOURS - 24)).toLocaleString()} rows ` +
     "is past Excel's 1,048,576."
   );
 }

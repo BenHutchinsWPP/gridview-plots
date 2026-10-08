@@ -27,7 +27,7 @@ import {
 import { KEY_COLS } from '../wide/header';
 import type { BusTable } from './types';
 
-export { hasSimd, NO_SIMD_MESSAGE, coverageOf, cubeBytesFor, unionOf } from '../wide/pool';
+export { hasSimd, NO_SIMD_MESSAGE, coverageOf, unionOf } from '../wide/pool';
 export type { CasePlan } from '../wide/pool';
 
 export const BUS_ENTITY = 'Bus';
@@ -146,7 +146,8 @@ const finalizeBus: Finalize<BusTable> = (wide: WideCase, plan: CasePlan) => ({
     tou: wide.tou,
     hoursPresent: wide.hoursPresent,
     sourceColumns: plan.header.entityNames.map((id) => Number(id)),
-    year: wide.year,
+    firstYear: wide.firstYear,
+    numYears: wide.numYears,
     quantity: wide.title.quantity,
   },
   warnings: [],
