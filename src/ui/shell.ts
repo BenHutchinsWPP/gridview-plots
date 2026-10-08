@@ -4,6 +4,7 @@
 // chrome (topbar, status bar, memory readout, drop overlay). Adding a table
 // kind does not edit this file.
 
+import { megabytes } from '../ingest';
 import type { TableKind } from '../model/case-model';
 import { within } from './dom';
 
@@ -307,7 +308,7 @@ export function createChrome(
       statusSpinner.hidden = !state.busy;
       document.body.classList.toggle('is-busy', state.busy);
       memoryReadout.textContent =
-        `${(state.bytes / (1024 * 1024)).toFixed(0)} MB · ` +
+        `${megabytes(state.bytes)} MB · ` +
         `${state.cases} case${state.cases === 1 ? '' : 's'} · ` +
         `${state.files} file${state.files === 1 ? '' : 's'} ⓘ`;
     },

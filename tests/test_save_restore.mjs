@@ -64,7 +64,7 @@ function bundle(restoredCases, extra = {}) {
 }
 
 /** A loaded study, a fake host over it and the list of what the host did. */
-function setup({ read, load, download, attachThrowsOn, throwIn = [] } = {}) {
+function setup({ read, load, download, save, attachThrowsOn, throwIn = [] } = {}) {
   const store = new CaseStore();
   const old = store.createCase('SAMPLE_old');
   store.attachTable(old.id, AREA, 'old:area');
@@ -121,7 +121,10 @@ function setup({ read, load, download, attachThrowsOn, throwIn = [] } = {}) {
         if (download) return download();
         return 'SAMPLE.gvmb';
       },
-      saveBundle: async (loaded, progress, contents) => calls.push({ save: loaded, contents }),
+      saveBundle: async (loaded, progress, contents) => {
+        calls.push({ save: loaded, contents });
+        if (save) save();
+      },
       readBundleFile: async () => read(),
       loadBundle: async () => load(),
     },
@@ -205,6 +208,36 @@ await check('a cancelled save says so, and ends the busy line', async () => {
     'the second writer never ran',
   );
   assert.equal(calls.at(-1), 'busy null');
+});
+
+await check('a browser copy that fails after the file is written says both', async () => {
+  const { calls, said, flow } = setup({
+    save: () => {
+      throw new Error('Wrote 10 of 20 bytes; the browser storage is SAMPLE full.');
+    },
+  });
+  await flow.saveAll();
+  assert.deepEqual(said.get('session'), [
+    'Saved 1 case(s) (1 table(s)) to SAMPLE.gvmb. Could not also keep a copy in this browser: ' +
+      'Wrote 10 of 20 bytes; the browser storage is SAMPLE full. Load… here will not have ' +
+      'this save; drop the .gvmb file in to restore it.',
+  ]);
+  assert.equal(calls.at(-1), 'busy null');
+});
+
+await check('a file that fails to write is a failed save', async () => {
+  const { calls, said, flow } = setup({
+    download: () => {
+      throw new Error('SAMPLE disk error');
+    },
+  });
+  await flow.saveAll();
+  assert.deepEqual(said.get('session'), ['Save failed: SAMPLE disk error']);
+  assert.equal(
+    index(calls, (call) => call.save),
+    -1,
+    'the browser copy is not attempted',
+  );
 });
 
 // ------------------------------------------------------------ restore

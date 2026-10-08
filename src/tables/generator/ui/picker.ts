@@ -24,7 +24,7 @@
 // Same `showWideEntityPicker` `cancelable` shape as the Bus picker: flat (no
 // `groupBy`) and capped at `MAX_ROWS`.
 
-import { cubeCost, type CubeCost } from '../../../ingest';
+import { cubeCost, megabytes, type CubeCost } from '../../../ingest';
 import { showWideEntityPicker } from '../../../ui/wide-entity-picker';
 
 /** How many rows the list renders at once. The filter box is how a selection
@@ -81,6 +81,6 @@ export function showGeneratorPicker(
     readout: (chosenCount, unionCount) =>
       `${chosenCount.toLocaleString()} of ${unionCount.toLocaleString()} generator` +
       `${unionCount === 1 ? '' : 's'}: ${costOf(chosenCount).arithmetic}` +
-      ` (all of them would be ${(costOf(unionCount).bytes / (1024 * 1024)).toFixed(0)} MB)`,
+      ` (all of them would be ${megabytes(costOf(unionCount).bytes)} MB)`,
   });
 }

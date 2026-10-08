@@ -9,7 +9,7 @@
 // to), shown as `name (id)`, and the filter matches the id too, because two
 // buses may share a name.
 
-import { cubeCost, type CubeCost } from '../../../ingest';
+import { cubeCost, megabytes, type CubeCost } from '../../../ingest';
 import { busLabel } from '../rules';
 import { showWideEntityPicker } from '../../../ui/wide-entity-picker';
 
@@ -70,6 +70,6 @@ export function showBusPicker(
     readout: (chosenCount, unionCount) =>
       `${chosenCount.toLocaleString()} of ${unionCount.toLocaleString()} bus` +
       `${unionCount === 1 ? '' : 'es'}: ${costOf(chosenCount).arithmetic}` +
-      ` (all of them would be ${(costOf(unionCount).bytes / (1024 * 1024)).toFixed(0)} MB)`,
+      ` (all of them would be ${megabytes(costOf(unionCount).bytes)} MB)`,
   });
 }

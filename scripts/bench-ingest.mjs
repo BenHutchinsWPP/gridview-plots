@@ -14,6 +14,7 @@
 //   node scripts/bench-ingest.mjs                    # the control rung
 //   node scripts/bench-ingest.mjs --rung wide-512
 //   node scripts/bench-ingest.mjs --ladder           # every rung, one child each
+//   node scripts/bench-ingest.mjs --ladder --span    # and the 10-year span rungs
 //   node scripts/bench-ingest.mjs --measure wide-512 # child mode: JSON on stdout
 
 import { spawnSync } from 'node:child_process';
@@ -27,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import '../tests/test_loader.mjs';
 
 import { fileBlob } from './file-blob.mjs';
-import { CONTROL_RUNG, DEFAULT_OUT, wideRung, writeHead } from './make-perf-data.mjs';
+import { CONTROL_RUNG, DEFAULT_OUT, SPAN_RUNGS, wideRung, writeHead } from './make-perf-data.mjs';
 import { cell, mb, renderReport } from './bench-report.mjs';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -40,7 +41,7 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
  * `interface` the wide one.
  */
 const wasmPaths = {
-  area: join(REPO, 'parser', 'area', 'block.wasm'),
+  area: join(REPO, 'parser', 'long', 'block.wasm'),
   interface: join(REPO, 'parser', 'wide', 'block.wasm'),
 };
 
@@ -919,6 +920,9 @@ function parseArgs(argv) {
     rung: null,
     measure: null,
     ladder: false,
+    // The span rungs are gigabytes each, so --ladder measures them only when
+    // asked, as make-perf-data.mjs writes them only under --span.
+    span: false,
     report: DEFAULT_REPORT,
     static: false,
     // Names this configuration in the report. A sweep runs the same rungs over
@@ -932,6 +936,7 @@ function parseArgs(argv) {
     else if (flag === '--rung') args.rung = argv[++i];
     else if (flag === '--measure') args.measure = argv[++i];
     else if (flag === '--ladder') args.ladder = true;
+    else if (flag === '--span') args.span = true;
     else if (flag === '--report') args.report = argv[++i];
     else if (flag === '--static') args.static = true;
     else if (flag === '--label') args.label = argv[++i];
@@ -1020,7 +1025,9 @@ if (process.argv[1] && SELF === process.argv[1]) {
     const result = await measure(findEntry(manifest, args.measure), args.in);
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } else if (args.ladder) {
-    const entries = entriesFor(manifest);
+    const entries = entriesFor(manifest).filter(
+      (entry) => args.span || !SPAN_RUNGS.some((rung) => rung.name === entry.name),
+    );
     const results = [];
     for (const entry of entries) {
       process.stderr.write(`measuring ${entry.name} …\n`);

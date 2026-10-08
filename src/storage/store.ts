@@ -88,25 +88,45 @@ function request(message: StorageRequest, transfer: Transferable[] = []): Promis
   });
 }
 
+/** The largest piece either writer hands on at once. Each write is copied
+ * somewhere (a transfer copy for OPFS, the stream's own buffer for a file),
+ * so this bounds the transient a save adds to the study, not the cube size. */
+export const SLICE_BYTES = 64 * 1024 * 1024;
+
+/** `bytes` as views of at most `SLICE_BYTES`, in order. No copy. */
+function* pieces(bytes: Uint8Array<ArrayBuffer>): Generator<Uint8Array<ArrayBuffer>> {
+  for (let at = 0; at < bytes.byteLength; at += SLICE_BYTES) {
+    yield bytes.subarray(at, Math.min(at + SLICE_BYTES, bytes.byteLength));
+  }
+}
+
+/**
+ * Write every Case to origin-private storage. `onProgress` is in bytes, as
+ * the worker reports them, so a long Case moves the readout while it saves.
+ * Rejects when the worker did not write every byte; the worker then empties
+ * only the slot it was writing, so Load… returns the last complete save.
+ */
 export async function saveBundle(
   cases: readonly Case[],
-  onProgress?: (done: number, total: number) => void,
+  onProgress?: (written: number, total: number) => void,
   contents: BundleContents = {},
 ): Promise<void> {
   const { manifest, cubes } = buildManifest(cases, contents);
+  const cubeBytes = cubes.reduce((total, bytes) => total + bytes.byteLength, 0);
 
-  await request({ kind: 'saveBegin', manifest: JSON.stringify(manifest) });
-  // One chunk per TABLE, cloned (transferring would detach the live cube),
-  // which bounds the transient copy to one table. The reader slices by the
-  // manifest's `cubeBytes`, so chunks need not match cases.
-  let written = 0;
-  for (let i = 0; i < cases.length; i++) {
-    const tableCount = cases[i].tables.size;
-    for (let t = 0; t < tableCount; t++) {
-      await request({ kind: 'saveChunk', bytes: cubes[written + t] });
+  const begun = await request({ kind: 'saveBegin', manifest: JSON.stringify(manifest), cubeBytes });
+  const total = (begun.kind === 'ok' ? (begun.written ?? 0) : 0) + cubeBytes;
+  // Each slice is a COPY, so it can be transferred: transferring the live
+  // cube would detach it. One awaited request per slice is the backpressure
+  // (`request` takes one reply at a time), so only one copy is in flight.
+  // The reader slices by the manifest's `cubeBytes`, so slices need not match
+  // tables or cases.
+  for (const cube of cubes) {
+    for (const piece of pieces(cube)) {
+      const copy = piece.slice();
+      const reply = await request({ kind: 'saveChunk', bytes: copy }, [copy.buffer]);
+      if (reply.kind === 'ok' && reply.written !== undefined) onProgress?.(reply.written, total);
     }
-    written += tableCount;
-    onProgress?.(i + 1, cases.length);
   }
   await request({ kind: 'saveEnd' });
 }
@@ -152,24 +172,35 @@ export async function downloadBundle(
       ],
     });
     const stream = await handle.createWritable();
-    await stream.write(header);
-    await stream.write(manifest);
-    let written = 0;
-    for (let i = 0; i < cases.length; i++) {
-      const tableCount = cases[i].tables.size;
-      for (let t = 0; t < tableCount; t++) await stream.write(built.cubes[written + t]);
-      written += tableCount;
-      onProgress?.(i + 1, cases.length);
+    try {
+      await stream.write(header);
+      await stream.write(manifest);
+      let written = 0;
+      for (let i = 0; i < cases.length; i++) {
+        const tableCount = cases[i].tables.size;
+        // The stream copies each write, so one whole-table write would be a
+        // table-sized transient: write slice views instead.
+        for (let t = 0; t < tableCount; t++) {
+          for (const piece of pieces(built.cubes[written + t])) await stream.write(piece);
+        }
+        written += tableCount;
+        onProgress?.(i + 1, cases.length);
+      }
+      await stream.close();
+    } catch (error) {
+      // Abort discards the partial file rather than leave it under the name.
+      await stream.abort().catch(() => undefined);
+      throw error;
     }
-    await stream.close();
     return handle.name;
   }
 
   // Fallback: one Blob and an anchor click; the browser materialises the file.
-  const blob = new Blob([header, manifest, ...built.cubes], {
-    type: 'application/octet-stream',
-  });
-  saveBlob(blob, suggestedName);
+  // No local holds the Blob, so it lives only as long as the download's URL.
+  saveBlob(
+    new Blob([header, manifest, ...built.cubes], { type: 'application/octet-stream' }),
+    suggestedName,
+  );
   onProgress?.(cases.length, cases.length);
   return suggestedName;
 }

@@ -190,6 +190,16 @@ Bundles are `.gvmb`. The OPFS migration from the legacy blob is one-way:
 old blobs are upgraded in memory, never written back, never deleted (it may be
 the user's only copy).
 
+**A save that did not complete is never reported as saved.** A short or
+refused OPFS write fails the save and empties only its own slot: OPFS holds
+two slots and a one-byte pointer, moved after the new slot is complete, so
+Load… still returns the last complete save. The .gvmb written first is still
+named as saved. No slot or the legacy blob is ever deleted; an idle slot is
+emptied only by the next save that writes it. OPFS gets
+64 MB slices that are copies, transferred: transferring the live cube would
+detach it. Asserted by `tests/test_save_slices.mjs` and
+`tests/test_save_restore.mjs`.
+
 **A v4 table entry carries `firstYear`/`numYears` beside `year` and
 `numYears` × 8,784 hours per plane**, years in order inside each plane.
 `year` is still written, as `firstYear`, so a one-year entry is exactly what

@@ -1209,14 +1209,15 @@ export function readSavedInventory(raw: unknown): SavedInventory | undefined {
   };
 }
 
-/** Bytes as the readout states them: exact below a KiB, else one decimal. */
+/** Bytes as the readout states them: exact below a KB, else one decimal.
+ * Decimal units, as `megabytes` in `src/ingest.ts` explains. */
 function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes.toLocaleString()} B`;
+  if (bytes < 1000) return `${bytes.toLocaleString()} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
-  let value = bytes / 1024;
+  let value = bytes / 1000;
   let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
     unit++;
   }
   return `${value.toFixed(1)} ${units[unit]} (${bytes.toLocaleString()} B)`;

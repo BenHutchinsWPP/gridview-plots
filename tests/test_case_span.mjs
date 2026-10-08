@@ -37,7 +37,7 @@ const { createCaseViews } = await import('../src/app/case-views.ts');
 const { planImports } = await import('../src/app/import-plan.ts');
 const { CaseStore, caseForName } = await import('../src/model/case-model.ts');
 const { createInventory } = await import('../src/inventory/store.ts');
-const { cubeCost } = await import('../src/ingest.ts');
+const { cubeCost, megabytes } = await import('../src/ingest.ts');
 const { classify, DETECT_PROBE_BYTES } = await import('../src/detect.ts');
 const areaWide = await import('../src/tables/area/wide.ts');
 const longPool = await import('../src/tables/long/pool.ts');
@@ -436,12 +436,23 @@ await check('a cube costs every year of its span, and says so', () => {
   const three = cubeCost(buses, 3);
   assert.equal(three.bytes, 3 * one.bytes);
   assert.equal(one.bytes, 1200 * 8784 * 4);
-  assert.equal(three.arithmetic, '1,200 buses × 3 years × 8,784 h × 4 B = 121 MB');
-  assert.equal(one.arithmetic, '1,200 buses × 1 year × 8,784 h × 4 B = 40 MB');
+  assert.equal(three.arithmetic, '1,200 buses × 3 years × 8,784 h × 4 B = 126 MB');
+  assert.equal(one.arithmetic, '1,200 buses × 1 year × 8,784 h × 4 B = 42 MB');
   assert.equal(
     cubeCost([{ count: 2, one: 'metric', many: 'metrics' }, ...buses], 3).arithmetic,
-    '2 metrics × 1,200 buses × 3 years × 8,784 h × 4 B = 241 MB',
+    '2 metrics × 1,200 buses × 3 years × 8,784 h × 4 B = 253 MB',
   );
+});
+
+await check('a shown MB is bytes / 1e6, never a MiB labelled MB', () => {
+  // The 2.07 GB cube a 1,024² divisor shows as 1,977.
+  const bytes = 2_073_000_000;
+  assert.equal(megabytes(bytes), Math.round(bytes / 1e6).toLocaleString());
+  assert.equal(megabytes(bytes), (2073).toLocaleString());
+  const cube = cubeCost([{ count: 5900, one: 'bus', many: 'buses' }], 10);
+  assert.ok(cube.arithmetic.endsWith(` = ${Math.round(cube.bytes / 1e6).toLocaleString()} MB`));
+  assert.equal(megabytes(42_163_200), '42');
+  assert.equal(megabytes(2_500_000), '2.5', 'below 10 MB keeps one decimal');
 });
 
 console.log(`\n${passed} case-span checks passed.`);

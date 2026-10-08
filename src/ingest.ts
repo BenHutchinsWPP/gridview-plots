@@ -142,7 +142,7 @@ export interface CubeFactor {
 /** What a cube asks for, and the product worded. */
 export interface CubeCost {
   bytes: number;
-  /** "3 metrics × 1,200 buses × 2 years × 8,784 h × 4 B = 241 MB". */
+  /** "3 metrics × 1,200 buses × 2 years × 8,784 h × 4 B = 253 MB". */
   arithmetic: string;
 }
 
@@ -158,7 +158,6 @@ export function cubeCost(factors: readonly CubeFactor[], years: number): CubeCos
     terms.reduce((product, term) => product * term.count, 1) *
     YEAR_SLOT_HOURS *
     Float32Array.BYTES_PER_ELEMENT;
-  const megabytes = bytes / (1024 * 1024);
   const words = terms.map(
     (term) => `${term.count.toLocaleString()} ${term.count === 1 ? term.one : term.many}`,
   );
@@ -166,8 +165,16 @@ export function cubeCost(factors: readonly CubeFactor[], years: number): CubeCos
     bytes,
     arithmetic:
       `${words.join(' × ')} × ${YEAR_SLOT_HOURS.toLocaleString()} h × ` +
-      `${Float32Array.BYTES_PER_ELEMENT} B = ${megabytes.toFixed(megabytes < 10 ? 1 : 0)} MB`,
+      `${Float32Array.BYTES_PER_ELEMENT} B = ${megabytes(bytes)} MB`,
   };
+}
+
+/** Every size the app shows, as the number before "MB". Decimal (10^6 B):
+ * the arithmetic it ends is "× 4 B" and a file manager counts the same way,
+ * so a MiB figure labelled MB would disagree with both. */
+export function megabytes(bytes: number): string {
+  const value = bytes / 1e6;
+  return value < 10 ? value.toFixed(1) : Math.round(value).toLocaleString();
 }
 
 // ---------------------------------------------------------------- feature gate

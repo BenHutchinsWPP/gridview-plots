@@ -190,13 +190,14 @@ check('counts read as kept of in-source, as metrics or entities', () => {
 check("a record's detail states size, dates, kind and shape", () => {
   const inventory = createInventory(() => 1_700_000_100_000);
   inventory.recordTable('c1', { kind: 'beta', variant: 'Q1' }, [
-    wide(file('SAMPLE_b.csv', 2048, 1_700_000_000_000)),
+    wide(file('SAMPLE_b.csv', 2500, 1_700_000_000_000)),
   ]);
   const id = inventory.pivot(CASES, COLUMNS).rows[0].cells[1].lines[0].files[0].id;
   const detail = inventory.detail(id);
   const field = (label) => detail.fields.find((f) => f.label === label)?.value;
   assert.equal(detail.title, 'SAMPLE_b.csv');
-  assert.match(field('Size'), /^2\.0 KB \(2,048 B\)$/);
+  // Decimal: 2,500 B is 2.5 KB, where a KiB divisor would show 2.4.
+  assert.match(field('Size'), /^2\.5 KB \(2,500 B\)$/);
   assert.match(field('Last modified'), /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
   assert.match(field('Loaded'), /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
   assert.equal(field('Kind'), 'beta');

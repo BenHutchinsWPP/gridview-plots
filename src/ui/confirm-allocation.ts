@@ -6,7 +6,7 @@
 // served depends on the browser, device and tab, so it states the arithmetic
 // and hands the choice over.
 
-import type { CubeCost } from '../ingest';
+import { megabytes, type CubeCost } from '../ingest';
 
 /** A judgement line, not a measured limit: above the ordinary 170-207 MB
  * full-width wide case, below the 1.65 GB long bus export. Lower trains the
@@ -54,10 +54,6 @@ export function confirmLargeDownload(bytes: number, what: string): Promise<boole
       'memory trying. Filtering the tab to fewer rows is the cheaper answer.',
     go: 'Write it anyway',
   });
-}
-
-function megabytes(bytes: number): string {
-  return (bytes / (1024 * 1024)).toFixed(0);
 }
 
 function confirmLarge(bytes: number, wording: Wording): Promise<boolean> {

@@ -13,6 +13,7 @@
 // added to one reaches the other. The view (pins, panes, drawer) and the group
 // maps are the root's state, adopted through the host; this holds none.
 
+import { megabytes } from '../ingest';
 import type { Inventory } from '../inventory/store';
 import { LIMITS_COLUMN, SHARED_LIMITS_INPUT } from '../inventory/store';
 import { restoreCaseLimits } from '../limits/envelope';
@@ -284,33 +285,53 @@ export function createSaveRestore(host: SaveRestoreHost) {
         host.render();
         return;
       }
+      const saved = `${loaded.length} case(s) (${tableCount} table(s))`;
       try {
         host.setBusy('Saving…');
         // Two destinations: the .gvmb file the user keeps, and origin-private
         // storage for an instant Load on this machine. The file goes first
         // because its dialog can be cancelled. Read once so the two cannot
-        // disagree.
-        const contents = host.contents();
-        const filename = await host.storage.downloadBundle(
-          loaded,
-          (done, total) => host.setBusy(`Writing case ${done} of ${total}…`),
-          contents,
-        );
-        await host.storage.saveBundle(
-          loaded,
-          (done, total) => host.setBusy(`Saving case ${done} of ${total}…`),
-          contents,
-        );
+        // disagree. Each has its own failure: once the file is written, a
+        // failed browser copy must not read as a failed save.
+        let contents: BundleContents;
+        let filename: string;
+        try {
+          contents = host.contents();
+          filename = await host.storage.downloadBundle(
+            loaded,
+            (done, total) => host.setBusy(`Writing case ${done} of ${total}…`),
+            contents,
+          );
+        } catch (error) {
+          host.say(
+            'session',
+            isAbort(error) ? ['Save cancelled.'] : [`Save failed: ${messageOf(error)}`],
+          );
+          return;
+        }
+        try {
+          await host.storage.saveBundle(
+            loaded,
+            (written, total) =>
+              host.setBusy(
+                `Saving to this browser: ${megabytes(written)} of ${megabytes(total)} MB…`,
+              ),
+            contents,
+          );
+        } catch (error) {
+          // Load… then returns the last save that completed, if any, so it is
+          // never this one; the worker's message says the earlier one is kept.
+          host.say('session', [
+            `Saved ${saved} to ${filename}. Could not also keep a copy in this browser: ` +
+              `${messageOf(error).replace(/\.$/, '')}. Load… here will not have this save; ` +
+              `drop the .gvmb file in to restore it.`,
+          ]);
+          return;
+        }
         host.say('session', [
-          `Saved ${loaded.length} case(s) (${tableCount} table(s)) to ${filename}, and to this ` +
-            `browser's origin-private storage for the Load button. Drop the .gvmb file back in ` +
-            `to restore it anywhere.`,
+          `Saved ${saved} to ${filename}, and to this browser's origin-private storage for the ` +
+            `Load button. Drop the .gvmb file back in to restore it anywhere.`,
         ]);
-      } catch (error) {
-        host.say(
-          'session',
-          isAbort(error) ? ['Save cancelled.'] : [`Save failed: ${messageOf(error)}`],
-        );
       } finally {
         host.setBusy(null);
       }
