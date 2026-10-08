@@ -178,25 +178,155 @@ await check('a drop holds the busy line from the first byte to a finally', async
   assert.equal(drop.running(), false);
 });
 
-await check('a drop refused while one runs clears nothing and is logged refused', async () => {
-  let answer;
-  const { host, calls, said, logOf } = fakeHost({
-    askImport: () => new Promise((resolve) => (answer = resolve)),
+await check(
+  'a drop refused while a load ingests clears nothing and is logged refused',
+  async () => {
+    let release;
+    const { host, calls, said, logOf } = fakeHost({
+      askImport: async () => ({ plans: [plan(0, 'bus', 'W', 'A')], limits: [], everything: false }),
+      ingest: () =>
+        new Promise((resolve) => (release = () => resolve({ failures: [], warnings: [] }))),
+    });
+    const drop = createDropLoad(host);
+    const first = drop.load([csv('a.csv', HEADER)]);
+    while (!release) await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(drop.running(), true);
+    const before = calls.length;
+    await drop.load([csv('late.csv', HEADER)]);
+    const refusal = 'A load is already running — drop these files again once it finishes.';
+    assert.deepEqual(calls.slice(before), ['inventory.logRefused', 'say:session', 'render']);
+    assert.deepEqual(said.get('session'), [refusal]);
+    release();
+    await first;
+    assert.equal(drop.running(), false);
+    assert.ok(logOf().some((line) => line.event === 'refused' && line.reason === refusal));
+  },
+);
+
+/** A drop whose Import Dialog stays open until `answer` is called, keeping
+ * what its intake hands the dialog in `added`, and `shows` as the dialog's
+ * answer to whether a table file still has a row. */
+function openDialog(over = {}) {
+  const state = { added: [], answer: null, intake: null, shows: () => true, ingested: [] };
+  const fake = fakeHost({
+    askImport: (tables, _cases, limits, intake) => {
+      state.opened = { tables, limits };
+      state.intake = intake;
+      intake.listen(
+        (added) => state.added.push(added),
+        (index) => state.shows(index),
+      );
+      return new Promise((resolve) => (state.answer = resolve));
+    },
+    ingest: async (kind, shape, drops) => {
+      state.ingested.push(...drops.map((entry) => `${entry.file.name}→${entry.caseName}`));
+      return { failures: [], warnings: [] };
+    },
+    ...over,
   });
-  const drop = createDropLoad(host);
+  const drop = createDropLoad(fake.host);
+  return { ...fake, drop, state };
+}
+const tick = async (n = 5) => {
+  for (let i = 0; i < n; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+};
+
+await check(
+  'a drop while the Import dialog is open joins it, numbered after its files',
+  async () => {
+    const { drop, state, logOf, calls } = openDialog();
+    const first = drop.load([csv('a.csv', HEADER)]);
+    await tick();
+    assert.equal(state.opened.tables.length, 1);
+    const same = csv('a.csv', HEADER);
+    const bundle = csv('study.gvmb', 'GVMB\u0000\u0000\u0000\u0000');
+    await drop.load([csv('b.csv', INTERFACE), same, bundle, csv('own.csv', LIMITS)]);
+    await tick();
+    assert.equal(state.added.length, 1);
+    const [added] = state.added;
+    assert.deepEqual(
+      added.tables.map(({ index, file }) => [index, file.name, file.detected.kind]),
+      [[1, 'b.csv', 'interface']],
+    );
+    assert.deepEqual(
+      added.limits.map(({ index, file }) => [index, file.name]),
+      [[0, 'own.csv']],
+    );
+    assert.deepEqual(added.notes, [
+      'study.gvmb: only table and limits files join an open Import dialog — drop it again once ' +
+        'this load finishes.',
+      'a.csv: already in this import — skipped.',
+    ]);
+    assert.ok(!calls.includes('restoreBundle'), 'a bundle dropped into the dialog is not applied');
+    // The plan for the added file pairs back by its index.
+    state.answer({
+      plans: [plan(0, 'bus', 'W', 'A'), plan(1, 'interface', 'W', 'B')],
+      limits: [],
+      everything: false,
+    });
+    await first;
+    assert.deepEqual(state.ingested.sort(), ['a.csv→A', 'b.csv→B']);
+    const log = logOf().map((line) => [line.event, line.files.map((file) => file.name)]);
+    assert.deepEqual(
+      log.filter(([event]) => event !== 'loaded'),
+      [
+        ['refused', ['study.gvmb']],
+        ['skipped', ['a.csv']],
+        // Given no plan, the limits file is the user's to have left out.
+        ['skipped', ['own.csv']],
+      ],
+    );
+  },
+);
+
+await check('a file removed with × may be added again', async () => {
+  const { drop, state } = openDialog();
   const first = drop.load([csv('a.csv', HEADER)]);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(drop.running(), true);
-  const before = calls.length;
-  const late = csv('late.csv', HEADER);
-  await drop.load([late]);
-  const refusal = 'A load is already running — drop these files again once it finishes.';
-  assert.deepEqual(calls.slice(before), ['inventory.logRefused', 'say:session', 'render']);
-  assert.deepEqual(said.get('session'), [refusal]);
-  answer(null);
+  await tick();
+  state.shows = (index) => index !== 0;
+  await drop.load([csv('a.csv', HEADER), csv('a.csv', HEADER)]);
+  await tick();
+  assert.deepEqual(
+    state.added[0].tables.map(({ index }) => index),
+    [1],
+    'it joins again, once: a second copy in one add is the same file',
+  );
+  assert.deepEqual(state.added[0].notes, ['a.csv: already in this import — skipped.']);
+  state.answer(null);
   await first;
-  assert.equal(drop.running(), false);
-  assert.ok(logOf().some((line) => line.event === 'refused' && line.reason === refusal));
+});
+
+await check('a cancel names every file the dialog held, added ones too', async () => {
+  const { drop, state, said } = openDialog();
+  const first = drop.load([csv('a.csv', HEADER)]);
+  await tick();
+  await drop.load([csv('b.csv', INTERFACE)]);
+  await tick();
+  state.answer(null);
+  await first;
+  assert.deepEqual(said.get('area'), [
+    'Import cancelled — none of the 2 dropped file(s) were loaded.',
+  ]);
+});
+
+await check('files still being read as the dialog closes are refused, not added', async () => {
+  const { drop, state, logOf } = openDialog();
+  const first = drop.load([csv('a.csv', HEADER)]);
+  await tick();
+  // Added, then answered before the add's classification can finish.
+  state.intake.add([csv('b.csv', INTERFACE)]);
+  state.answer({ plans: [plan(0, 'bus', 'W', 'A')], limits: [], everything: false });
+  await first;
+  assert.equal(state.added.length, 0);
+  assert.deepEqual(state.ingested, ['a.csv→A']);
+  assert.ok(
+    logOf().some(
+      (line) =>
+        line.event === 'refused' &&
+        line.files[0].name === 'b.csv' &&
+        /arrived as the Import dialog closed/.test(line.reason),
+    ),
+  );
 });
 
 await check('a drop waits for a download being written', async () => {

@@ -9,6 +9,7 @@ import type { DetectResult, DetectShape } from '../detect';
 import { spanLabel } from '../ingest';
 import type { YearSpan } from '../model/calendar';
 import { caseForName, slotKey, type TableKind } from '../model/case-model';
+import type { SampledYears } from '../tables/long/sample-years';
 import { TABLE_KINDS } from '../tables/registry';
 
 /** The table kinds the dialog routes to. Re-exported, never re-declared, so a
@@ -18,6 +19,8 @@ export type { TableKind };
 export interface ImportFile {
   name: string;
   detected: DetectResult;
+  /** A long file's years, from its first and last rows (`sampleYears`). */
+  sampled?: SampledYears;
 }
 
 export type ImportMode = 'one-case' | 'derive' | 'individual';
@@ -107,13 +110,26 @@ export interface ImportPlan {
    */
   replacesExisting: boolean;
   replaceReason?: string;
+  /** The file's years as the dialog shows them: a wide file's date line, or
+   * a long file's sample (`sampled`). */
+  years?: YearSpan;
+  sampled?: boolean;
   /**
-   * NON-blocking: the years a wide file's date line states differ from its
-   * Case's. Ingest refuses the mismatch (`keepSpans` in `./batch.ts`); this
-   * says so before it runs. A long file's years are known only after its
-   * scan, so it never carries one.
+   * BLOCKING: this file's years certainly differ from its Case's, so ingest
+   * would refuse it (`keepSpans` in `./batch.ts`). Files merged into one
+   * table are judged per unbroken run of years, so a skipped year reads as
+   * the later run differing. Only a span known exactly (a date line, a
+   * loaded table, a long sample in date order) can disagree; an unordered
+   * long sample disagrees only by a year it holds.
    */
+  spanConflict: boolean;
+  /** One short line for the row: the Case's years. */
   spanReason?: string;
+  /** The whole account, for a tooltip. */
+  spanDetail?: string;
+  /** The Case name that clears `spanConflict`: this Case's name and the
+   * file's years. */
+  splitTo?: string;
 }
 
 function escapeRegExp(literal: string): string {
@@ -156,7 +172,9 @@ interface ResolvedFile {
   kind: TableKind;
   shape?: DetectShape;
   variant?: string;
-  years?: YearSpan;
+  /** What is known of the file's years; `whole` false is only years seen. */
+  known?: { span: YearSpan; whole: boolean };
+  sampled: boolean;
 }
 
 /** One `ImportPlan` per dropped file: case naming, variants and collision
@@ -211,7 +229,12 @@ export function planImports(
       kind: kind as TableKind,
       shape: f.detected.shape,
       variant,
-      years: f.detected.years,
+      known: f.detected.years
+        ? { span: f.detected.years, whole: true }
+        : f.sampled
+          ? { span: f.sampled, whole: f.sampled.whole }
+          : undefined,
+      sampled: f.detected.years === undefined && f.sampled !== undefined,
     };
   });
 
@@ -223,6 +246,8 @@ export function planImports(
     if (bucket) bucket.push(r);
     else groups.set(groupKey, [r]);
   }
+
+  const spans = spanConflicts(resolved, groups, existingByName);
 
   return resolved.map((r, index) => {
     const slotKeyStr = slotKeyFor(r.kind, r.variant);
@@ -269,7 +294,9 @@ export function planImports(
     return {
       file: r.file,
       fileIndex: index,
-      ...spanWarning(r, resolved, existingCase),
+      ...(r.known ? { years: r.known.span, sampled: r.sampled } : {}),
+      spanConflict: false,
+      ...spans.get(r),
       caseName: r.caseName,
       caseIsNew,
       kind: r.kind,
@@ -284,41 +311,127 @@ export function planImports(
   });
 }
 
-/**
- * Why a wide file's stated years will be refused, mirroring the ingest check:
- * the Case's loaded tables outside this file's own slot (a replaced table's
- * years go with it), then the other wide files of this drop for the same
- * Case. Empty when its years are unknown or agree.
- */
-function spanWarning(
-  r: ResolvedFile,
-  resolved: readonly ResolvedFile[],
-  existingCase: ExistingCase | undefined,
-): { spanReason?: string } {
-  const years = r.years;
-  if (years === undefined) return {};
-  const differs = (other: YearSpan | null | undefined): other is YearSpan =>
-    other != null && (other.firstYear !== years.firstYear || other.numYears !== years.numYears);
-  const own = slotKeyFor(r.kind, r.variant);
-  for (const [slot, span] of Object.entries(existingCase?.slotSpans ?? {})) {
-    if (slot === own || !differs(span)) continue;
-    return {
-      spanReason:
-        `Spans ${spanLabel(years)}, but this Case's "${slot.trim()}" table spans ` +
-        `${spanLabel(span)}. One Case holds one run of years, so the load will refuse this ` +
-        `file; give it its own Case.`,
-    };
-  }
-  const sibling = resolved.find(
-    (other) => other !== r && other.caseName === r.caseName && differs(other.years),
-  );
-  if (sibling?.years === undefined) return {};
+/** One table of the batch for a Case: the files merged into one slot, and
+ * what is known of their years together. */
+interface SpanUnit {
+  members: ResolvedFile[];
+  slot: string;
+  known?: { span: YearSpan; whole: boolean };
+}
+
+function unitOf(slot: string, members: ResolvedFile[]): SpanUnit {
+  const known = members.flatMap((m) => (m.known ? [m.known] : []));
+  if (known.length === 0) return { members, slot };
+  const first = Math.min(...known.map((k) => k.span.firstYear));
+  const last = Math.max(...known.map((k) => k.span.firstYear + k.span.numYears - 1));
   return {
-    spanReason:
-      `Spans ${spanLabel(years)}, but "${sibling.file}", for the same Case, spans ` +
-      `${spanLabel(sibling.years)}. One Case holds one run of years, so the load will refuse ` +
-      `one of them; give each run its own Case.`,
+    members,
+    slot,
+    known: {
+      span: { firstYear: first, numYears: last - first + 1 },
+      // A member of unknown years may reach past the others.
+      whole: known.length === members.length && known.every((k) => k.whole),
+    },
   };
+}
+
+/**
+ * A merge group as the tables the load could make of it: when every member's
+ * years are known exactly, one per unbroken run of years, so a 2045 file
+ * merged with a 2035 one is a 2045 table that differs from its Case rather
+ * than a gap. Otherwise the group is one table.
+ */
+function runsOf(slot: string, members: ResolvedFile[]): SpanUnit[] {
+  const exact = members.flatMap((m) => (m.known?.whole ? [{ m, span: m.known.span }] : []));
+  if (members.length < 2 || exact.length < members.length) return [unitOf(slot, members)];
+  exact.sort((a, b) => a.span.firstYear - b.span.firstYear);
+  const runs: ResolvedFile[][] = [];
+  let reach = -Infinity;
+  for (const { m, span } of exact) {
+    if (span.firstYear > reach + 1) runs.push([]);
+    runs[runs.length - 1].push(m);
+    reach = Math.max(reach, span.firstYear + span.numYears - 1);
+  }
+  return runs.map((run) => unitOf(slot, run));
+}
+
+const inSpan = (year: number, span: YearSpan) =>
+  year >= span.firstYear && year < span.firstYear + span.numYears;
+
+/**
+ * Every file the load would certainly refuse for its years, mirroring the
+ * ingest check: a Case's span is its loaded tables' outside the slots this
+ * batch fills (a replaced table's years go with it), else the span most of
+ * the batch's tables state exactly. Only the tables that differ from it are
+ * marked, so the rename that clears them is theirs alone.
+ */
+function spanConflicts(
+  resolved: readonly ResolvedFile[],
+  groups: ReadonlyMap<string, ResolvedFile[]>,
+  existingByName: ReadonlyMap<string, ExistingCase>,
+): Map<ResolvedFile, Pick<ImportPlan, 'spanConflict' | 'spanReason' | 'spanDetail' | 'splitTo'>> {
+  const out = new Map<
+    ResolvedFile,
+    Pick<ImportPlan, 'spanConflict' | 'spanReason' | 'spanDetail' | 'splitTo'>
+  >();
+  const byCase = new Map<string, SpanUnit[]>();
+  for (const members of groups.values()) {
+    const units = byCase.get(members[0].caseName) ?? [];
+    units.push(...runsOf(slotKeyFor(members[0].kind, members[0].variant), members));
+    byCase.set(members[0].caseName, units);
+  }
+  for (const [caseName, units] of byCase) {
+    units.sort((a, b) => resolved.indexOf(a.members[0]) - resolved.indexOf(b.members[0]));
+    const filled = new Set(units.map((unit) => unit.slot));
+    let reference: { span: YearSpan; name: string; unit?: SpanUnit } | undefined;
+    for (const [slot, span] of Object.entries(existingByName.get(caseName)?.slotSpans ?? {})) {
+      if (span && !filled.has(slot)) {
+        reference = { span, name: `this Case's loaded "${slot.trim()}" table` };
+        break;
+      }
+    }
+    if (!reference) {
+      // The span most of the batch's tables state exactly, the first on a
+      // tie, so the fewer files are the ones moved off.
+      const exact = units.flatMap((unit) =>
+        unit.known?.whole ? [{ unit, label: spanLabel(unit.known.span) }] : [],
+      );
+      const count = (label: string) => exact.filter((other) => other.label === label).length;
+      const most = exact.reduce<(typeof exact)[number] | undefined>(
+        (best, entry) =>
+          best === undefined || count(entry.label) > count(best.label) ? entry : best,
+        undefined,
+      )?.unit;
+      if (most?.known) {
+        const files = most.members.map((m) => `"${m.file}"`).join(' and ');
+        reference = { span: most.known.span, name: `${files}, for the same Case,`, unit: most };
+      }
+    }
+    for (const unit of units) {
+      const known = unit.known;
+      if (!reference || !known || unit === reference.unit) continue;
+      const span = known.span;
+      const last = span.firstYear + span.numYears - 1;
+      const differs = known.whole
+        ? span.firstYear !== reference.span.firstYear || span.numYears !== reference.span.numYears
+        : !inSpan(span.firstYear, reference.span) || !inSpan(last, reference.span);
+      if (!differs) continue;
+      for (const member of unit.members) {
+        const what = member.sampled
+          ? `Its ${known.whole ? 'first and last' : 'sampled'} rows are dated ${spanLabel(span)}`
+          : `Spans ${spanLabel(span)}`;
+        out.set(member, {
+          spanConflict: true,
+          spanReason: `The rest of this Case is ${spanLabel(reference.span)}.`,
+          spanDetail:
+            `${what}, but ${reference.name} spans ${spanLabel(reference.span)}. One Case holds ` +
+            'one run of years, so the load will refuse this file; give it its own Case.',
+          splitTo: `${caseName}_${spanLabel(span)}`,
+        });
+      }
+    }
+  }
+  return out;
 }
 
 // ------------------------------------------------------- interface limits

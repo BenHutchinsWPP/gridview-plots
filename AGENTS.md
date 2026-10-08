@@ -99,6 +99,10 @@ on a nine-year file.
 - The axis is read from the file, never assumed. Column counts and order vary.
 - **Row order carries no meaning.** A value-sorted export must load
   byte-identically to a date-ordered one. Do not add an ordering check.
+  The one reader of order is the Import Dialog's sample of a long file's
+  first and last rows (`src/tables/long/sample-years.ts`): a hint for the
+  dialog that never reaches ingest, and a sample out of date order proves
+  only the years it shows.
 - **Every year is a fixed 8,784-hour slot on the leap calendar** (Feb 29 =
   hours 1416..1439), so a date is the same index in every year and Case and
   overlay, downloads and the date filter need no per-year mapping. Rejected:
@@ -132,9 +136,10 @@ on a nine-year file.
   is refused before it attaches, unless it replaces every table holding the
   old one; that includes a long file after its metric picker
   (`keepSpans` in `src/app/batch.ts`). The rule lives in ingest, not the
-  Import Dialog, because a long file's years are known only after its scan;
-  the dialog only warns of a wide file's. Asserted by
-  `tests/test_case_span.mjs`.
+  Import Dialog, because a long file's years are known only after its scan.
+  The dialog blocks only a refusal it is certain of, from a wide file's date
+  line or a long file's sample, and offers the Case that clears it. Asserted
+  by `tests/test_case_span.mjs` and `tests/test_sample_years.mjs`.
 - **One plane's span is contiguous in the cube**:
   `(plane × numYears + yearOff) × 8,784 + slotHour`, a plane being an entity,
   or an entity-metric pair in a long table. Every kernel reads a plane with

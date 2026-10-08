@@ -1507,13 +1507,14 @@ body.is-busy {
 
 /* The import dialog's file list: which file, which Case, what was read out
    of it -- one column each, so a batch of twelve is scanned down a column
-   rather than read one stacked block at a time. The fourth track is the
-   remove button, which is why it is `auto` and the other three are
-   fractions of what is left. */
+   rather than read one stacked block at a time. Each row is its own grid,
+   so every track is sized the same in all of them: the years track holds
+   "2034-2036 (sampled)", the last is the remove button, and the other three
+   share what is left. */
 .import-head,
 .import-row {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr) minmax(0, 1.6fr) auto;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.3fr) minmax(0, 1.6fr) 10.5em 24px;
   gap: 8px;
   align-items: center;
 }
@@ -1548,6 +1549,29 @@ body.is-busy {
   cursor: default;
 }
 
+/* A file added to the open dialog, sorted in among the others, says it is
+   new for a moment. */
+.import-row-added {
+  animation: import-row-added 2.4s ease-out;
+}
+@keyframes import-row-added {
+  from,
+  40% {
+    background: var(--color-selection-hover);
+  }
+}
+
+/* Away from Cancel and the two loads: it adds to the batch, never ends it. */
+.import-add {
+  margin-right: auto;
+}
+
+/* A drop while the Import Dialog is open joins it, so the drop target shows
+   above the dialog rather than under its backdrop. */
+body:has(.import-dialog) .drop-overlay {
+  z-index: 60;
+}
+
 .import-cell {
   min-width: 0;
   overflow: hidden;
@@ -1559,6 +1583,15 @@ body.is-busy {
   min-width: 0;
 }
 
+.import-years {
+  font-variant-numeric: tabular-nums;
+}
+
+.import-years-conflict {
+  color: var(--color-negative, #b3261e);
+  font-weight: 600;
+}
+
 /* A warning under a row spans it, rather than sitting in one column. */
 .import-note {
   grid-column: 1 / -1;
@@ -1567,6 +1600,28 @@ body.is-busy {
 
 .import-note:empty {
   display: none;
+}
+
+/* A span conflict: its short reason and the move that clears it, on one
+   line under the row. */
+.import-span {
+  grid-column: 1 / -1;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-negative, #b3261e);
+}
+
+/* The `display` above would override the `hidden` attribute. */
+.import-span[hidden],
+.import-span > [hidden] {
+  display: none;
+}
+
+.import-span > .btn {
+  padding: 1px 8px;
+  font-size: 11px;
 }
 .modal-row-tag {
   font-size: 10px;

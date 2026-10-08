@@ -11,10 +11,12 @@
 // Like the ingest engines it takes a host and holds no app state: `main.ts`
 // states the store, the dialogs, the notes and the busy line as a `DropHost`,
 // so a test drives the whole sequence with a fake one. The one thing held
-// here is the drop's own lifetime (whether one is running, and which exit its
-// Import Dialog took), in a closure the root creates.
+// here is the drop's own lifetime (whether one is running, which exit its
+// Import Dialog took, and the intake that lets a later drop join that dialog
+// while it is open), in a closure the root creates.
 
 import { classify, DETECT_PROBE_BYTES, type DetectResult } from '../detect';
+import { sampleYears, type SampledYears } from '../tables/long/sample-years';
 import {
   groupsInput,
   LIMITS_COLUMN,
@@ -87,6 +89,7 @@ export interface DropHost {
     tables: ImportFile[],
     cases: ExistingCase[],
     limits: ImportFile[],
+    intake: ImportIntake,
   ): Promise<ImportDecision | null>;
   /** Run one (kind, shape) batch through its engine. */
   ingest(kind: TableKind, shape: 'W' | 'L', drops: Drop[]): Promise<IngestOutcome>;
@@ -111,6 +114,53 @@ export interface DropLoad {
 }
 
 type Dropped = { file: File; classified: ImportFile };
+
+/** Files that joined the open Import Dialog, numbered after the ones already
+ * in it: `index` is what the file's plan carries back as `fileIndex`. */
+export interface AddedFiles {
+  tables: { index: number; file: ImportFile }[];
+  limits: { index: number; file: ImportFile }[];
+  /** One line per file that did not join, refused or skipped. */
+  notes: string[];
+}
+
+/** The open Import Dialog's way in for more files, from a drop on the
+ * window or its own Add files… button alike. */
+export interface ImportIntake {
+  add(files: File[]): void;
+  /** The dialog takes what joins it. `shows` says whether table file `index`
+   * still has a row, so a file removed with × may be added again. */
+  listen(take: (added: AddedFiles) => void, shows: (index: number) => boolean): void;
+}
+
+/** Read each file's head and say what it is. */
+async function classifyFiles(files: readonly File[]): Promise<RoutedFile<Dropped>[]> {
+  const classified: RoutedFile<Dropped>[] = [];
+  for (const file of files) {
+    const headBytes = new Uint8Array(await file.slice(0, DETECT_PROBE_BYTES).arrayBuffer());
+    const detected = classify(headBytes, file.name);
+    const sampled = detected.shape === 'L' ? await sampleOf(file, headBytes) : undefined;
+    classified.push({
+      name: file.name,
+      // The verdict travels with the file; its quantity (possibly undefined)
+      // separates two tables of one kind on one Case.
+      item: { file, classified: { name: file.name, detected, ...(sampled ? { sampled } : {}) } },
+      verdict: detected,
+    });
+  }
+  return classified;
+}
+
+/** A long file's years for the Import Dialog, from its first and last
+ * `DETECT_PROBE_BYTES`; a file up to twice that is read whole. */
+async function sampleOf(file: File, head: Uint8Array): Promise<SampledYears | undefined> {
+  if (file.size <= head.length) return sampleYears(head, null);
+  if (file.size <= 2 * DETECT_PROBE_BYTES) {
+    return sampleYears(new Uint8Array(await file.arrayBuffer()), null);
+  }
+  const tail = file.slice(file.size - DETECT_PROBE_BYTES);
+  return sampleYears(head, new Uint8Array(await tail.arrayBuffer()));
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -173,6 +223,11 @@ export function createDropLoad(host: DropHost): DropLoad {
   // moment of one drop; cleared in the same `finally` as `inFlight`, or the
   // NEXT drop would skip its pickers.
   let everything = false;
+  // Open only while the Import Dialog is: a drop then joins it, not refused.
+  let intake: ImportIntake | null = null;
+  // Every file this drop holds, the ones added to its dialog included, so a
+  // throw refuses each file it had not reached.
+  let held: File[] = [];
 
   function refuse(files: File[], refusal: string): void {
     inventory.logRefused(files, refusal);
@@ -183,6 +238,10 @@ export function createDropLoad(host: DropHost): DropLoad {
   async function load(files: File[]): Promise<void> {
     // Refuse a concurrent call rather than let two live dispatch() calls race
     // over the same worker pool.
+    if (intake !== null) {
+      intake.add(files);
+      return;
+    }
     if (inFlight) {
       refuse(files, 'A load is already running — drop these files again once it finishes.');
       return;
@@ -192,6 +251,7 @@ export function createDropLoad(host: DropHost): DropLoad {
       return;
     }
     inFlight = true;
+    held = [...files];
     host.closeContents();
     // Everything this drop accepts is logged as one `loaded` when it ends,
     // carrying the notes that name no file.
@@ -208,31 +268,22 @@ export function createDropLoad(host: DropHost): DropLoad {
       // goes unaccounted in the Log.
       const refusal =
         `The load stopped: ${errorText(error)}. ` + 'Files it had not reached were not loaded.';
-      inventory.logRefused(inventory.unaccounted(files), refusal);
+      inventory.logRefused(inventory.unaccounted(held), refusal);
       host.say('session', [refusal]);
     } finally {
       inventory.endDrop();
       inFlight = false;
       everything = false;
+      intake = null;
+      held = [];
       host.setBusyFloor(null);
     }
   }
 
   async function run(files: File[]): Promise<void> {
-    // Every table file in drop order with the detector's verdict. Which Case
-    // and slot each lands on is the Import Dialog's answer, not this loop's.
-    const classified: RoutedFile<Dropped>[] = [];
-    for (const file of files) {
-      const headBytes = new Uint8Array(await file.slice(0, DETECT_PROBE_BYTES).arrayBuffer());
-      const detected = classify(headBytes, file.name);
-      classified.push({
-        name: file.name,
-        // The verdict travels with the file; its quantity (possibly undefined)
-        // separates two tables of one kind on one Case.
-        item: { file, classified: { name: file.name, detected } },
-        verdict: detected,
-      });
-    }
+    // Every file in drop order with the detector's verdict. Which Case and
+    // slot each lands on is the Import Dialog's answer, not this loop's.
+    const classified = await classifyFiles(files);
     // WHERE each file goes is `routeDrop`, which is total over the verdict
     // union and tested on its own. What follows is the half that cannot be:
     // every auxiliary step awaits, and each writes session state.
@@ -280,6 +331,8 @@ export function createDropLoad(host: DropHost): DropLoad {
     // The Import Dialog is the ONLY place that decides which file joins which
     // Case and slot. It runs once for the whole drop, before any ingest.
     // Groupings and bundles are applied above and never reach it.
+    const opened = openIntake(tableFiles, limitFiles);
+    intake = opened.intake;
     const decision = await host.askImport(
       tableFiles.map((entry) => entry.classified),
       host
@@ -294,7 +347,12 @@ export function createDropLoad(host: DropHost): DropLoad {
           slotSpans: spansBySlot(entry),
         })),
       limitFiles.map((entry) => entry.classified),
+      opened.intake,
     );
+    // A file still being read when the dialog closed is refused, not added
+    // to a decision already made.
+    intake = null;
+    await opened.settled();
     if (!decision) {
       // Cancelled: nothing is ingested. A half-applied batch is exactly the
       // surprise this dialog exists to remove.
@@ -397,6 +455,91 @@ export function createDropLoad(host: DropHost): DropLoad {
     host.refreshCases();
     if (host.listCases().length > 0) host.revealDrawer();
     host.render();
+  }
+
+  /**
+   * Take files into the open Import Dialog, appending them to `tableFiles`
+   * and `limitFiles` so a plan's `fileIndex` finds them. Adds run one at a
+   * time, in arrival order, so the numbering is the order the dialog sees.
+   * Only a table or limits file joins: anything else applies session state
+   * the open dialog would not show, so it is refused until the load ends.
+   */
+  function openIntake(
+    tableFiles: Dropped[],
+    limitFiles: Dropped[],
+  ): { intake: ImportIntake; settled: () => Promise<void> } {
+    let queue = Promise.resolve();
+    let take: ((added: AddedFiles) => void) | null = null;
+    let shows: (index: number) => boolean = () => true;
+    let open = true;
+
+    async function admit(files: File[]): Promise<void> {
+      const classified = await classifyFiles(files);
+      if (!open) {
+        refuse(
+          files,
+          'These files arrived as the Import dialog closed — drop them again once the load finishes.',
+        );
+        return;
+      }
+      held.push(...files);
+      const route = routeDrop(classified);
+      const added: AddedFiles = { tables: [], limits: [], notes: [] };
+      for (const step of route.auxiliary) {
+        const file = step.item.file;
+        const note =
+          `${file.name}: only table and limits files join an open Import dialog — ` +
+          'drop it again once this load finishes.';
+        added.notes.push(note);
+        inventory.logRefused([file], note);
+      }
+      // The same name and size as a file with a row is that file again.
+      const same = (a: File, b: File) => a.name === b.name && a.size === b.size;
+      // A file this add has taken is one with a row, though not shown yet.
+      const join = (
+        into: Dropped[],
+        entries: RoutedFile<Dropped>[],
+        has: (i: number) => boolean,
+      ) => {
+        const known = into.length;
+        return entries.flatMap(({ item }) => {
+          const repeat = into.some(
+            (entry, index) => (index >= known || has(index)) && same(entry.file, item.file),
+          );
+          if (repeat) {
+            const note = `${item.file.name}: already in this import — skipped.`;
+            added.notes.push(note);
+            inventory.logSkipped([item.file], 'already in the Import dialog');
+            return [];
+          }
+          into.push(item);
+          return [{ index: into.length - 1, file: item.classified }];
+        });
+      };
+      added.tables = join(tableFiles, route.tables, (index) => shows(index));
+      // A limits row has no ×, so every one still shows.
+      added.limits = join(limitFiles, route.limits, () => true);
+      take?.(added);
+    }
+
+    return {
+      intake: {
+        add(files) {
+          // A file that cannot be read is refused alone; the queue goes on.
+          queue = queue
+            .then(() => admit(files))
+            .catch((error) => refuse(files, `These files were not added: ${errorText(error)}.`));
+        },
+        listen(listener, showing) {
+          take = listener;
+          shows = showing;
+        },
+      },
+      settled() {
+        open = false;
+        return queue;
+      },
+    };
   }
 
   /**

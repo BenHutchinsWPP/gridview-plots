@@ -17,10 +17,15 @@
 // allocation before attempting it; "Load everything" skips them. Skipping is
 // deliberately not the default.
 //
+// Files dropped while it is open join it (`ImportIntake`), as if they had
+// been in the first drop: their rows sort in among the others and follow the
+// mode, and a highlight shows which arrived.
+//
 // Modal conventions follow the column pickers (src/tables/area/ui/picker.ts),
 // including tearing down the Escape listener on close
 // (tests/test_dom_contract.mjs counts them).
 
+import type { AddedFiles, ImportIntake } from '../app/drop-load';
 import {
   planImports,
   planLimits,
@@ -34,6 +39,7 @@ import {
   type LimitScope,
   type TableKind,
 } from '../app/import-plan';
+import { spanLabel } from '../ingest';
 import { KIND_COLORS } from '../tables/registry';
 
 const MODE_CHOICES: { value: ImportMode; label: string }[] = [
@@ -52,6 +58,14 @@ interface FileRow {
   rowElement: HTMLElement;
   caseInput: HTMLInputElement;
   conflictLine: HTMLElement;
+  yearsCell: HTMLElement;
+  /** A span conflict, in one line: the Case's years and the move that
+   * clears it. */
+  spanLine: HTMLElement;
+  spanText: HTMLElement;
+  /** Moves this row's table, and any row sharing its years and Case, to a
+   * Case of its own: shown only beside a span conflict. */
+  splitButton: HTMLButtonElement;
   replaceLine: HTMLElement;
   removeButton: HTMLButtonElement;
 }
@@ -89,17 +103,20 @@ export interface ImportDecision {
 export function showImportDialog(
   files: ImportFile[],
   existingCases: ExistingCase[] = [],
-  limitFiles: ImportFile[] = [],
+  droppedLimits: ImportFile[] = [],
+  intake?: ImportIntake,
 ): Promise<ImportDecision | null> {
   return new Promise((resolve) => {
-    // First pass, only to seed the name fields with each file's default name.
-    let seeded: ImportPlan[] = [];
-    try {
-      seeded = planImports(files, 'derive', { pattern: '*' });
-    } catch {
-      seeded = [];
-    }
-    const seedNameOf = (index: number): string => seeded[index]?.caseName ?? files[index].name;
+    /** The name a file's Case box starts at: its own default name. */
+    const seedOf = (file: ImportFile): string => {
+      try {
+        return planImports([file], 'derive', { pattern: '*' })[0]?.caseName ?? file.name;
+      } catch {
+        return file.name;
+      }
+    };
+    // Grows as files are added; a plan's `fileIndex` is a place in it.
+    const limitFiles = [...droppedLimits];
 
     let mode: ImportMode = 'one-case';
 
@@ -122,13 +139,16 @@ export function showImportDialog(
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     const modal = document.createElement('div');
-    modal.className = 'modal modal-wide';
+    modal.className = 'modal modal-wide import-dialog';
     backdrop.appendChild(modal);
     modal.appendChild(existingList);
 
     const title = document.createElement('h2');
-    title.textContent = `Assign ${files.length} dropped file${files.length === 1 ? '' : 's'} to Cases`;
     modal.appendChild(title);
+    const retitle = (): void => {
+      const count = activeRows.length;
+      title.textContent = `Assign ${count} dropped file${count === 1 ? '' : 's'} to Cases`;
+    };
 
     const subtitle = document.createElement('p');
     subtitle.className = 'modal-subtitle';
@@ -166,7 +186,7 @@ export function showImportDialog(
     const oneCaseInput = document.createElement('input');
     oneCaseInput.type = 'text';
     oneCaseInput.className = 'modal-filter';
-    oneCaseInput.value = files.length > 0 ? seedNameOf(0) : '';
+    oneCaseInput.value = files.length > 0 ? seedOf(files[0]) : '';
     oneCaseInput.placeholder = 'Case name for every file';
     oneCaseInput.setAttribute('list', existingList.id);
     const oneCaseWrap = labelled('Case name', oneCaseInput);
@@ -200,7 +220,9 @@ export function showImportDialog(
     caseHead.textContent = 'Case';
     const detectedHead = document.createElement('div');
     detectedHead.textContent = 'Detected';
-    head.append(fileHead, caseHead, detectedHead, document.createElement('div'));
+    const yearsHead = document.createElement('div');
+    yearsHead.textContent = 'Years';
+    head.append(fileHead, caseHead, detectedHead, yearsHead, document.createElement('div'));
 
     const list = document.createElement('div');
     list.className = 'modal-list';
@@ -214,111 +236,158 @@ export function showImportDialog(
       (file.detected.shape === undefined ? '' : ` · ${file.detected.shape}`) +
       (file.detected.quantity === undefined ? '' : ` · ${file.detected.quantity}`) +
       (file.detected.confidence === 'low' ? ' · low confidence' : '');
+    /** A wide file's stated years, or a long file's sampled ones. */
+    const yearsText = (file: ImportFile): string =>
+      file.detected.years
+        ? spanLabel(file.detected.years)
+        : file.sampled
+          ? `${spanLabel(file.sampled)} (sampled)`
+          : '—';
 
     const activeRows: FileRow[] = [];
-    // Rows are sorted by detected verdict (stable), so a misread file stands
-    // out among its neighbours. DISPLAY ONLY: plans carry `fileIndex` back to
-    // the caller's order, which failures are attributed by.
-    files
-      .map((file, index) => ({ file, index }))
-      .sort((a, b) => detectedText(a.file).localeCompare(detectedText(b.file)))
-      .forEach(({ file, index }) => {
-        const row = document.createElement('div');
-        row.className = 'modal-row import-row';
+    /**
+     * Rows are sorted by detected verdict (stable), so a misread file stands
+     * out among its neighbours: a row goes after every row whose verdict
+     * sorts with or before its own. DISPLAY ONLY: plans carry `fileIndex`
+     * back to the caller's order, which failures are attributed by.
+     */
+    function addRow(file: ImportFile, index: number): FileRow {
+      const seedName = seedOf(file);
+      const row = document.createElement('div');
+      row.className = 'modal-row import-row';
 
-        // A tint per kind, as a cue only: the kind is also named in text for
-        // colour-blind readers and greyscale printouts. Every row here is a
-        // table kind, so the lookup is total.
-        const tint = KIND_COLORS[file.detected.kind as TableKind];
-        if (tint) row.style.borderLeft = `3px solid ${tint}`;
+      // A tint per kind, as a cue only: the kind is also named in text for
+      // colour-blind readers and greyscale printouts. Every row here is a
+      // table kind, so the lookup is total.
+      const tint = KIND_COLORS[file.detected.kind as TableKind];
+      if (tint) row.style.borderLeft = `3px solid ${tint}`;
 
-        const name = document.createElement('div');
-        name.className = 'modal-row-name import-cell';
-        name.textContent = file.name;
-        // detect.ts's reason is a tooltip: forensics for one misread row.
-        name.title = file.detected.reason;
+      const name = document.createElement('div');
+      name.className = 'modal-row-name import-cell';
+      name.textContent = file.name;
+      // detect.ts's reason is a tooltip: forensics for one misread row.
+      name.title = file.detected.reason;
 
-        const caseCell = document.createElement('div');
-        caseCell.className = 'import-case';
-        const caseInput = document.createElement('input');
-        caseInput.type = 'text';
-        caseInput.className = 'modal-filter';
-        caseInput.value = seedNameOf(index);
-        caseInput.placeholder = seedNameOf(index);
-        caseInput.setAttribute('aria-label', `Case for ${file.name}`);
-        caseInput.setAttribute('list', existingList.id);
-        caseCell.appendChild(caseInput);
+      const caseCell = document.createElement('div');
+      caseCell.className = 'import-case';
+      const caseInput = document.createElement('input');
+      caseInput.type = 'text';
+      caseInput.className = 'modal-filter';
+      caseInput.value = seedName;
+      caseInput.placeholder = seedName;
+      caseInput.setAttribute('aria-label', `Case for ${file.name}`);
+      caseInput.setAttribute('list', existingList.id);
+      caseCell.appendChild(caseInput);
 
-        // Read from the file, so painted once. Confidence shows only when LOW.
-        const detectedTag = document.createElement('div');
-        detectedTag.className = 'modal-row-tag import-cell';
-        detectedTag.textContent = `detected: ${detectedText(file)}`;
-        detectedTag.title = file.detected.reason;
+      // Read from the file, so painted once. Confidence shows only when LOW.
+      const detectedTag = document.createElement('div');
+      detectedTag.className = 'modal-row-tag import-cell';
+      detectedTag.textContent = `detected: ${detectedText(file)}`;
+      detectedTag.title = file.detected.reason;
 
-        const removeButton = document.createElement('button');
-        removeButton.type = 'button';
-        removeButton.className = 'modal-row-remove';
-        removeButton.textContent = '×';
-        removeButton.title = `Remove ${file.name} from import`;
-        removeButton.setAttribute('aria-label', `Remove ${file.name}`);
+      // Read from the file, so painted once; red with its span conflict.
+      const yearsCell = document.createElement('div');
+      yearsCell.className = 'import-cell import-years';
+      yearsCell.textContent = yearsText(file);
+      yearsCell.title = file.detected.years
+        ? 'The years this file’s date line states.'
+        : file.sampled
+          ? file.sampled.whole
+            ? 'From the file’s first and last rows, which run in date order. The load reads every row.'
+            : 'Years seen in the file’s first and last rows, which are not in date order, so it may hold others. The load reads every row.'
+          : 'Read when the file loads.';
 
-        row.append(name, caseCell, detectedTag, removeButton);
+      const removeButton = document.createElement('button');
+      removeButton.type = 'button';
+      removeButton.className = 'modal-row-remove';
+      removeButton.textContent = '×';
+      removeButton.title = `Remove ${file.name} from import`;
+      removeButton.setAttribute('aria-label', `Remove ${file.name}`);
 
-        // A refusal seen before the load: without a title quantity there is
-        // no slot key.
-        const warningLine = document.createElement('div');
-        warningLine.className = 'modal-subtitle import-note';
-        warningLine.style.color = 'var(--color-warning, #a15c00)';
-        if (file.detected.shape === 'W' && file.detected.quantity === undefined) {
-          warningLine.textContent =
-            'No quantity was read from this file’s title line, so it may be refused on load.';
-        }
-        row.appendChild(warningLine);
+      row.append(name, caseCell, detectedTag, yearsCell, removeButton);
 
-        const conflictLine = document.createElement('div');
-        conflictLine.className = 'modal-subtitle import-note';
-        conflictLine.style.color = 'var(--color-negative, #b3261e)';
-        row.appendChild(conflictLine);
+      // A refusal seen before the load: without a title quantity there is
+      // no slot key.
+      const warningLine = document.createElement('div');
+      warningLine.className = 'modal-subtitle import-note';
+      warningLine.style.color = 'var(--color-warning, #a15c00)';
+      if (file.detected.shape === 'W' && file.detected.quantity === undefined) {
+        warningLine.textContent =
+          'No quantity was read from this file’s title line, so it may be refused on load.';
+      }
+      row.appendChild(warningLine);
 
-        // Non-blocking: confirming overwrites the table at this slot. Separate
-        // from `conflictLine` so a row can show both.
-        const replaceLine = document.createElement('div');
-        replaceLine.className = 'modal-subtitle import-note';
-        replaceLine.style.color = 'var(--color-warning, #a15c00)';
-        row.appendChild(replaceLine);
+      const conflictLine = document.createElement('div');
+      conflictLine.className = 'modal-subtitle import-note';
+      conflictLine.style.color = 'var(--color-negative, #b3261e)';
+      row.appendChild(conflictLine);
 
-        list.appendChild(row);
+      const spanLine = document.createElement('div');
+      spanLine.className = 'modal-subtitle import-span';
+      spanLine.hidden = true;
+      const spanText = document.createElement('span');
+      const splitButton = document.createElement('button');
+      splitButton.type = 'button';
+      splitButton.className = 'btn';
+      spanLine.append(spanText, splitButton);
+      row.appendChild(spanLine);
 
-        const fileRow: FileRow = {
-          file,
-          originalIndex: index,
-          seedName: seedNameOf(index),
-          rowElement: row,
-          caseInput,
-          conflictLine,
-          replaceLine,
-          removeButton,
-        };
+      // Non-blocking: confirming overwrites the table at this slot. Separate
+      // from `conflictLine` so a row can show both.
+      const replaceLine = document.createElement('div');
+      replaceLine.className = 'modal-subtitle import-note';
+      replaceLine.style.color = 'var(--color-warning, #a15c00)';
+      row.appendChild(replaceLine);
 
-        removeButton.addEventListener('click', () => {
-          row.remove();
-          const idx = activeRows.indexOf(fileRow);
-          if (idx >= 0) {
-            activeRows.splice(idx, 1);
-          }
-          // A limits-only batch is still a batch; do not cancel it.
-          if (activeRows.length === 0 && limitRows.length === 0) {
-            close(null);
-            return;
-          }
-          title.textContent = `Assign ${activeRows.length} dropped file${activeRows.length === 1 ? '' : 's'} to Cases`;
-          refresh();
-        });
+      const fileRow: FileRow = {
+        file,
+        originalIndex: index,
+        seedName,
+        rowElement: row,
+        caseInput,
+        conflictLine,
+        yearsCell,
+        spanLine,
+        spanText,
+        splitButton,
+        replaceLine,
+        removeButton,
+      };
 
-        caseInput.addEventListener('input', refresh);
-
-        activeRows.push(fileRow);
+      splitButton.addEventListener('click', () => {
+        const plan = plans?.[activeRows.indexOf(fileRow)];
+        if (plan?.splitTo !== undefined) splitOff(plan.caseName, plan.splitTo);
       });
+
+      removeButton.addEventListener('click', () => {
+        row.remove();
+        const idx = activeRows.indexOf(fileRow);
+        if (idx >= 0) {
+          activeRows.splice(idx, 1);
+        }
+        // A limits-only batch is still a batch; do not cancel it.
+        if (activeRows.length === 0 && limitRows.length === 0) {
+          close(null);
+          return;
+        }
+        retitle();
+        refresh();
+      });
+
+      caseInput.addEventListener('input', refresh);
+
+      const key = detectedText(file);
+      const at = activeRows.findIndex((other) => detectedText(other.file).localeCompare(key) > 0);
+      if (at < 0) {
+        list.appendChild(row);
+        activeRows.push(fileRow);
+      } else {
+        list.insertBefore(row, activeRows[at].rowElement);
+        activeRows.splice(at, 0, fileRow);
+      }
+      return fileRow;
+    }
+    files.forEach((file, index) => addRow(file, index));
 
     // ----------------------------------------------------------- limit rows
     //
@@ -337,63 +406,77 @@ export function showImportDialog(
     let limitPlans: LimitPlan[] = [];
     const SCOPE_ALL = '\u0000all';
 
-    if (limitFiles.length > 0) {
-      const heading = document.createElement('p');
-      heading.className = 'modal-subtitle';
-      heading.textContent =
-        `${limitFiles.length} interface limit file${limitFiles.length === 1 ? '' : 's'}. A limits ` +
+    // Built hidden, and shown by the first limits file, dropped or added.
+    const limitHeading = document.createElement('p');
+    limitHeading.className = 'modal-subtitle';
+    modal.appendChild(limitHeading);
+    const limitList = document.createElement('div');
+    limitList.className = 'modal-list';
+    modal.appendChild(limitList);
+    const showLimits = (): void => {
+      const count = limitFiles.length;
+      limitHeading.hidden = limitList.hidden = count === 0;
+      limitHeading.textContent =
+        `${count} interface limit file${count === 1 ? '' : 's'}. A limits ` +
         'file holds no hourly data and lands on no slot — it says what the paths are operated ' +
         'to. Give it to every Case when one published set of limits is being compared across ' +
         'runs, or to one Case when that run has its own. A Case with its own limits ignores the ' +
         'shared set.';
-      modal.appendChild(heading);
+    };
+    /** A limits file's row. `index` is its place in `limitFiles`. */
+    function addLimitRow(file: ImportFile, index: number): HTMLElement {
+      const row = document.createElement('div');
+      row.className = 'modal-row';
+      row.style.flexDirection = 'column';
+      row.style.alignItems = 'stretch';
+      row.style.gap = '4px';
 
-      const limitList = document.createElement('div');
-      limitList.className = 'modal-list';
-      limitFiles.forEach((file, index) => {
-        const row = document.createElement('div');
-        row.className = 'modal-row';
-        row.style.flexDirection = 'column';
-        row.style.alignItems = 'stretch';
-        row.style.gap = '4px';
+      const headline = document.createElement('div');
+      headline.style.display = 'flex';
+      headline.style.alignItems = 'center';
+      headline.style.gap = '8px';
+      const name = document.createElement('span');
+      name.className = 'modal-row-name';
+      name.textContent = file.name;
+      const detectedTag = document.createElement('span');
+      detectedTag.className = 'modal-row-tag';
+      detectedTag.textContent = `detected: interface limits (${file.detected.confidence})`;
+      detectedTag.title = file.detected.reason;
+      headline.append(name, detectedTag);
+      row.appendChild(headline);
 
-        const headline = document.createElement('div');
-        headline.style.display = 'flex';
-        headline.style.alignItems = 'center';
-        headline.style.gap = '8px';
-        const name = document.createElement('span');
-        name.className = 'modal-row-name';
-        name.textContent = file.name;
-        const detectedTag = document.createElement('span');
-        detectedTag.className = 'modal-row-tag';
-        detectedTag.textContent = `detected: interface limits (${file.detected.confidence})`;
-        detectedTag.title = file.detected.reason;
-        headline.append(name, detectedTag);
-        row.appendChild(headline);
-
-        const select = document.createElement('select');
-        select.className = 'modal-filter';
-        select.addEventListener('change', () => {
-          limitOverrides[index] =
-            select.value === SCOPE_ALL ? { kind: 'all' } : { kind: 'case', caseName: select.value };
-          refresh();
-        });
-        const controls = document.createElement('div');
-        controls.style.display = 'flex';
-        controls.style.alignItems = 'center';
-        controls.style.gap = '6px';
-        controls.appendChild(labelled('Applies to', select));
-        row.appendChild(controls);
-
-        const targetLine = document.createElement('div');
-        targetLine.className = 'modal-readout';
-        row.appendChild(targetLine);
-
-        limitList.appendChild(row);
-        limitRows.push({ file, select, targetLine });
+      const select = document.createElement('select');
+      select.className = 'modal-filter';
+      select.addEventListener('change', () => {
+        limitOverrides[index] =
+          select.value === SCOPE_ALL ? { kind: 'all' } : { kind: 'case', caseName: select.value };
+        refresh();
       });
-      modal.appendChild(limitList);
+      const controls = document.createElement('div');
+      controls.style.display = 'flex';
+      controls.style.alignItems = 'center';
+      controls.style.gap = '6px';
+      controls.appendChild(labelled('Applies to', select));
+      row.appendChild(controls);
+
+      const targetLine = document.createElement('div');
+      targetLine.className = 'modal-readout';
+      row.appendChild(targetLine);
+
+      limitList.appendChild(row);
+      limitRows.push({ file, select, targetLine });
+      return row;
     }
+    limitFiles.forEach((file, index) => addLimitRow(file, index));
+    showLimits();
+
+    // What became of the last files added: one line per file that did not join.
+    const addNotes = document.createElement('p');
+    addNotes.className = 'modal-subtitle import-note';
+    addNotes.style.color = 'var(--color-warning, #a15c00)';
+    addNotes.style.whiteSpace = 'pre-line';
+    addNotes.hidden = true;
+    modal.appendChild(addNotes);
 
     const readout = document.createElement('p');
     readout.className = 'modal-readout';
@@ -421,6 +504,26 @@ export function showImportDialog(
     confirm.textContent = 'Choose what to load…';
     confirm.title = 'Load these files, asking per file which entities and metrics to keep';
     actions.append(cancel, takeAll, confirm);
+    if (intake) {
+      // The same way in as a drop on the window.
+      const picker = document.createElement('input');
+      picker.type = 'file';
+      picker.accept = '.csv,text/csv';
+      picker.multiple = true;
+      picker.hidden = true;
+      picker.addEventListener('change', () => {
+        const picked = Array.from(picker.files ?? []);
+        picker.value = '';
+        if (picked.length > 0) intake.add(picked);
+      });
+      const addFiles = document.createElement('button');
+      addFiles.type = 'button';
+      addFiles.className = 'btn import-add';
+      addFiles.textContent = 'Add files…';
+      addFiles.title = 'Add more exports or limits files to this import. Dropping them works too.';
+      addFiles.addEventListener('click', () => picker.click());
+      actions.prepend(picker, addFiles);
+    }
     modal.appendChild(actions);
 
     // ---------------------------------------------------------------- state
@@ -479,24 +582,26 @@ export function showImportDialog(
         row.caseInput.disabled = mode !== 'individual';
         if (plan && mode !== 'individual') row.caseInput.value = shownAs(plan.caseName);
 
+        row.yearsCell.classList.toggle('import-years-conflict', plan?.spanConflict === true);
         if (!plan) {
           row.conflictLine.textContent = '';
+          row.spanLine.hidden = true;
           row.replaceLine.textContent = '';
           return;
         }
         caseNames.add(plan.caseName);
-        // Blocking: a same-batch collision. The replace warning has its own
-        // line so both can show.
+        // Blocking: a same-batch collision, or years the load would refuse.
+        // The replace warning has its own line so both can show. A span
+        // conflict is said short, its years already red in their column,
+        // with the whole account on hover.
         row.conflictLine.textContent = plan.slotConflict ? (plan.conflictReason ?? '') : '';
-        // The span warning shares the replace line: both are non-blocking
-        // facts about what this file does to its Case.
-        row.replaceLine.textContent = [
-          plan.replacesExisting ? (plan.replaceReason ?? '') : '',
-          plan.spanReason ?? '',
-        ]
-          .filter((text) => text !== '')
-          .join(' ');
-        if (plan.slotConflict) conflicts++;
+        row.spanLine.hidden = !plan.spanConflict;
+        row.spanLine.title = plan.spanDetail ?? '';
+        row.spanText.textContent = plan.spanReason ?? '';
+        row.splitButton.hidden = plan.splitTo === undefined;
+        row.splitButton.textContent = `Move to Case "${plan.splitTo ?? ''}"`;
+        row.replaceLine.textContent = plan.replacesExisting ? (plan.replaceReason ?? '') : '';
+        if (plan.slotConflict || plan.spanConflict) conflicts++;
         if (plan.replacesExisting) replaces++;
       });
 
@@ -562,10 +667,30 @@ export function showImportDialog(
             'pin the others to a Case'
           : '');
       // The one gate: a same-batch slot collision would lose a table to
-      // last-write-wins. A replace of a loaded table does not gate.
+      // last-write-wins, and a span conflict is a table the load would
+      // refuse. A replace of a loaded table does not gate.
       confirm.disabled = conflicts > 0;
       // Both exits gate together; the shortcut would lose the table too.
       takeAll.disabled = conflicts > 0;
+    }
+
+    /**
+     * Give every row the load would refuse for its years in `caseName` the
+     * Case `target`, keeping every other row where it is. Per-file names
+     * are the only way to say that, so the dialog moves to individual mode
+     * with each box holding the Case it already showed.
+     */
+    function splitOff(caseName: string, target: string): void {
+      const current = plans;
+      if (!current) return;
+      activeRows.forEach((row, index) => {
+        const plan = current[index];
+        row.caseInput.value =
+          plan.caseName === caseName && plan.splitTo === target ? target : shownAs(plan.caseName);
+      });
+      mode = 'individual';
+      for (const radio of modeRadios) radio.checked = radio.value === mode;
+      refresh();
     }
 
     for (const field of [oneCaseInput, patternInput]) {
@@ -589,6 +714,26 @@ export function showImportDialog(
     confirm.addEventListener('click', () => submit(confirm, false));
     takeAll.addEventListener('click', () => submit(takeAll, true));
 
+    /** Rows for files that joined the open dialog, highlighted. */
+    function take(added: AddedFiles): void {
+      const rows = [
+        ...added.tables.map(({ file, index }) => addRow(file, index).rowElement),
+        ...added.limits.map(({ file, index }) => {
+          limitFiles[index] = file;
+          return addLimitRow(file, index);
+        }),
+      ];
+      for (const row of rows) row.classList.add('import-row-added');
+      rows[0]?.scrollIntoView({ block: 'nearest' });
+      addNotes.textContent = added.notes.join('\n');
+      addNotes.hidden = added.notes.length === 0;
+      showLimits();
+      retitle();
+      refresh();
+    }
+    intake?.listen(take, (index) => activeRows.some((row) => row.originalIndex === index));
+
+    retitle();
     refresh();
     document.body.appendChild(backdrop);
     (mode === 'one-case' ? oneCaseInput : (modeRadios[0] ?? oneCaseInput)).focus();

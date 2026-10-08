@@ -10,8 +10,11 @@
 //   3. Inside one batch, a second table for the same Case is held to the
 //      first's span; the files of one merge group span their union; a long
 //      file replaces only the metric tables its picker keeps.
-//   4. The Import Dialog says so for a wide file, whose date line states its
-//      years before ingest; a long file's years wait for its scan.
+//   4. The Import Dialog blocks a file the load would refuse for its years:
+//      a wide file by its date line, a long file by its sampled rows, which
+//      prove a span only when they run in date order. Only the tables that
+//      differ from the Case's span are marked, each with the Case that
+//      clears it; files merged into one table are judged per run of years.
 //   5. A cube's cost names its years: three years cost three times one.
 //
 // The drop runs through the real `createDropLoad`, `createIngestKinds`, Case
@@ -35,6 +38,7 @@ const { createWideIngest } = await import('../src/app/ingest-wide.ts');
 const { createEntityLongIngest } = await import('../src/app/ingest-long.ts');
 const { createCaseViews } = await import('../src/app/case-views.ts');
 const { planImports } = await import('../src/app/import-plan.ts');
+const { sampleYears } = await import('../src/tables/long/sample-years.ts');
 const { CaseStore, caseForName } = await import('../src/model/case-model.ts');
 const { createInventory } = await import('../src/inventory/store.ts');
 const { cubeCost, megabytes } = await import('../src/ingest.ts');
@@ -228,7 +232,7 @@ try {
     assert.deepEqual(s.slotsOf('SAMPLE_SOLO'), ['area ']);
   });
 
-  await check('the Import Dialog warns of a wide file whose stated years differ', async () => {
+  await check('the Import Dialog blocks a file whose years the load would refuse', async () => {
     const detectedOf = async (name) => {
       const head = new Uint8Array(await fileOf(name).slice(0, DETECT_PROBE_BYTES).arrayBuffer());
       return { name, detected: classify(head, name) };
@@ -243,10 +247,13 @@ try {
         caseName: 'SAMPLE_MIX',
         existingCases: [{ name: 'SAMPLE_MIX', occupiedSlots: Object.keys(slotSpans), slotSpans }],
       })[0];
+    const onLoaded = onto({ 'bus LMP': { firstYear: 2034, numYears: 2 } });
+    assert.equal(onLoaded.spanReason, 'The rest of this Case is 2034-2035.', 'said short');
     assert.equal(
-      onto({ 'bus LMP': { firstYear: 2034, numYears: 2 } }).spanReason,
-      'Spans 2034-2036, but this Case\'s "bus LMP" table spans 2034-2035. One Case holds one ' +
-        'run of years, so the load will refuse this file; give it its own Case.',
+      onLoaded.spanDetail,
+      'Spans 2034-2036, but this Case\'s loaded "bus LMP" table spans 2034-2035. One Case ' +
+        'holds one run of years, so the load will refuse this file; give it its own Case.',
+      'and whole on hover',
     );
     assert.equal(onto({ 'bus LMP': { firstYear: 2034, numYears: 3 } }).spanReason, undefined);
     assert.equal(
@@ -263,15 +270,97 @@ try {
         caseName: 'SAMPLE_MIX',
       },
     );
+    assert.equal(pair[0].spanConflict, false, 'the first table sets the Case span');
+    assert.equal(pair[1].spanConflict, true, 'the other is blocked');
     assert.match(
-      pair[0].spanReason,
-      /^Spans 2034-2036, but "area-wide\.csv", for the same Case, spans 2034\./,
+      pair[1].spanDetail,
+      /^Spans 2034, but "case-mixedrange-area-wide\.csv", for the same Case, spans 2034-2036\./,
     );
+    assert.equal(pair[1].splitTo, 'SAMPLE_MIX_2034', 'its fix is a Case of its own years');
+    assert.deepEqual(
+      planImports(
+        [area, { ...single, detected: { ...single.detected, kind: 'bus' } }],
+        'individual',
+        {
+          overrides: { 0: { caseName: 'SAMPLE_MIX' }, 1: { caseName: pair[1].splitTo } },
+        },
+      ).map((plan) => plan.spanConflict),
+      [false, false],
+      'which clears it',
+    );
+
     const mixed = planImports([area, bus], 'one-case', { caseName: 'SAMPLE_MIX' });
     assert.deepEqual(
-      mixed.map((plan) => plan.spanReason),
-      [undefined, undefined],
-      'nothing is said before the long scan',
+      mixed.map((plan) => plan.spanConflict),
+      [false, false],
+      'an unsampled long file is not judged',
+    );
+    const busFile = fileOf('case-mixedrange-bus-long.csv');
+    const sampled = sampleYears(new Uint8Array(await busFile.arrayBuffer()), null);
+    assert.deepEqual(sampled, { ...(await yearsOfRows(busFile)), whole: true });
+    const withSample = planImports([area, { ...bus, sampled }], 'one-case', {
+      caseName: 'SAMPLE_MIX',
+    });
+    assert.deepEqual(withSample[1].years, sampled, 'the row shows the sampled years');
+    assert.equal(withSample[1].sampled, true);
+    assert.deepEqual(sampled, { firstYear: 2034, numYears: 2, whole: true });
+    assert.equal(withSample[1].spanConflict, true, 'a long file read whole is judged by its span');
+    assert.match(withSample[1].spanDetail, /^Its first and last rows are dated 2034-2035, but/);
+    assert.equal(withSample[1].splitTo, 'SAMPLE_MIX_2034-2035');
+
+    // An unordered sample proves only the years it shows.
+    const seen = (firstYear, numYears) => ({
+      ...bus,
+      sampled: { firstYear, numYears, whole: false },
+    });
+    const inside = planImports([area, seen(2035, 1)], 'one-case', { caseName: 'SAMPLE_MIX' });
+    assert.equal(inside[1].spanConflict, false, 'a year inside the span may be all it shows');
+    const outside = planImports([area, seen(2035, 11)], 'one-case', { caseName: 'SAMPLE_MIX' });
+    assert.equal(outside[1].spanConflict, true, 'a year outside it is certain');
+    assert.match(outside[1].spanDetail, /^Its sampled rows are dated 2035-2045, but/);
+
+    // Files merged into one table that skip years are judged per run: the
+    // later run differs from the Case, and moves like any other table.
+    const year = (firstYear) => ({
+      ...area,
+      name: `area-${firstYear}.csv`,
+      detected: { ...area.detected, years: { firstYear, numYears: 1 } },
+    });
+    const gap = planImports([year(2035), year(2045)], 'one-case', { caseName: 'SAMPLE_GAP' });
+    assert.deepEqual(
+      gap.map((plan) => [plan.merges, plan.spanConflict, plan.splitTo]),
+      [
+        [true, false, undefined],
+        [true, true, 'SAMPLE_GAP_2045'],
+      ],
+    );
+    assert.equal(gap[1].spanReason, 'The rest of this Case is 2035.');
+    // The Case keeps the span most of its tables state; the rest move off.
+    const kindYear = (kind, firstYear) => ({
+      ...year(firstYear),
+      name: `${kind}-${firstYear}.csv`,
+      detected: { ...year(firstYear).detected, kind },
+    });
+    const most = planImports(
+      [kindYear('area', 2045), kindYear('bus', 2035), kindYear('generator', 2035)],
+      'one-case',
+      { caseName: 'SAMPLE_STUDY' },
+    );
+    assert.deepEqual(
+      most.map((plan) => [plan.spanConflict, plan.splitTo]),
+      [
+        [true, 'SAMPLE_STUDY_2045'],
+        [false, undefined],
+        [false, undefined],
+      ],
+      'the one 2045 table moves, though it is first',
+    );
+
+    const run = planImports([year(2035), year(2036)], 'one-case', { caseName: 'SAMPLE_GAP' });
+    assert.deepEqual(
+      run.map((plan) => plan.spanConflict),
+      [false, false],
+      'two years in a row merge as one table',
     );
   });
 } finally {
