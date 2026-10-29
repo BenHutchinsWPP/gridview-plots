@@ -52,8 +52,10 @@ file is the one to keep.
 - **Row order does not matter**, but the same entity-hour appearing twice is
   refused. That usually means two exports were concatenated.
 - **Files given the same study name load as one table.** This is how a year
-  exported in halves, or a run exported a year per file, goes back together.
-  Drop the parts together.
+  exported in halves, a run exported a year per file, or a study exported in
+  parts (generators by region, Area metrics in two files) goes back together.
+  Drop the parts together. Where two parts hold the same entity at the same
+  hour, the first file's value and TOU are kept, and a note names them.
 - **Quantities combine only where their unit allows it.** Energy, cost and
   flow sum across entities. A price or percentage does not, and the control
   says why. Area prices are load-weighted using `data/area/aggregation-rules.json`.

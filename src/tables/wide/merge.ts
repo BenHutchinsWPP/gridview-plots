@@ -6,7 +6,8 @@
 // the axis differs. A wide export carries ONE quantity on its
 // title line, so there is no metric axis to union: two quantities are two
 // tables and a refusal. The ENTITIES are unioned instead, in `pool.ts`,
-// before the accumulator is allocated. Kind-neutral.
+// before the accumulator is allocated, so members may split the entities
+// (one export per region) as well as the dates. Kind-neutral.
 
 import type { YearSpan } from '../../model/calendar';
 import { yearSpanOf } from '../../ingest';
@@ -25,12 +26,14 @@ const list = (names: readonly string[]): string => names.map((n) => `"${n}"`).jo
 /**
  * May these files be one table, and over which years? Refused: a year inside
  * the union of the members' spans that no member's span covers (a Case is a
- * contiguous run; members may overlap, and a doubled hour is refused at the
- * blit), and different quantities on the title line (`Power Flow (MW)` vs `(MWh)` or vs
- * `Power Flow(MW)`: named, never canonicalized on a guess). A title naming no
+ * contiguous run; members may overlap, and where two carry one entity at one
+ * hour the blit keeps the first member's value), and different quantities on
+ * the title line (`Power Flow (MW)` vs `(MWh)` or vs `Power Flow(MW)`: named,
+ * never canonicalized on a guess). A title naming no
  * quantity is not refused here: the finalizer already warns it has no unit.
- * An entity only some members carry is a warning; its plane is NaN elsewhere
- * and the coverage note says how much of the span the table holds.
+ * An entity only some members carry is warned of by `finalizeWide`, and only
+ * when it covers fewer hours than the table: whether it does is known only
+ * once the rows are read.
  */
 export function checkMergeGroup(members: readonly CasePlan[]): MergeCheck {
   const names = members.map((m) => m.file.name);
@@ -72,24 +75,5 @@ export function checkMergeGroup(members: readonly CasePlan[]): MergeCheck {
     };
   }
 
-  const everywhere = new Set(members[0].header.entityNames);
-  for (const member of members.slice(1)) {
-    const here = new Set(member.header.entityNames);
-    for (const entity of everywhere) if (!here.has(entity)) everywhere.delete(entity);
-  }
-  const partial = new Set<string>();
-  for (const member of members) {
-    for (const entity of member.header.entityNames) {
-      if (!everywhere.has(entity)) partial.add(entity);
-    }
-  }
-  if (partial.size === 0) return { span, warnings: [] };
-  return {
-    span,
-    warnings: [
-      `${list(names)} are read as one study, but ${partial.size} column(s) are in only some ` +
-        `of them (${[...partial].slice(0, 3).join(', ')}${partial.size > 3 ? ', …' : ''}). Those ` +
-        `cover only the hours their own file did.`,
-    ],
-  };
+  return { span, warnings: [] };
 }

@@ -21,13 +21,17 @@ import {
   cubeCost,
   spanHourLabel,
   yearSpanOf,
+  FirstFile,
+  firstFileNotes,
+  memberIndex,
+  memberRows,
   type PlanWarning,
 } from '../../ingest';
 
 // Re-exported so kinds reach the dispatch surface through their pool.ts.
 // `caseIndex` on a failure indexes THIS call's plans, never a Case id.
 export { dispatch, hasSimd, NO_SIMD_MESSAGE, partitionByFailure };
-import { addYearRows, checkMergeGroup, unionMetricNames } from './merge';
+import { addYearRows, checkMergeGroup, unionHeader } from './merge';
 import {
   entityHashes,
   buildColumnPlan,
@@ -240,12 +244,15 @@ async function useLayout(workers: Worker[], layout: KeyLayout): Promise<void> {
  * 8784` floats (1.65 GB per year for a full 8-metric bus study). No size cap,
  * because a fixed cap would refuse files that fit on a bigger device. The
  * caller catches the `RangeError` and refuses with the arithmetic, naming the
- * metrics to untick. `span` is the merge group's.
+ * metrics to untick. `span` is the merge group's; `members` its files' plans
+ * in group order and `memberSpans` each file's own years.
  */
 export function createAccumulator(
   plan: ColumnPlan,
   entityCount: number,
   span: YearSpan,
+  members: ColumnPlan[] = [plan],
+  memberSpans: readonly YearSpan[] = members.map(() => span),
 ): CaseAccumulator {
   const hours = span.numYears * YEAR_SLOT_HOURS;
   const cube = new Float32Array(entityCount * plan.metrics.length * hours);
@@ -259,7 +266,12 @@ export function createAccumulator(
     tou: new Uint8Array(hours).fill(0xff),
     entitySeen: new Uint8Array(entityCount),
     hourSeen: new Uint8Array(hours),
-    covered: new Uint8Array(Math.ceil((entityCount * hours) / 8)),
+    members,
+    merge: new FirstFile(
+      members.map((member) => member.presence),
+      memberRows(span, memberSpans, entityCount * YEAR_SLOT_HOURS),
+      hours,
+    ),
   };
 }
 
@@ -273,7 +285,7 @@ export function blitBlock(
   block: BlockPayload,
   columnPlan: ColumnPlan = accumulator.plan,
 ): void {
-  const { cube, entityCount, covered, numYears } = accumulator;
+  const { cube, entityCount, merge, numYears } = accumulator;
   const span = numYears * YEAR_SLOT_HOURS;
   // The block's OWN file's plan. It differs from the accumulator's only in a
   // merge group, where files with different column orders fill one cube.
@@ -286,6 +298,11 @@ export function blitBlock(
   }
   // A block with no retained planes still claims its hours and TOU.
   if (rows === 0) return;
+  const member = memberIndex(accumulator.members, plan);
+  // A file no other file shares a metric with writes every row it claims.
+  const alone = merge.alone[member];
+  const groupOf = merge.groupOf[member];
+  const decision = new Uint8Array(merge.groups[member].length);
 
   // Output plane -> cube offset, so the inner loop is an add and a load.
   const numMetrics = plan.metrics.length;
@@ -324,35 +341,47 @@ export function blitBlock(
     }
     const hour = rowYear[r] * YEAR_SLOT_HOURS + rowHour[r];
 
-    // A cell written twice is two rows for one (entity, hour): refuse rather
-    // than keep whichever worker finished last.
-    const bit = area * span + hour;
-    const byte = bit >> 3;
-    const mask = 1 << (bit & 7);
-    if (covered[byte] & mask) {
+    // A cell written twice by one file is two rows for one (entity, hour):
+    // refuse rather than keep whichever worker finished last. Year-major, so
+    // a file's rows are one run of the group's (`FirstFile`).
+    const row = (rowYear[r] * entityCount + area) * YEAR_SLOT_HOURS + rowHour[r];
+    if (!merge.claim(member, row)) {
       throw new Error(
         `Two rows both describe area index ${area} at hour ` +
           `${spanHourLabel(accumulator.firstYear, hour)}. One case cannot hold the same area-hour twice; two exports concatenated into one ` +
-          `file look like this. Load them as separate files.`,
+          `file look like this.`,
       );
     }
-    covered[byte] |= mask;
 
     // After the duplicate check, so a concatenated file is named as one. The
-    // cube keeps one TOU per hour, and a second label would be overwritten.
-    // Across a merge group, workers finish in any order, so the refusal can
-    // land on either file.
-    if (hourSeen[hour] && tou[hour] !== rowTou[r]) {
+    // cube keeps one TOU per hour: the first file's, and one file must agree
+    // with itself.
+    const touFrom = merge.touFor(member, hour, rowTou[r]);
+    if (touFrom === 'conflict') {
       throw new Error(
         `Hour ${spanHourLabel(accumulator.firstYear, hour)} is ${TOU_LABELS[rowTou[r]]} on one ` +
-          `row and ` +
-          `${TOU_LABELS[tou[hour]]} on another (in this file or another file of the same ` +
-          `study). A case holds one TOU per hour, so the load is refused rather than keeping ` +
-          `either.`,
+          `row and ${TOU_LABELS[merge.statedTou(member, hour)]} on another of the same file. A ` +
+          `case holds one TOU per hour, so the load is refused rather than keeping either.`,
       );
     }
-    tou[hour] = rowTou[r];
+    if (touFrom === 'set') tou[hour] = rowTou[r];
     hourSeen[hour] = 1;
+
+    // An earlier file carrying a metric keeps its value for this row.
+    let writesAll = true;
+    if (!alone) {
+      merge.decide(member, row, decision);
+      for (let g = 0; g < decision.length; g++) if (!decision[g]) writesAll = false;
+    }
+    if (!writesAll) {
+      const src = r * planes;
+      const out = area * numMetrics * span + hour;
+      for (let p = 0; p < planes; p++) {
+        const metric = plan.slabPlan[plan.activePlanes[p]];
+        if (decision[groupOf[metric]]) cube[out + offsets[p]] = values[src + p];
+      }
+      continue;
+    }
 
     const src = r * planes;
     let out = area * numMetrics * span + hour;
@@ -522,7 +551,8 @@ export function unionEntities(plans: CasePlan[], base: readonly string[] = []): 
  * Parse every plan into a cube. `retained` is the metric axis (picker answer,
  * or the union for everything). Plans sharing a `groupOf` id merge into one
  * table under the rules stated at `ingest` in `src/tables/wide/pool.ts`; here
- * `covered` is per (entity, span hour) rather than per hour.
+ * a row is an (entity, span hour) and a column a metric, so files may split
+ * the metrics (abc in one export, xyz in another) as well as the rows.
  */
 export async function ingest<T>(
   plans: CasePlan[],
@@ -580,7 +610,15 @@ export async function ingest<T>(
       return;
     }
     try {
-      accumulators.push(createAccumulator(group.plan, areas.length, group.repPlan));
+      accumulators.push(
+        createAccumulator(
+          group.plan,
+          areas.length,
+          group.repPlan,
+          group.members.map((index) => columnPlans[index]),
+          group.members.map((index) => plans[index]),
+        ),
+      );
     } catch (error) {
       if (!(error instanceof RangeError)) throw error;
       accumulators.push(null);
@@ -663,6 +701,10 @@ export async function ingest<T>(
     const finalized = kind.finalize(accumulator, group.repPlan, areas);
     cases.push(finalized.data);
     warnings.push(...aboutPlans(finalized.warnings, group.members));
+    if (group.members.length > 1) {
+      const notes = firstFileNotes(group.label, accumulator.merge, group.plan.metrics, 'column');
+      warnings.push(...aboutPlans(notes, group.members));
+    }
   });
 
   return { cases, ok: committed, warnings, failures };
@@ -699,10 +741,7 @@ function groupsOf(plans: CasePlan[], groupOf: number[], metrics?: string[]): Mer
   return [...byId.values()].map((members) => {
     const first = plans[members[0]];
     const label = members.map((i) => plans[i].file.name).join(' + ');
-    const header =
-      members.length === 1
-        ? first.header
-        : { ...first.header, metricNames: unionMetricNames(members.map((i) => plans[i])) };
+    const header = unionHeader(members.map((i) => plans[i]));
     return {
       members,
       label,

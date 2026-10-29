@@ -8,17 +8,19 @@
 // What this file pins:
 //   - two halves fill one cube, each member read at its OWN column order
 //   - drop order does not change any entity's year of numbers
-//   - two members covering the same HOUR is refused, across files
+//   - members may split the ENTITIES over the same hours (one export per
+//     region); one entity at one hour in two files keeps the FIRST file's
+//     value, and an hour the first file's TOU, whichever worker finished first
+//   - a row repeated inside one file is refused
 //   - the group's span: abutting years merge, a year between them is refused
 //   - the group refusal for two quantities on the title lines
-//   - a column only one half carries warns and still loads
+//   - a column short of the table's hours warns and still loads
 //   - the union header keeps `raw` aligned to `entityNames`, which is what a
 //     bus export's id-to-name pairing rides on
 //
-// The duplicate check in this shape is one bit per HOUR, not per (entity,
-// hour): one wide row is one hour across every entity, so a per-cell check
-// would be the same bit repeated across the row. Two halves of a year never
-// collide on it, which is what makes them mergeable.
+// Inside one file a repeated hour is refused: that is a concatenated export.
+// Across files the first file wins, by its place in the group, never by
+// which block finished first.
 //
 // Run:  node test_wide_merge.mjs
 
@@ -61,9 +63,10 @@ function half(headerLine, rows, title = TITLE) {
   };
 }
 
-/** Blit `members` into ONE accumulator, in the order given, and finalize --
- * which is what `ingest` does for a merge group. */
-function merge(members) {
+/** Blit `members` into ONE accumulator and finalize -- which is what `ingest`
+ * does for a merge group. `members` is the group order, which decides which
+ * file is first; `blitOrder` is the order workers happen to finish in. */
+function merge(members, blitOrder = members.map((_, i) => i)) {
   const plans = members.map((m) => buildColumnPlan(m.header, RETAINED));
   // The group's plan: one entity axis, presence unioned across its members.
   const presence = plans[0].presence.slice();
@@ -73,8 +76,10 @@ function merge(members) {
   const accumulator = createAccumulator(
     { ...plans[0], presence },
     { firstYear: 2035, numYears: 1 },
+    plans,
   );
-  members.forEach((member, i) => {
+  blitOrder.forEach((i) => {
+    const member = members[i];
     // Line 5 is the header; the body starts after it.
     let at = 0;
     for (let line = 0; line < SPEC.preambleLines + 1; line++) at = member.bytes.indexOf(10, at) + 1;
@@ -140,11 +145,67 @@ const JUL1 = 182 * 24;
   ok("every entity's year of numbers is the same whichever half was dropped first");
 }
 
-// --------------------------------------- the same hour twice is still refused
+// ----------------------------------- the same cell twice: the first file wins
 {
-  const again = half(`${KEYS},P01,P02`, ['1/1/2035,1,OffPeak,99.5,99.5']);
-  assert.throws(() => merge([JAN, again]), /hour 0 of 2035 \(Jan 1, hour ending 1\)/);
-  ok('two members covering one hour is refused across files, not last-write-wins');
+  const again = half(`${KEYS},P01,P02`, ['1/1/2035,1,OnPeak,99.5,98.5']);
+  for (const blitOrder of [
+    [0, 1],
+    [1, 0],
+  ]) {
+    const kept = merge([JAN, again], blitOrder);
+    assert.deepEqual([kept.data.cube[0], kept.data.cube[YEAR_SLOT_HOURS]], [10.5, 20.5]);
+    assert.equal(kept.data.tou[0], merge([JAN]).data.tou[0], "the first file's TOU");
+    assert.ok(
+      kept.warnings.some((w) =>
+        /2 interface\(s\) are in more than one .*first file's values/.test(w),
+      ),
+      kept.warnings.join('\n'),
+    );
+  }
+  assert.equal(merge([again, JAN]).data.cube[0], 99.5);
+  ok("one entity-hour in two files keeps the first file's value and TOU, in any blit order");
+
+  const twice = half(`${KEYS},P01,P02`, [
+    '1/1/2035,1,OffPeak,10.5,20.5',
+    '1/1/2035,1,OffPeak,10.5,20.5',
+  ]);
+  assert.throws(
+    () => merge([twice]),
+    /Two rows both describe hour 0 of 2035 \(Jan 1, hour ending 1\) in one file/,
+  );
+  // P03 is not retained, so no cell of this file is claimed: the per-file
+  // hour check is what still sees the repeat.
+  const unretained = half(`${KEYS},P03`, ['1/1/2035,1,OffPeak,1.5', '1/1/2035,1,OffPeak,1.5']);
+  assert.throws(() => merge([JAN, unretained]), /Two rows both describe hour 0 of 2035/);
+  ok('a row repeated inside one file is refused, even in a file with no retained column');
+}
+
+// ------------------------------------------ files split by entity, same hours
+{
+  const east = half(`${KEYS},P01`, ['1/1/2035,1,OffPeak,10.5', '1/1/2035,2,OnPeak,11.5']);
+  const west = half(`${KEYS},P02`, ['1/1/2035,2,OnPeak,21.5', '1/1/2035,1,OffPeak,20.5']);
+  const split = merge([east, west]);
+  assert.deepEqual(
+    [split.data.cube[0], split.data.cube[1], split.data.cube[YEAR_SLOT_HOURS]],
+    [10.5, 11.5, 20.5],
+  );
+  assert.equal(split.data.cube[YEAR_SLOT_HOURS + 1], 21.5);
+  assert.ok(!split.warnings.some((w) => /only some/.test(w)), split.warnings.join('\n'));
+  ok('exports split by entity over the same hours are one table, with nothing to warn');
+
+  const offPeak = half(`${KEYS},P02`, ['1/1/2035,2,OffPeak,21.5']);
+  const onPeak = merge([east, west]).data.tou[1];
+  assert.equal(merge([east, offPeak], [1, 0]).data.tou[1], onPeak);
+  assert.notEqual(merge([offPeak, east]).data.tou[1], onPeak);
+  ok("two files disagreeing on an hour's TOU keep the first file's, without a refusal");
+
+  const shortWest = half(`${KEYS},P02`, ['1/1/2035,1,OffPeak,20.5']);
+  const short = merge([east, shortWest]);
+  assert.ok(
+    short.warnings.some((w) => /1 interface\(s\) are in only some of these files \(P02\)/.test(w)),
+    short.warnings.join('\n'),
+  );
+  ok('an entity short of hours another file covered is named');
 }
 
 // -------------------------------------------- a column only one half carries
@@ -228,10 +289,9 @@ const JUL1 = 182 * 24;
     `${KEYS},P01,P02,P03`,
     '7/1/2035,1,OnPeak,500.5,600.5,700.5',
   );
-  const partial = checkMergeGroup([jan, wider]);
-  assert.equal(partial.refusal, undefined);
-  assert.match(partial.warnings[0], /in only some of them \(P03\)/);
-  ok('a column only one half carries is a warning naming it, not a refusal');
+  // Whether P03 is short of hours is known only after the rows are read.
+  assert.deepEqual(checkMergeGroup([jan, wider]), { span: ONE_YEAR, warnings: [] });
+  ok('a column only one member carries is not refused by the group check');
 
   // What a bus export rides on: `entityNames` holds the bus NUMBER and `raw`
   // the bus NAME, paired by index. A union that appended one at the wrong

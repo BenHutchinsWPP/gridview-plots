@@ -4,6 +4,7 @@
 // the reader, not in a kind, so each kind describes its ingest without
 // importing another kind (asserted in tests/test_kernels_bus.mjs).
 
+import type { FirstFile } from '../../ingest';
 import type { LongSignature } from './signature';
 
 export interface HeaderInfo {
@@ -73,9 +74,13 @@ export interface CaseAccumulator {
   entitySeen: Uint8Array;
   /** Per span hour, `numYears * 8784`. */
   hourSeen: Uint8Array;
-  /** One bit per (entity, span hour): a second row for a cell (two
+  /** The member files' column plans, in group order: a block finds its
+   * file's rank here. */
+  members: ColumnPlan[];
+  /** Which file keeps a cell or an hour's TOU; its ROW is an (entity, span
+   * hour) and its COLUMN a cube metric. A row repeated inside one file (two
    * concatenated exports) is refused rather than silently overwriting. */
-  covered: Uint8Array;
+  merge: FirstFile;
 }
 
 /** How a KIND turns a finished accumulator into its table(s): Area builds

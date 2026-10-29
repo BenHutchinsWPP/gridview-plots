@@ -2,12 +2,15 @@
 //   - both halves fill one cube;
 //   - each member's own column ORDER is followed;
 //   - drop order does not change any entity's numbers;
-//   - the same entity-hour in two members is refused;
+//   - files may split the METRICS over the same rows (abc in one export, xyz
+//     in another); one cell in two members keeps the FIRST member's value,
+//     and an hour the first member's TOU, whichever block finished first;
+//   - a row repeated inside one file is refused;
 //   - members' years union into one contiguous span: 2030-2031 and 2032 are
 //     one three-year table, and a year no member covers is refused by name;
 //   - one column spelled two ways is refused.
-// Merges join the HOUR axis only, so the duplicate check stays one bit per
-// (entity, span hour).
+// Which file keeps a cell is `FirstFile` in src/ingest.ts, shared with the
+// wide shape.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -18,9 +21,9 @@ const { entityHashes, parseHeaderLine, buildColumnPlan } =
 const { BUS_LONG } = await import('../src/tables/bus/long.ts');
 const { instantiateParser, parseBytes, scanAxis } = await import('../src/tables/long/block.ts');
 const { createAccumulator, blitBlock, readCasePlan } = await import('../src/tables/long/pool.ts');
-const { addYearRows, checkMergeGroup, unionMetricNames } =
+const { addYearRows, checkMergeGroup, unionHeader, unionMetricNames } =
   await import('../src/tables/long/merge.ts');
-const { yearSpanOf } = await import('../src/ingest.ts');
+const { yearSpanOf, firstFileNotes } = await import('../src/ingest.ts');
 const { finalizeBusLong } = await import('../src/tables/bus/long.ts');
 const { YEAR_SLOT_HOURS } = await import('../src/model/calendar.ts');
 
@@ -48,13 +51,26 @@ function half(headerLine, rows) {
   return { header: parseHeaderLine(headerLine, BUS_LONG), bytes, rows: rows.length };
 }
 
-/** Blit `members` into one accumulator over `span`, in the order given, and
- * finalize. */
-function merge(members, span = { firstYear: 2035, numYears: 1 }) {
-  const union = { ...members[0].header, metricNames: RETAINED };
-  const accumulator = createAccumulator(buildColumnPlan(union, RETAINED), busIds.length, span);
-  for (const member of members) {
-    const plan = buildColumnPlan(member.header, RETAINED);
+/** Blit `members` into one accumulator over `span` and finalize, as `ingest`
+ * does for a merge group. `members` is the group order, which decides which
+ * file is first; `blitOrder` the order blocks happen to finish in. */
+function merge(
+  members,
+  span = { firstYear: 2035, numYears: 1 },
+  blitOrder = members.map((_, i) => i),
+) {
+  // The group's header, as ingest builds it.
+  const union = unionHeader(members);
+  const plans = members.map((member) => buildColumnPlan(member.header, RETAINED));
+  const accumulator = createAccumulator(
+    buildColumnPlan(union, RETAINED),
+    busIds.length,
+    span,
+    plans,
+  );
+  for (const i of blitOrder) {
+    const member = members[i];
+    const plan = plans[i];
     const bodyStart = member.bytes.indexOf(10) + 1;
     blitBlock(
       accumulator,
@@ -157,15 +173,85 @@ const JUL1 = 182 * 24;
   ok("every entity's year of numbers is the same whichever half was dropped first");
 }
 
-// --------------------------------------- the same hour twice is still refused
-//
-// Across files within a group, too.
+// ------------------------------------ the same cell twice: the first file wins
 {
   const again = half(`${KEYS},LMP ($/MWh),Load (MW)`, [
-    '01/01/2035,1,OffPeak,40001,OAKRIDGE,LoadArea1,99.5,999.25',
+    '01/01/2035,1,OnPeak,40001,OAKRIDGE,LoadArea1,99.5,999.25',
   ]);
-  assert.throws(() => merge([JAN, again]), /area index 0 at hour 0/);
-  ok('two members describing one entity-hour is refused, not last-write-wins');
+  const quantityAt = (result, quantity) => result.data.find((t) => t.quantity === quantity).cube[0];
+  for (const blitOrder of [
+    [0, 1],
+    [1, 0],
+  ]) {
+    const kept = merge([JAN, again], undefined, blitOrder);
+    assert.equal(quantityAt(kept, 'LMP ($/MWh)'), 31.5);
+    assert.equal(quantityAt(kept, 'Load (MW)'), 120.25);
+    assert.equal(kept.accumulator.tou[0], merge([JAN]).accumulator.tou[0], "the first file's TOU");
+    assert.match(
+      firstFileNotes('jan + again', kept.accumulator.merge, RETAINED, 'column')[0],
+      /2 column\(s\) are in more than one .*first file's values were kept/,
+    );
+  }
+  assert.equal(quantityAt(merge([again, JAN]), 'LMP ($/MWh)'), 99.5);
+  ok("one entity-hour in two members keeps the first file's values and TOU, in any blit order");
+
+  const twice = half(`${KEYS},LMP ($/MWh),Load (MW)`, [
+    '01/01/2035,1,OffPeak,40001,OAKRIDGE,LoadArea1,31.5,120.25',
+    '01/01/2035,1,OffPeak,40001,OAKRIDGE,LoadArea1,31.5,120.25',
+  ]);
+  assert.throws(() => merge([twice]), /area index 0 at hour 0/);
+  assert.throws(() => merge([JUL, twice]), /area index 0 at hour 0/);
+  ok('a row repeated inside one file is refused, alone or in a group');
+
+  const mixedTou = half(`${KEYS},LMP ($/MWh),Load (MW)`, [
+    '01/01/2035,1,OffPeak,40001,OAKRIDGE,LoadArea1,31.5,120.25',
+    '01/01/2035,1,OnPeak,40002,PINEHOLLOW,LoadArea2,32.5,220.25',
+  ]);
+  assert.throws(
+    () => merge([mixedTou]),
+    /OnPeak on one row and OffPeak on another of the same file/,
+  );
+  ok("one file disagreeing with itself on an hour's TOU is still refused");
+  // A later file is held to its own TOU too, whichever file's blocks land
+  // first: its TOU is ignored for the cube, never its contradiction.
+  for (const blitOrder of [
+    [0, 1],
+    [1, 0],
+  ]) {
+    assert.throws(() => merge([JAN, mixedTou], undefined, blitOrder), /of the same file/);
+  }
+  ok('a later file disagreeing with itself is refused in any blit order');
+}
+
+// ------------------------------------- files split by metric over the same rows
+{
+  const prices = half(`${KEYS},LMP ($/MWh)`, [
+    '01/01/2035,1,OffPeak,40001,OAKRIDGE,LoadArea1,31.5',
+    '01/01/2035,1,OffPeak,40002,PINEHOLLOW,LoadArea2,32.5',
+  ]);
+  const loads = half(`${KEYS},Load (MW)`, [
+    '01/01/2035,1,OnPeak,40002,PINEHOLLOW,LoadArea2,220.25',
+    '01/01/2035,1,OnPeak,40001,OAKRIDGE,LoadArea1,120.25',
+  ]);
+  const split = merge([prices, loads], undefined, [1, 0]);
+  const lmp = split.data.find((t) => t.quantity === 'LMP ($/MWh)');
+  const load = split.data.find((t) => t.quantity === 'Load (MW)');
+  assert.deepEqual([lmp.cube[0], lmp.cube[YEAR_SLOT_HOURS]], [31.5, 32.5]);
+  assert.deepEqual([load.cube[0], load.cube[YEAR_SLOT_HOURS]], [120.25, 220.25]);
+  assert.deepEqual(firstFileNotes('split', split.accumulator.merge, RETAINED, 'column'), []);
+  ok('exports split by metric over the same rows are one table, with nothing to note');
+  assert.equal(split.accumulator.tou[0], merge([prices]).accumulator.tou[0]);
+  ok("files disagreeing on an hour's TOU keep the first file's, without a refusal");
+
+  const shortLoads = half(`${KEYS},Load (MW)`, [
+    '01/01/2035,1,OnPeak,40001,OAKRIDGE,LoadArea1,120.25',
+  ]);
+  const short = merge([prices, shortLoads]);
+  assert.deepEqual(firstFileNotes('short', short.accumulator.merge, RETAINED, 'column'), [
+    'short: 1 column(s) are in only some of these files (Load (MW)) and cover only the rows ' +
+      'their own files did.',
+  ]);
+  ok('a metric short of rows another file had is named after the parse');
 }
 
 // ------------------------------------------------------------ group refusals
@@ -227,10 +313,9 @@ const JUL1 = 182 * 24;
     `${KEYS},Load (MW),LMP ($/MWh)`,
     '07/01/2035,1,OnPeak,40001,GC,A1,500.5,77.5',
   );
-  const partial = checkMergeGroup([jan, priced]);
-  assert.equal(partial.refusal, undefined);
-  assert.match(partial.warnings[0], /in only some of them \(LMP \(\$\/MWh\)\)/);
-  ok('a column only one half carries is a warning naming it, not a refusal');
+  // Whether it is short of rows is known only after the parse (above).
+  assert.deepEqual(checkMergeGroup([jan, priced]), { span: ONE_YEAR, warnings: [] });
+  ok('a column only one half carries is not refused by the group check');
 
   // The unit is part of the column name in this shape, so MW and MWh cannot
   // silently merge -- they are two columns, each earning the coverage note.

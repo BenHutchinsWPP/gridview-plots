@@ -28,6 +28,10 @@ import {
   aboutPlans,
   cubeCost,
   spanHourLabel,
+  FirstFile,
+  firstFileNotes,
+  memberIndex,
+  memberRows,
   yearGapRefusal,
   type PlanWarning,
 } from '../../ingest';
@@ -361,14 +365,22 @@ export interface CaseAccumulator {
   /** Per span hour, TOU code, 0xFF until a row covers the hour. */
   tou: Uint8Array;
   hourSeen: Uint8Array;
-  /** One bit per SPAN HOUR: has a row claimed it? A wide row is one whole
-   * hour, so no per-entity bit is needed. A merge group shares it, so two
-   * files covering the same hour are refused like two rows of one file. */
-  covered: Uint8Array;
+  /** The member files' column plans, in group order: a block finds its
+   * file's rank here. */
+  members: ColumnPlan[];
+  /** Which file keeps a cell or an hour's TOU; its ROW is a span hour and its
+   * COLUMN a cube entity. */
+  merge: FirstFile;
 }
 
-/** `span` is the merge group's. */
-export function createAccumulator(plan: ColumnPlan, span: YearSpan): CaseAccumulator {
+/** `span` is the merge group's; `members` its files' plans in group order and
+ * `memberSpans` each file's own years. */
+export function createAccumulator(
+  plan: ColumnPlan,
+  span: YearSpan,
+  members: ColumnPlan[] = [plan],
+  memberSpans: readonly YearSpan[] = members.map(() => span),
+): CaseAccumulator {
   const hours = span.numYears * YEAR_SLOT_HOURS;
   const cube = new Float32Array(plan.entities.length * hours);
   cube.fill(NaN);
@@ -379,7 +391,12 @@ export function createAccumulator(plan: ColumnPlan, span: YearSpan): CaseAccumul
     cube,
     tou: new Uint8Array(hours).fill(0xff),
     hourSeen: new Uint8Array(hours),
-    covered: new Uint8Array(Math.ceil(hours / 8)),
+    members,
+    merge: new FirstFile(
+      members.map((member) => member.presence),
+      memberRows(span, memberSpans, YEAR_SLOT_HOURS),
+      hours,
+    ),
   };
 }
 
@@ -393,17 +410,24 @@ export function blitBlock(
   block: BlockPayload,
   columnPlan: ColumnPlan = accumulator.plan,
 ): void {
-  const { cube, covered, numYears } = accumulator;
+  const { cube, numYears, tou, hourSeen, merge } = accumulator;
   const span = numYears * YEAR_SLOT_HOURS;
   // The block's OWN file's plan. It differs from the group's only in a merge
   // group, where files with different columns fill one cube.
   const plan = columnPlan;
   const { rows, data, rowYear, rowHour, rowTou } = block;
   if (rows === 0) return;
+  const member = memberIndex(accumulator.members, plan);
+  const alone = merge.alone[member];
+  const groupOf = merge.groupOf[member];
+  const groups = merge.groups[member].length;
 
-  // Claim each hour before writing: two rows for one hour would otherwise keep
-  // whichever worker finished last.
+  // Per (column group, row): does this file write it? Decided before any
+  // write, so a file never sees its own rows as an earlier file's. A file no
+  // other file shares a column with writes every row it claims.
   const at = new Int32Array(rows);
+  const writes = alone ? null : new Uint8Array(groups * rows);
+  const decision = new Uint8Array(groups);
   for (let r = 0; r < rows; r++) {
     // A block parsed against another span than this cube's, as in
     // src/tables/long/pool.ts's blitBlock.
@@ -414,26 +438,38 @@ export function blitBlock(
       );
     }
     const hour = rowYear[r] * YEAR_SLOT_HOURS + rowHour[r];
-    const byte = hour >> 3;
-    const mask = 1 << (hour & 7);
-    if (covered[byte] & mask) {
+    if (!merge.claim(member, hour)) {
       throw new Error(
-        `Two rows both describe hour ${spanHourLabel(accumulator.firstYear, hour)}. A case ` +
-          `holds one row per hour, so an hour cannot appear twice; two exports concatenated ` +
-          `into one file look like this, and so do two files given one study name that cover ` +
-          `the same hours. Load them as separate studies.`,
+        `Two rows both describe hour ${spanHourLabel(accumulator.firstYear, hour)} in one file. ` +
+          `A case holds one row per hour, so an hour cannot appear twice; two exports ` +
+          `concatenated into one file look like this.`,
       );
     }
-    covered[byte] |= mask;
-    accumulator.tou[hour] = rowTou[r];
-    accumulator.hourSeen[hour] = 1;
+    if (writes !== null) {
+      merge.decide(member, hour, decision);
+      for (let g = 0; g < groups; g++) writes[g * rows + r] = decision[g];
+    }
+    // One wide row is one hour, so the claim above already holds a file to
+    // one TOU per hour.
+    if (merge.touFor(member, hour, rowTou[r]) === 'set') tou[hour] = rowTou[r];
+    hourSeen[hour] = 1;
     at[r] = hour;
   }
 
+  // Plane-outer, row-inner: one entity's span is a contiguous run, so the
+  // writes stay in cache.
   for (let p = 0; p < plan.activePlanes.length; p++) {
-    const base = plan.slabPlan[plan.activePlanes[p]] * span;
+    const entity = plan.slabPlan[plan.activePlanes[p]];
+    const base = entity * span;
     const src = p * rows;
-    for (let r = 0; r < rows; r++) cube[base + at[r]] = data[src + r];
+    if (writes === null) {
+      for (let r = 0; r < rows; r++) cube[base + at[r]] = data[src + r];
+      continue;
+    }
+    const decided = groupOf[entity] * rows;
+    for (let r = 0; r < rows; r++) {
+      if (writes[decided + r]) cube[base + at[r]] = data[src + r];
+    }
   }
 }
 
@@ -494,6 +530,9 @@ export function finalizeWide(
       `${name}: ${absent.length} selected ${spec.entityNoun}(s) are not in this export ` +
         `(${absent.slice(0, 3).join(', ')}${absent.length > 3 ? ', …' : ''}).`,
     );
+  }
+  if (accumulator.members.length > 1) {
+    warnings.push(...firstFileNotes(name, accumulator.merge, plan.entities, spec.entityNoun));
   }
   const covered = realHoursSeen(accumulator.hourSeen, firstYear, numYears);
   const real = realHours(firstYear, numYears);
@@ -578,7 +617,9 @@ function blocksFor(
  * which is how a year exported in halves loads as a year, and abutting runs of
  * years as one span:
  *
- *   * The duplicate check spans the group, because `covered` is per group.
+ *   * An entity two files both carry at one hour keeps the FIRST file's
+ *     value, and an hour the first file's TOU; a repeated row inside one
+ *     file is still refused.
  *   * The blit uses each FILE's column plan; members share only the axis.
  *   * A group commits whole or not at all. Half a merged year committed as a
  *     whole one is the failure this exists to prevent.
@@ -663,7 +704,12 @@ export async function ingestWithWorkers<T>(
   function allocate(group: MergeGroup): CaseAccumulator | null {
     if (group.refused) return null;
     try {
-      return createAccumulator(group.plan, group.repPlan);
+      return createAccumulator(
+        group.plan,
+        group.repPlan,
+        group.members.map((index) => columnPlans[index]),
+        group.members.map((index) => plans[index]),
+      );
     } catch (error) {
       if (!(error instanceof RangeError)) throw error;
       group.refused = true;

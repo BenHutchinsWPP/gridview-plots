@@ -127,11 +127,20 @@ on a nine-year file.
   sizes the table before a row is read and which the parser holds every row
   to; only a file without one takes its first row's year. Asserted by
   `tests/test_long_span.mjs` and `tests/test_wide_span.mjs`.
-- One row per (entity, hour). A duplicate is refused with a coverage map,
-  never resolved by last-writer-wins. Files merged into one table join their
-  years into one contiguous run, and a doubled (entity, hour) across them is
-  refused the same way. A union that skips a year is refused, naming it
-  (`tests/test_long_span.mjs`, `tests/test_wide_span.mjs`).
+- One row per (entity, hour) inside a file. A duplicate is refused with a
+  coverage map, never resolved by last-writer-wins. Files merged into one
+  table join their years into one contiguous run; a union that skips a year
+  is refused, naming it (`tests/test_long_span.mjs`,
+  `tests/test_wide_span.mjs`).
+- **A merge group's files may split rows, columns or both**: dates, regions
+  (generators per region, wide), metrics (abc in one Area export, xyz in
+  another, long). Where two files offer one cell, the FIRST file in the group
+  keeps it, and an hour keeps the first file's TOU; a later file's
+  disagreement is ignored and the overlap is named in a note. "First" is the
+  file's place in the group, never which block finished first, so one rule
+  (`FirstFile` in `src/ingest.ts`) serves both shapes at one bit per row per
+  file. Asserted by `tests/test_wide_merge.mjs` and
+  `tests/test_long_merge.mjs`.
 - **Every table of a Case states the same span.** A file with another span
   is refused before it attaches, unless it replaces every table holding the
   old one; that includes a long file after its metric picker

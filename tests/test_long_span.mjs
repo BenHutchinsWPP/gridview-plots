@@ -23,8 +23,7 @@ const { entityHashes, buildColumnPlan } = await import('../src/tables/long/heade
 const { afterNextNewline, instantiateParser, loadEntityAxis, parseBytes, scanAxis, setKeyLayout } =
   await import('../src/tables/long/block.ts');
 const pool = await import('../src/tables/long/pool.ts');
-const { addYearRows, checkMergeGroup, unionMetricNames } =
-  await import('../src/tables/long/merge.ts');
+const { addYearRows, checkMergeGroup, unionHeader } = await import('../src/tables/long/merge.ts');
 const { yearSpanOf } = await import('../src/ingest.ts');
 const { AREA_KIND, unionOf: areaUnionOf } = await import('../src/tables/area/long.ts');
 const { BUS_LONG_KIND } = await import('../src/tables/bus/long.ts');
@@ -96,13 +95,17 @@ async function load(files, kind, retainedOf) {
   const axis = pool.unionEntities(plans);
   loadEntityAxis(parser, entityHashes(axis));
   const retained = retainedOf(plans);
-  const header =
-    plans.length === 1
-      ? plans[0].header
-      : { ...plans[0].header, metricNames: unionMetricNames(plans) };
-  const accumulator = pool.createAccumulator(buildColumnPlan(header, retained), axis.length, span);
-  for (const { plan, bytes, ranges } of members) {
-    const columnPlan = buildColumnPlan(plan.header, retained);
+  const header = unionHeader(plans);
+  const columnPlans = plans.map((plan) => buildColumnPlan(plan.header, retained));
+  const accumulator = pool.createAccumulator(
+    buildColumnPlan(header, retained),
+    axis.length,
+    span,
+    columnPlans,
+    plans,
+  );
+  for (const [index, { plan, bytes, ranges }] of members.entries()) {
+    const columnPlan = columnPlans[index];
     ranges.forEach(([from, to], i) => {
       const payload = parseBytes(
         parser,

@@ -1,14 +1,14 @@
 // src/tables/long/merge.ts
 //
 // Whether several long-shape files may be read into ONE table (date- or
-// year-split parts of one study), which years that table spans, and what the
-// user is told. Merges join the HOUR axis only, never the metric axis, so the
-// duplicate check stays per (entity, span hour) and refuses overlaps across
-// files for free. Kind-neutral: it sees header names, years and file names.
+// year-split parts of one study, or metric-split ones), which years that
+// table spans, and what the user is told. Where members overlap, the first
+// file's value is kept (`FirstFile` in src/ingest.ts). Kind-neutral: it sees
+// header names, years and file names.
 
 import type { YearSpan } from '../../model/calendar';
 import { yearSpanOf } from '../../ingest';
-import type { CasePlan } from './kind';
+import type { CasePlan, HeaderInfo } from './kind';
 
 export interface MergeCheck {
   /** Set when the group cannot be read as one table. Nothing else is used. */
@@ -41,11 +41,11 @@ const list = (names: readonly string[]): string => names.map((n) => `"${n}"`).jo
  * May these files be one table, and over which years? Every member must have
  * been scanned (`rowsByYear`). Refused: a year inside the union of the
  * members' years that no member has rows for (a Case is a contiguous run;
- * members may overlap, and a doubled (entity, hour) is refused at the blit),
- * and two spellings of one metric (`Load (MW)` vs `Load(MW)`: both are named
- * rather than guessed equal). A metric only some members carry is a warning,
- * covered by the coverage note; units are part of names here, so mismatched
- * units are just two columns.
+ * members may overlap, and the blit keeps the first member's value), and two
+ * spellings of one metric (`Load (MW)` vs `Load(MW)`: both are named rather
+ * than guessed equal). A metric only some members carry is noted after the
+ * parse, and only when it is short of rows another member had; units are
+ * part of names here, so mismatched units are just two columns.
  */
 export function checkMergeGroup(members: readonly CasePlan[]): MergeCheck {
   const names = members.map((m) => m.file.name);
@@ -91,24 +91,7 @@ export function checkMergeGroup(members: readonly CasePlan[]): MergeCheck {
     };
   }
 
-  const warnings: string[] = [];
-  const everywhere = new Set(members[0].header.metricNames);
-  for (const member of members.slice(1)) {
-    const here = new Set(member.header.metricNames);
-    for (const metric of everywhere) if (!here.has(metric)) everywhere.delete(metric);
-  }
-  const partial: string[] = [];
-  for (const shape of byShape.values()) {
-    if (!everywhere.has(shape[0])) partial.push(shape[0]);
-  }
-  if (partial.length > 0) {
-    warnings.push(
-      `${list(names)} are read as one study, but ${partial.length} column(s) are in only some of ` +
-        `them (${partial.slice(0, 3).join(', ')}${partial.length > 3 ? ', …' : ''}). Those cover ` +
-        `only the hours their own file did.`,
-    );
-  }
-  return { span, warnings };
+  return { span, warnings: [] };
 }
 
 /** Every member's metric columns in first-seen order, for the merged table's
@@ -124,4 +107,20 @@ export function unionMetricNames(members: readonly CasePlan[]): string[] {
     }
   }
   return out;
+}
+
+/** The group's header: the first member's key columns followed by every
+ * member's metrics. Column plans locate metrics by `canonical`, so a union of
+ * `metricNames` alone would leave a metric only a later member carries off the
+ * group's plan, and its table empty. */
+export function unionHeader(members: readonly CasePlan[]): HeaderInfo {
+  const first = members[0].header;
+  if (members.length === 1) return first;
+  const metricNames = unionMetricNames(members);
+  return {
+    ...first,
+    raw: [...first.raw.slice(0, first.keyCols), ...metricNames],
+    canonical: [...first.canonical.slice(0, first.keyCols), ...metricNames],
+    metricNames,
+  };
 }

@@ -3,8 +3,9 @@
 // Ingest helpers that are the same for every table kind and both shapes: CSV
 // line hygiene, the date-to-slot-day rule, a Case's year span and how a
 // refusal names it, what a cube costs and how every picker and refusal words
-// it, the SIMD gate, the worker count, the dispatch loop, and the failure
-// attribution that makes partial import safe. Nothing here knows what a column
+// it, which file keeps a cell when a merge group's files overlap, the SIMD
+// gate, the worker count, the dispatch loop, and the failure attribution that
+// makes partial import safe. Nothing here knows what a column
 // MEANS.
 
 import {
@@ -238,6 +239,268 @@ export interface PlanWarning {
 /** Notes about one merge group (or file), attributed to every member. */
 export function aboutPlans(messages: readonly string[], plans: readonly number[]): PlanWarning[] {
   return messages.map((message) => ({ message, plans: [...plans] }));
+}
+
+// ---------------------------------------------------------- merge groups
+
+/**
+ * Which file's value a cell keeps when the files of one merge group overlap.
+ * Files may split a table by ROW (dates, regions) or by COLUMN (one export of
+ * generators per region, Area metrics abc in one file and xyz in another), so
+ * one cell can be offered by two files. The FIRST file in the group keeps it,
+ * and an hour keeps the first file's TOU. Blocks finish in any order, so
+ * "first" is decided from what each file has claimed so far, never from
+ * arrival: a file writes a cell unless an earlier file carrying that column
+ * has already claimed the row, and an earlier file arriving later overwrites.
+ * A blank cell is still the file's: the rule is per row, which is what a
+ * row-claim bit can answer without a rank per cell.
+ *
+ * A ROW is the shape's, numbered YEAR-MAJOR so one year's rows are one run:
+ * a span hour (wide), `(yearOffset x entities + entity) x 8784 + slotHour`
+ * (long). A COLUMN is a cube column: an entity (wide), a metric (long). Each
+ * file holds one bit per row of ITS OWN years, which also refuses a row
+ * repeated inside it, and one TOU byte per hour, so a file is held to its
+ * own TOU whichever file's TOU the hour keeps.
+ */
+export class FirstFile {
+  /** Per member: one bit per row of `from[m]..to[m]` it has claimed. */
+  private readonly claimed: Uint8Array[];
+  private readonly from: number[];
+  private readonly to: number[];
+  /** Per member, per column: its group in `groups[member]`, or -1. */
+  readonly groupOf: Int32Array[];
+  /** Per member: the columns that share one list of other carriers. */
+  readonly groups: { earlier: number[]; others: number[] }[][];
+  /** Per member: no other file carries any of its columns, so every row it
+   * claims is written and the caller may skip `decide`. */
+  readonly alone: boolean[];
+  /** Per column: the members carrying it, in group order. */
+  private readonly carriers: number[][];
+  /** Per member, per column group: 1 once another file had one of its rows. */
+  private readonly clashedGroups: Uint8Array[];
+  /** Per hour of the span: rank + 1 of the file whose TOU it holds; 0 none. */
+  private readonly touRank: Uint16Array;
+  /** Per member, per hour of the span: the TOU it stated, 0xFF none yet. */
+  private readonly fileTou: Uint8Array[];
+
+  /**
+   * `presence`: per member, per cube column, 1 = this file carries it.
+   * `rows`: per member, the run of rows its years cover, each end on a year
+   * boundary. `hours`: the span's hours, for TOU.
+   */
+  constructor(
+    presence: readonly Uint8Array[],
+    rows: readonly { from: number; to: number }[],
+    hours: number,
+  ) {
+    const columns = presence[0]?.length ?? 0;
+    this.from = rows.map((run) => run.from);
+    this.to = rows.map((run) => run.to);
+    this.claimed = rows.map((run) => new Uint8Array(Math.ceil((run.to - run.from) / 8)));
+    this.carriers = [];
+    for (let c = 0; c < columns; c++) {
+      this.carriers.push(presence.flatMap((carries, m) => (carries[c] ? [m] : [])));
+    }
+    this.groupOf = presence.map(() => new Int32Array(columns).fill(-1));
+    this.groups = presence.map((carries, m) => {
+      const byKey = new Map<string, number>();
+      const groups: { earlier: number[]; others: number[] }[] = [];
+      for (let c = 0; c < columns; c++) {
+        if (!carries[c]) continue;
+        const others = this.carriers[c].filter((g) => g !== m);
+        const key = others.join(',');
+        let group = byKey.get(key);
+        if (group === undefined) {
+          group = groups.length;
+          byKey.set(key, group);
+          groups.push({ earlier: others.filter((g) => g < m), others });
+        }
+        this.groupOf[m][c] = group;
+      }
+      return groups;
+    });
+    this.alone = this.groups.map((groups) => groups.every((group) => group.others.length === 0));
+    this.clashedGroups = this.groups.map((groups) => new Uint8Array(groups.length));
+    this.touRank = new Uint16Array(hours);
+    this.fileTou = presence.map(() => new Uint8Array(hours).fill(0xff));
+  }
+
+  /** Claim `row` for `member`; false when that member already claimed it (a
+   * row repeated inside one file, which the caller refuses). Throws on a row
+   * outside the member's own years, which its parse should have refused. */
+  claim(member: number, row: number): boolean {
+    const at = row - this.from[member];
+    if (at < 0 || row >= this.to[member]) {
+      throw new Error(`A row is dated outside the years its own file states.`);
+    }
+    // `>>> 3`, not `>> 3`: a run past 2^31 rows must not index negative.
+    const bits = this.claimed[member];
+    const byte = at >>> 3;
+    const mask = 1 << (at & 7);
+    if (bits[byte] & mask) return false;
+    bits[byte] |= mask;
+    return true;
+  }
+
+  private has(member: number, row: number): boolean {
+    const at = row - this.from[member];
+    if (at < 0 || row >= this.to[member]) return false;
+    return (this.claimed[member][at >>> 3] & (1 << (at & 7))) !== 0;
+  }
+
+  /**
+   * For each of `member`'s column groups, whether it writes `row`: 1 unless an
+   * earlier carrier has claimed the row. Marks a clash on the group when any
+   * other carrier has. `out` has one slot per group.
+   */
+  decide(member: number, row: number, out: Uint8Array): void {
+    const groups = this.groups[member];
+    for (let g = 0; g < groups.length; g++) {
+      const { earlier, others } = groups[g];
+      let write = 1;
+      for (let i = 0; i < earlier.length; i++) {
+        if (this.has(earlier[i], row)) {
+          write = 0;
+          break;
+        }
+      }
+      out[g] = write;
+      if (this.clashedGroups[member][g]) continue;
+      let clash = write === 0;
+      for (let i = 0; i < others.length && !clash; i++) clash = this.has(others[i], row);
+      if (clash) this.clashedGroups[member][g] = 1;
+    }
+  }
+
+  /** Per column: 1 when two files both had a row for it. */
+  clashed(): Uint8Array {
+    const out = new Uint8Array(this.carriers.length);
+    this.groupOf.forEach((groupOf, m) => {
+      for (let c = 0; c < groupOf.length; c++) {
+        if (groupOf[c] >= 0 && this.clashedGroups[m][groupOf[c]]) out[c] = 1;
+      }
+    });
+    return out;
+  }
+
+  /**
+   * Record `member`'s TOU for `hour`. 'conflict' when the member stated
+   * another TOU for that hour before (one file disagreeing with itself, which
+   * the caller refuses); 'set' when the hour takes it, because no earlier file
+   * has stated one; 'skip' otherwise, a later file's TOU being ignored.
+   */
+  touFor(member: number, hour: number, code: number): 'set' | 'skip' | 'conflict' {
+    const own = this.fileTou[member];
+    const stated = own[hour];
+    if (stated !== 0xff && stated !== code) return 'conflict';
+    // A long file states each hour once per entity: the rank is settled.
+    if (stated === code && this.touRank[hour] <= member + 1) return 'skip';
+    own[hour] = code;
+    const held = this.touRank[hour];
+    if (held !== 0 && held <= member + 1) return held === member + 1 ? 'set' : 'skip';
+    this.touRank[hour] = member + 1;
+    return 'set';
+  }
+
+  /** The TOU `member` stated for `hour`, 0xFF none: what a conflict names. */
+  statedTou(member: number, hour: number): number {
+    return this.fileTou[member][hour];
+  }
+
+  /**
+   * Columns without a row that another file had: those rows read as no-data
+   * in that column. Only files that carry some column count as having rows,
+   * so a file whose columns were all left out says nothing about the others.
+   */
+  shortColumns(): number[] {
+    const hasColumns = this.groups.map((groups) => groups.length > 0);
+    const verdict = new Map<string, boolean>();
+    const short: number[] = [];
+    this.carriers.forEach((carriers, c) => {
+      if (carriers.length === 0) return;
+      const outsiders = this.claimed.flatMap((_, m) =>
+        hasColumns[m] && !carriers.includes(m) ? [m] : [],
+      );
+      if (outsiders.length === 0) return;
+      const key = carriers.join(',');
+      let isShort = verdict.get(key);
+      if (isShort === undefined) {
+        isShort = outsiders.some((m) => this.uncovered(m, carriers));
+        verdict.set(key, isShort);
+      }
+      if (isShort) short.push(c);
+    });
+    return short;
+  }
+
+  /** Has `member` a row none of `carriers` has? Byte-wise: runs start on a
+   * year boundary, and a year's rows are a multiple of 8. */
+  private uncovered(member: number, carriers: number[]): boolean {
+    const bits = this.claimed[member];
+    const base = this.from[member];
+    for (let i = 0; i < bits.length; i++) {
+      if (!bits[i]) continue;
+      let theirs = 0;
+      for (const m of carriers) {
+        const at = base + i * 8 - this.from[m];
+        if (at >= 0 && base + i * 8 < this.to[m]) theirs |= this.claimed[m][at / 8];
+      }
+      if (bits[i] & ~theirs) return true;
+    }
+    return false;
+  }
+}
+
+/** A block's file's place in its merge group. A one-file accumulator built
+ * without `members` takes any plan as its file; in a group an unknown plan is
+ * a caller passing another plan than the group was built from. */
+export function memberIndex<P>(members: readonly P[], plan: P): number {
+  const index = members.indexOf(plan);
+  if (index >= 0) return index;
+  if (members.length === 1) return 0;
+  throw new Error('A block arrived for a file that is not in its merge group.');
+}
+
+/** Each member's run of rows when a year holds `rowsPerYear` of them,
+ * relative to the group's span. */
+export function memberRows(
+  span: YearSpan,
+  members: readonly YearSpan[],
+  rowsPerYear: number,
+): { from: number; to: number }[] {
+  return members.map((member) => {
+    const from = (member.firstYear - span.firstYear) * rowsPerYear;
+    return { from, to: from + member.numYears * rowsPerYear };
+  });
+}
+
+/** The two notes a merge group's overlap earns, worded once for both shapes.
+ * `noun` is what a column is: "generator", "metric". */
+export function firstFileNotes(
+  name: string,
+  merge: FirstFile,
+  columnNames: readonly string[],
+  noun: string,
+): string[] {
+  const few = (names: string[]) =>
+    `${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''}`;
+  const notes: string[] = [];
+  const clashedColumns = merge.clashed();
+  const clashed = columnNames.filter((_, c) => clashedColumns[c]);
+  if (clashed.length > 0) {
+    notes.push(
+      `${name}: ${clashed.length} ${noun}(s) are in more than one of these files for the same ` +
+        `hours (${few(clashed)}); the first file's values were kept.`,
+    );
+  }
+  const short = merge.shortColumns().map((c) => columnNames[c]);
+  if (short.length > 0) {
+    notes.push(
+      `${name}: ${short.length} ${noun}(s) are in only some of these files (${few(short)}) and ` +
+        `cover only the rows their own files did.`,
+    );
+  }
+  return notes;
 }
 
 export interface DispatchFailure {
