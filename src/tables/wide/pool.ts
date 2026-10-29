@@ -16,6 +16,7 @@
 //   * Block size comes from the file's own row length and width, so a block
 //     never holds more rows than the slab the parser was configured with.
 
+import { coverCell } from '../coverage';
 import { realHours, realHoursSeen, YEAR_SLOT_HOURS, type YearSpan } from '../../model/calendar';
 import {
   dispatch,
@@ -362,6 +363,7 @@ export interface CaseAccumulator {
   numYears: number;
   /** `(entity x numYears + yearOffset) x 8784 + slotHour`. */
   cube: Float32Array;
+  cellCoverage: Uint8Array;
   /** Per span hour, TOU code, 0xFF until a row covers the hour. */
   tou: Uint8Array;
   hourSeen: Uint8Array;
@@ -389,6 +391,7 @@ export function createAccumulator(
     firstYear: span.firstYear,
     numYears: span.numYears,
     cube,
+    cellCoverage: new Uint8Array(Math.ceil(cube.length / 8)),
     tou: new Uint8Array(hours).fill(0xff),
     hourSeen: new Uint8Array(hours),
     members,
@@ -463,12 +466,18 @@ export function blitBlock(
     const base = entity * span;
     const src = p * rows;
     if (writes === null) {
-      for (let r = 0; r < rows; r++) cube[base + at[r]] = data[src + r];
+      for (let r = 0; r < rows; r++) {
+        cube[base + at[r]] = data[src + r];
+        coverCell(accumulator.cellCoverage, base + at[r]);
+      }
       continue;
     }
     const decided = groupOf[entity] * rows;
     for (let r = 0; r < rows; r++) {
-      if (writes[decided + r]) cube[base + at[r]] = data[src + r];
+      if (writes[decided + r]) {
+        cube[base + at[r]] = data[src + r];
+        coverCell(accumulator.cellCoverage, base + at[r]);
+      }
     }
   }
 }
@@ -480,6 +489,7 @@ export function blitBlock(
 export interface WideCase {
   /** `(entity x numYears + yearOffset) x 8784 + slotHour`. */
   cube: Float32Array;
+  cellCoverage: Uint8Array;
   /** The cube's entity axis, in cube-index order. */
   entities: string[];
   /** One byte per entity: 1 = this file's header carried it. */
@@ -557,6 +567,7 @@ export function finalizeWide(
   return {
     data: {
       cube,
+      cellCoverage: accumulator.cellCoverage,
       entities: plan.entities,
       presence: plan.presence.slice(),
       tou: accumulator.tou,

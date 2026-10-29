@@ -10,6 +10,7 @@
 // combine -- generation by fuel type, by area -- but every such grouping is a
 // join against the GeneratorList lookup, done in `ui/browse.ts`, not here.
 
+import { savedCellCoverage } from '../coverage';
 import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import type { HoursPresent, TouCodes } from '../../model/types';
 
@@ -30,6 +31,7 @@ import type { HoursPresent, TouCodes } from '../../model/types';
  */
 export interface GeneratorTable {
   cube: Float32Array;
+  cellCoverage?: Uint8Array;
   /** In cube-index order. */
   generators: string[];
   /** One byte per generator: 1 = this export carried it, 0 = the plane is
@@ -75,6 +77,7 @@ export function serializeGeneratorTable(table: GeneratorTable): {
       sourceColumns: table.sourceColumns,
       quantity: table.quantity,
       presence: table.presence,
+      cellCoverage: table.cellCoverage,
       tou: table.tou,
       hoursPresent: table.hoursPresent,
     },
@@ -94,6 +97,7 @@ export function deserializeGeneratorTable(
     sourceColumns: string[];
     quantity: string;
     presence: Uint8Array;
+    cellCoverage?: Uint8Array;
     tou: TouCodes;
     hoursPresent?: HoursPresent;
   };
@@ -115,6 +119,7 @@ export function deserializeGeneratorTable(
   }
   return {
     cube: values,
+    cellCoverage: savedCellCoverage(entry.cellCoverage, values.length),
     generators: entry.generators.slice(),
     presence: entry.presence,
     tou: slot.tou,

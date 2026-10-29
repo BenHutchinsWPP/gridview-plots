@@ -241,6 +241,7 @@ for (const [label, table, serialize, deserialize] of [
   // The manifest is JSON on the wire, so anything that does not survive
   // JSON.stringify does not survive a save. An Int32Array would not.
   const wire = JSON.parse(JSON.stringify(fields));
+  wire.cellCoverage = fields.cellCoverage;
   wire.presence = fields.presence;
   wire.tou = fields.tou;
   const back = deserialize(
@@ -248,6 +249,7 @@ for (const [label, table, serialize, deserialize] of [
     cube.buffer.slice(cube.byteOffset, cube.byteOffset + cube.byteLength),
   );
   assert.equal(back.cube.length, table.cube.length, `${label}: cube length`);
+  assert.deepEqual(back.cellCoverage, table.cellCoverage, `${label}: per-cell ownership`);
   assert.deepEqual([...back.presence], [...table.presence], `${label}: presence byte-for-byte`);
   if (label === 'bus') {
     assert.ok(back.buses instanceof Int32Array, 'bus: the id axis comes back as an Int32Array');

@@ -48,6 +48,12 @@ import {
   serializeGeneratorTable,
   type GeneratorTable,
 } from './generator/types';
+import type { CubeFactor } from '../ingest';
+import type { Appended } from './append';
+import { appendAreaTable, areaAppendSize } from './area/append';
+import { appendInterfaceTable, interfaceAppendSize } from './interface/append';
+import { appendBusTable, busAppendSize } from './bus/append';
+import { appendGeneratorTable, generatorAppendSize } from './generator/append';
 
 /** What a table says of the file it was read from: how many of what that
  * file offered it kept. The Contents inventory's count, for a table whose
@@ -126,6 +132,10 @@ interface KindAdapter {
    * every column its source carried. Axis widening can add planes the file
    * never had, so this is the kept axis, not the file's alone. */
   counts(table: unknown): TableCounts;
+  /** Joins a later drop's table onto this kind's loaded one. */
+  append(old: unknown, fresh: unknown): Appended<unknown>;
+  /** The cube a join would allocate: the planes and years it lands on. */
+  appendSize(old: unknown, fresh: unknown): { factors: CubeFactor[]; numYears: number };
 }
 
 // The casts are safe: a slot's `kind` selects the entry, and only that kind's
@@ -144,6 +154,8 @@ const REGISTRY: Record<TableKind, KindAdapter> = {
     enables: 'Hourly area metrics per Case; area groups sum or weight them.',
     groupsEnables: 'Area groups: sums and weighted means across the areas each group names',
     groupsField: 'groupings',
+    append: (old, fresh) => appendAreaTable(old as AreaTable, fresh as AreaTable),
+    appendSize: (old, fresh) => areaAppendSize(old as AreaTable, fresh as AreaTable),
     counts: (table) => {
       const { sourceColumns, metrics } = table as AreaTable;
       return keptOf(sourceColumns, metrics, 'metrics');
@@ -162,6 +174,8 @@ const REGISTRY: Record<TableKind, KindAdapter> = {
     enables: 'Hourly interface quantities per Case; with limits, % of range and limit lines.',
     groupsEnables: 'Interface boundaries: members summed in their directions, with summed limits',
     groupsField: 'interfaceGroups',
+    append: (old, fresh) => appendInterfaceTable(old as InterfaceTable, fresh as InterfaceTable),
+    appendSize: (old, fresh) => interfaceAppendSize(old as InterfaceTable, fresh as InterfaceTable),
     counts: (table) => {
       const { sourceColumns, interfaces } = table as InterfaceTable;
       return keptOf(sourceColumns, interfaces, 'entities');
@@ -181,6 +195,8 @@ const REGISTRY: Record<TableKind, KindAdapter> = {
     enables: 'Hourly bus metrics per Case, such as LMP; bus groups sum the summable ones.',
     groupsEnables: 'Bus groups: sums across the buses each group names',
     groupsField: 'busGroups',
+    append: (old, fresh) => appendBusTable(old as BusTable, fresh as BusTable),
+    appendSize: (old, fresh) => busAppendSize(old as BusTable, fresh as BusTable),
     counts: (table) => {
       const { sourceColumns, buses } = table as BusTable;
       return keptOf(sourceColumns, buses, 'entities');
@@ -200,6 +216,8 @@ const REGISTRY: Record<TableKind, KindAdapter> = {
     enables: 'Hourly unit metrics per Case; generator groups sum them.',
     groupsEnables: 'Generator groups: sums across the units each group names',
     groupsField: 'generatorGroups',
+    append: (old, fresh) => appendGeneratorTable(old as GeneratorTable, fresh as GeneratorTable),
+    appendSize: (old, fresh) => generatorAppendSize(old as GeneratorTable, fresh as GeneratorTable),
     counts: (table) => {
       const { sourceColumns, generators } = table as GeneratorTable;
       return keptOf(sourceColumns, generators, 'entities');
@@ -274,4 +292,14 @@ export const GROUPS_FIELDS = Object.fromEntries(
 /** A restored table's counts, or null for a kind this build has no entry for. */
 export function tableCounts(kind: string, table: unknown): TableCounts | null {
   return REGISTRY[kind as TableKind]?.counts(table) ?? null;
+}
+
+/** A kind's join of a later table onto a loaded one. */
+export function appendTableOf(kind: TableKind): KindAdapter['append'] {
+  return REGISTRY[kind].append;
+}
+
+/** A kind's join cube size, for the cost estimate before a join runs. */
+export function appendSizeOf(kind: TableKind): KindAdapter['appendSize'] {
+  return REGISTRY[kind].appendSize;
 }

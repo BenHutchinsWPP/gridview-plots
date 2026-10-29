@@ -53,6 +53,7 @@ export const finalizeBusLong: Finalize<BusLongResult> = (
 
   const data = planesByMetric(accumulator, axis.length).map((plane) => ({
     cube: plane.cube,
+    cellCoverage: plane.cellCoverage,
     buses,
     names,
     presence: plane.presence,

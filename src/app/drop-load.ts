@@ -40,7 +40,7 @@ import type { GroupingsMappingChoice } from '../ui/groupings-mapping';
 import type { ImportDecision } from '../ui/import-dialog';
 import { outcomeNotes, type Drop, type IngestOutcome } from './batch';
 import { routeDrop, splitPlans, type RoutedFile } from './drop-route';
-import type { ExistingCase, ImportFile, LimitPlan, SlotCoverage } from './import-plan';
+import type { ExistingCase, ImportFile, ImportPlan, LimitPlan, SlotCoverage } from './import-plan';
 
 /** The notes channels a drop writes. `session` is cleared by a drop that runs
  * and written by one that is refused; the four kinds are the drop's account. */
@@ -93,6 +93,10 @@ export interface DropHost {
   ): Promise<ImportDecision | null>;
   /** Run one (kind, shape) batch through its engine. */
   ingest(kind: TableKind, shape: 'W' | 'L', drops: Drop[]): Promise<IngestOutcome>;
+  prepareTables(plans: readonly ImportPlan[]): void;
+  /** Commit extensions only after every kind has offered its tables. */
+  settleSpans(): Promise<{ kind: TableKind; outcome: IngestOutcome }[]>;
+  discardHeld(): void;
   /** Install limits, returning the source they replaced, if any. */
   setSharedLimits(table: LimitTable): string | null;
   setCaseLimits(caseId: string, table: LimitTable): string | null;
@@ -271,6 +275,7 @@ export function createDropLoad(host: DropHost): DropLoad {
       inventory.logRefused(inventory.unaccounted(held), refusal);
       host.say('session', [refusal]);
     } finally {
+      host.discardHeld();
       inventory.endDrop();
       inFlight = false;
       everything = false;
@@ -382,6 +387,7 @@ export function createDropLoad(host: DropHost): DropLoad {
       'removed in the Import dialog',
     );
     everything = decision.everything;
+    host.prepareTables(decision.plans);
     const fileCount = decision.plans.length + decision.limits.length;
     host.setBusyFloor(
       everything
@@ -407,8 +413,8 @@ export function createDropLoad(host: DropHost): DropLoad {
           // replacing the first.
           drop:
             plan.kind === 'area'
-              ? { file, caseName: plan.caseName }
-              : { file, caseName: plan.caseName, variant: plan.variant },
+              ? { file, caseName: plan.caseName, mode: plan.mode }
+              : { file, caseName: plan.caseName, variant: plan.variant, mode: plan.mode },
         };
       }),
     );
@@ -440,9 +446,22 @@ export function createDropLoad(host: DropHost): DropLoad {
     // Published BEFORE the other kinds' batches: they render and can throw,
     // and this drop's account must not be lost or left showing the last one's.
     host.say('area', areaNotes);
-    host.say('interface', await run('interface', 'W'));
-    host.say('bus', [...(await run('bus', 'W')), ...(await run('bus', 'L'))]);
-    host.say('generator', [...(await run('generator', 'W')), ...(await run('generator', 'L'))]);
+    const notes: Record<TableKind, string[]> = {
+      area: areaNotes,
+      interface: [],
+      bus: [],
+      generator: [],
+    };
+    for (const kind of ['interface', 'bus', 'generator'] as const) {
+      notes[kind] = await run(kind, 'W');
+      if (kind !== 'interface') notes[kind].push(...(await run(kind, 'L')));
+      host.say(kind, notes[kind]);
+    }
+    for (const { kind, outcome } of await host.settleSpans()) {
+      inventory.recordOutcome(outcome);
+      notes[kind].push(...outcomeNotes(outcome));
+      host.say(kind, notes[kind]);
+    }
     // AFTER every ingest: a pinned limits file resolves its Case by NAME, and
     // that Case may have just been created. Its notes republish the area
     // account, which stays correct either way.

@@ -229,15 +229,24 @@ export function createAreaLongIngest(
       // `plans[result.ok[i]]`'s table, the first member of its merge group.
       // A long Area file's picker chooses metrics, so that is what it counts.
       const keptMetrics = new Set(retained.map((name) => name.trim()));
-      const commits = commitAll(result.cases, (table, index) => {
+      const commits = await commitAll(result.cases, async (table, index) => {
         const at = result.ok[index];
         const sources = groupMembers(kept, at).map((member) => ({
           file: kept[member].file,
           shape: 'L' as const,
           counts: countKept(plans[member].header.metricNames, keptMetrics, 'metrics'),
         }));
-        host.attach(host.caseIdForName(kept[at].caseName), batch.slot, table, sources);
+        const drop = kept[at];
+        const { notes } = await host.attach(
+          host.caseIdForName(drop.caseName),
+          batch.slot,
+          table,
+          sources,
+          drop.mode ?? 'replace',
+        );
         for (const source of sources) attached.add(source.file);
+        const files = sources.map((source) => source.file);
+        for (const note of notes) outcome.warnings.push({ files, note });
       });
       for (const failure of commits) {
         outcome.failures.push({
@@ -246,7 +255,7 @@ export function createAreaLongIngest(
         });
       }
       batch.refresh();
-      outcome.warnings = warningsOf(result.warnings, (index) => kept[index].file);
+      outcome.warnings.push(...warningsOf(result.warnings, (index) => kept[index].file));
       return outcome;
     } catch (error) {
       return thrown(drops, outcome, attached, error);
@@ -410,10 +419,18 @@ export function createEntityLongIngest(
           })),
         })),
       );
-      const commits = commitAll(attachments, ({ table, drop, sources }) => {
+      const commits = await commitAll(attachments, async ({ table, drop, sources }) => {
         const slot = { kind, variant: table.quantity };
-        host.attach(host.caseIdForName(drop.caseName), slot, table, sources);
+        const { notes } = await host.attach(
+          host.caseIdForName(drop.caseName),
+          slot,
+          table,
+          sources,
+          drop.mode ?? 'replace',
+        );
         for (const source of sources) attached.add(source.file);
+        const files = sources.map((source) => source.file);
+        for (const note of notes) outcome.warnings.push({ files, note });
       });
       for (const failure of commits) {
         outcome.failures.push({
@@ -422,7 +439,7 @@ export function createEntityLongIngest(
         });
       }
       batch.refresh();
-      outcome.warnings = warningsOf(result.warnings, (index) => kept[index].file);
+      outcome.warnings.push(...warningsOf(result.warnings, (index) => kept[index].file));
       return outcome;
     } catch (error) {
       return thrown(drops, outcome, attached, error);

@@ -193,12 +193,87 @@ check('one file on its own is not a merge', () => {
 //
 // A replace is non-blocking: `replacesExisting` only, never `slotConflict`.
 
+check('a later drop adds by default and replacement is explicit', () => {
+  const files = [{ name: 'later.csv', detected: detected('area', { shape: 'W' }) }];
+  const params = {
+    caseName: 'S',
+    existingCases: [{ name: 'S', occupiedSlots: ['area '] }],
+  };
+  const [add] = planImports(files, 'one-case', params);
+  assert.equal(add.mode, 'add');
+  assert.equal(add.addsToExisting, true);
+  assert.equal(add.replacesExisting, false);
+  assert.match(add.replaceReason, /Loaded cells and TOU keep priority/);
+  const [replace] = planImports(files, 'one-case', { ...params, attachMode: 'replace' });
+  assert.equal(replace.mode, 'replace');
+  assert.equal(replace.addsToExisting, false);
+  assert.equal(replace.replacesExisting, true);
+});
+
+check('a year extension needs every table, judging adds by their joined years', () => {
+  const file = (name, kind, firstYear, shape = 'W', variant) => ({
+    name,
+    detected: detected(kind, { shape, variant, years: { firstYear, numYears: 1 } }),
+  });
+  const params = {
+    caseName: 'S',
+    existingCases: [
+      {
+        name: 'S',
+        occupiedSlots: ['area ', 'bus LMP'],
+        slotSpans: {
+          'area ': { firstYear: 2035, numYears: 1 },
+          'bus LMP': { firstYear: 2035, numYears: 1 },
+        },
+      },
+    ],
+  };
+  const area = file('area36.csv', 'area', 2036);
+  const bus = file('bus36.csv', 'bus', 2036, 'W', 'LMP');
+  assert.equal(planImports([area], 'one-case', params)[0].spanConflict, true);
+  assert.deepEqual(
+    planImports([area, bus], 'one-case', params).map((p) => p.spanConflict),
+    [false, false],
+  );
+  const long = {
+    name: 'long36.csv',
+    detected: detected('bus', { shape: 'L' }),
+    sampled: { firstYear: 2036, numYears: 1, whole: true },
+  };
+  assert.deepEqual(
+    planImports([area, long], 'one-case', params).map((p) => p.spanConflict),
+    [false, false],
+    'the long picker may extend the loaded LMP slot',
+  );
+  const solo = {
+    ...params,
+    existingCases: [
+      {
+        ...params.existingCases[0],
+        occupiedSlots: ['area '],
+        slotSpans: { 'area ': { firstYear: 2035, numYears: 1 } },
+      },
+    ],
+  };
+  const gap = planImports([file('area37.csv', 'area', 2037)], 'one-case', solo)[0];
+  assert.equal(gap.spanConflict, true);
+  assert.match(gap.spanDetail, /none for 2036/);
+  assert.deepEqual(
+    planImports([file('area34.csv', 'area', 2034), area], 'one-case', solo).map(
+      (p) => p.spanConflict,
+    ),
+    [false, true],
+    'the incoming merge group must cover its own years',
+  );
+});
+
 check(
   'a target case that already has a table at the target slot is reported as a replace, not a blocking conflict',
   () => {
     const files = [{ name: 'update.csv', detected: detected('area') }];
     const plans = planImports(files, 'one-case', {
       caseName: 'Existing Study',
+      attachMode: 'replace',
       existingCases: [{ name: 'Existing Study', occupiedSlots: [slotKeyFor('area', undefined)] }],
     });
 
@@ -218,6 +293,7 @@ check(
       'one-case',
       {
         caseName: 'Existing Study',
+        attachMode: 'replace',
         existingCases: [{ name: 'Existing Study', occupiedSlots: [slotKeyFor('area', undefined)] }],
       },
     );
@@ -233,6 +309,7 @@ check(
     const files = [{ name: 'mar apr.csv', detected: detected('area') }];
     const half = planImports(files, 'one-case', {
       caseName: 'Existing Study',
+      attachMode: 'replace',
       existingCases: [
         {
           name: 'Existing Study',
@@ -246,7 +323,7 @@ check(
       half[0].replaceReason.includes('4,344 of 8,760'),
       'names what the replaced table covers',
     );
-    assert.ok(half[0].replaceReason.includes('TOGETHER'), 'says how to get one table instead');
+    assert.ok(half[0].replaceReason.includes('Choose Add'), 'says how to keep the loaded hours');
     assert.ok(
       !half[0].replaceReason.includes('mar apr.csv'),
       'the file is not named back at a row that already shows it',
@@ -255,6 +332,7 @@ check(
     // A whole year replaced loses nothing a re-export cannot bring back.
     const full = planImports(files, 'one-case', {
       caseName: 'Existing Study',
+      attachMode: 'replace',
       existingCases: [
         {
           name: 'Existing Study',
@@ -271,6 +349,7 @@ check(
     // A leap year's whole year is 8,784 hours; 8,760 of them is a gap.
     const leapShort = planImports(files, 'one-case', {
       caseName: 'Existing Study',
+      attachMode: 'replace',
       existingCases: [
         {
           name: 'Existing Study',
@@ -286,6 +365,7 @@ check(
     for (const hours of [undefined, { [slotKeyFor('area', undefined)]: null }]) {
       const unknown = planImports(files, 'one-case', {
         caseName: 'Existing Study',
+        attachMode: 'replace',
         existingCases: [
           {
             name: 'Existing Study',
@@ -327,6 +407,7 @@ check(
     ];
     const plans = planImports(files, 'one-case', {
       caseName: 'Existing Study',
+      attachMode: 'replace',
       existingCases: [{ name: 'Existing Study', occupiedSlots: [slotKeyFor('area', undefined)] }],
     });
 
@@ -548,7 +629,11 @@ check("a drop naming a Case's original name or its display name joins that Case"
     { name: 'b.csv', detected: detected('interface', { variant: 'Power Flow (MW)' }) },
   ];
   for (const typed of ['2030_HL_v3', 'High Load']) {
-    const plans = planImports(files, 'one-case', { caseName: typed, existingCases });
+    const plans = planImports(files, 'one-case', {
+      caseName: typed,
+      attachMode: 'replace',
+      existingCases,
+    });
     for (const plan of plans) {
       assert.equal(plan.caseName, '2030_HL_v3', `${typed}: planned under the Case's name`);
       assert.equal(plan.caseIsNew, false, `${typed}: an existing Case`);

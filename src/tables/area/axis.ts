@@ -44,6 +44,7 @@ export function reindexCase(data: AreaTable, axis: readonly string[]): AreaTable
   const cube = new Float32Array(axis.length * numMetrics * hours);
   cube.fill(NaN);
   const presence = new Uint8Array(axis.length * numMetrics);
+  const cellCoverage = data.cellCoverage ? new Uint8Array(Math.ceil(cube.length / 8)) : undefined;
   const destByArea = new Map<string, number>();
   axis.forEach((area, index) => destByArea.set(area, index));
 
@@ -54,9 +55,14 @@ export function reindexCase(data: AreaTable, axis: readonly string[]): AreaTable
       const oldPlane = (oldArea * numMetrics + metric) * hours;
       const nextPlane = (nextArea * numMetrics + metric) * hours;
       cube.set(data.cube.subarray(oldPlane, oldPlane + hours), nextPlane);
+      if (cellCoverage)
+        cellCoverage.set(
+          data.cellCoverage!.subarray(oldPlane / 8, (oldPlane + hours) / 8),
+          nextPlane / 8,
+        );
       presence[nextArea * numMetrics + metric] = data.presence[oldArea * numMetrics + metric];
     }
   }
 
-  return { ...data, areas: axis.slice(), cube, presence };
+  return { ...data, areas: axis.slice(), cube, cellCoverage, presence };
 }

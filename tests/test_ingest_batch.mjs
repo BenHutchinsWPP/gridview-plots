@@ -44,16 +44,17 @@ const drop = (name, caseName, variant) => ({
 });
 
 /** A host that records every attach and every progress line. `held` maps
- * a Case name to the span its loaded tables state, outside any slot. */
-function recordingHost(held = {}) {
+ * a Case name to the span its loaded Area table states; `notes` are what
+ * every attach answers with. */
+function recordingHost(held = {}, notes = []) {
   const attached = [];
   const busy = [];
   return {
     attached,
     busy,
-    heldSpan(caseName) {
+    spansOf(caseName) {
       const span = held[caseName];
-      return span ? { span, holder: `${caseName}'s Area table` } : null;
+      return span ? [{ slot: 'area ', span, holder: `${caseName}'s Area table` }] : [];
     },
     setBusy(message) {
       busy.push(message);
@@ -61,8 +62,9 @@ function recordingHost(held = {}) {
     caseIdForName(name) {
       return `case:${name}`;
     },
-    attach(caseId, slot, table, sources) {
-      attached.push({ caseId, slot, table, sources });
+    async attach(caseId, slot, table, sources, mode) {
+      attached.push({ caseId, slot, table, sources, mode });
+      return { held: false, notes: [...notes] };
     },
   };
 }
@@ -241,9 +243,9 @@ await checkAsync('a failed block costs its own file and is attributed by index',
 await checkAsync('a commit that throws costs its own table, not the batch', async () => {
   const host = recordingHost();
   const attach = host.attach;
-  host.attach = (caseId, slot, table, sources) => {
+  host.attach = async (caseId, slot, table, sources, mode) => {
     if (table.name === 'b.csv') throw new Error('slot occupied');
-    attach(caseId, slot, table, sources);
+    return attach(caseId, slot, table, sources, mode);
   };
   const notes = await createWideIngest(host)(wideBatch(wideReader()), [
     drop('a.csv', 'S'),
@@ -329,14 +331,40 @@ check('a filename is not repeated when the error already opens with it', () => {
   assert.equal(fileNote('a.csv', 'broken'), 'a.csv: broken');
 });
 
-check('commitAll reports every failure and keeps going', () => {
-  const seen = [];
-  const failures = commitAll([1, 2, 3], (value) => {
-    if (value === 2) throw new Error('two is bad');
-    seen.push(value);
-  });
-  assert.deepEqual(seen, [1, 3]);
-  assert.deepEqual(failures, [{ index: 1, message: 'two is bad' }]);
+await checkAsync(
+  'commitAll reports every failure and keeps going, one table at a time',
+  async () => {
+    const seen = [];
+    let running = 0;
+    const failures = await commitAll([1, 2, 3], async (value) => {
+      assert.equal(running++, 0, 'an attach starts only after the one before it ended');
+      await Promise.resolve();
+      running--;
+      if (value === 2) throw new Error('two is bad');
+      seen.push(value);
+    });
+    assert.deepEqual(seen, [1, 3]);
+    assert.deepEqual(failures, [{ index: 1, message: 'two is bad' }]);
+  },
+);
+
+await checkAsync("an attach's notes reach the outcome with the table's files", async () => {
+  const host = recordingHost({}, ['joined the loaded table']);
+  const a = drop('a.csv', 'S');
+  const b = drop('b.csv', 'S');
+  const outcome = await wideEngine.createWideIngest(host)(
+    wideBatch(mergingWideReader({ warnings: [{ message: 'from the reader', plans: [0] }] })),
+    [a, b],
+  );
+  assert.deepEqual(outcome.warnings, [
+    { files: [a.file, b.file], note: 'joined the loaded table' },
+    { files: [a.file], note: 'from the reader' },
+  ]);
+  assert.deepEqual(
+    host.attached.map((entry) => entry.mode),
+    ['replace'],
+    'a drop with no mode replaces',
+  );
 });
 
 // ---------------------------------------------------------------- shape L
@@ -823,8 +851,8 @@ await checkAsync('a stop is kept apart from a refusal, with the files it stopped
     {
       setBusy() {},
       caseIdForName: (name) => name,
-      attach() {},
-      heldSpan: () => null,
+      attach: async () => ({ held: false, notes: [] }),
+      spansOf: () => [],
     },
     {
       reader: longReader(),
@@ -864,6 +892,35 @@ await checkAsync('a thrown batch refuses the files that neither failed nor attac
     [[unreadable.file]],
   );
   assert.deepEqual(outcome.refusal, { files: [good.file], note: 'the picker exploded' });
+});
+
+await checkAsync('both long batches keep the notes their attaches earned', async () => {
+  const areaHost = recordingHost({}, ['joined the loaded Area table']);
+  const { batch } = areaLongBatch(longReader(), {
+    async parse(plans) {
+      return {
+        cases: plans.map((plan) => ({ name: plan.file.name })),
+        ok: plans.map((_, i) => i),
+        warnings: [{ message: 'from the parse', plans: [0] }],
+        failures: [],
+      };
+    },
+  });
+  const area = await createAreaLongIngest(
+    areaHost,
+    batch,
+  )([{ ...drop('a.csv', 'S'), mode: 'add' }]);
+  assert.deepEqual(area, ['joined the loaded Area table', 'from the parse']);
+  assert.deepEqual(
+    areaHost.attached.map((entry) => entry.mode),
+    ['add'],
+    "the drop's mode reaches the host",
+  );
+
+  const busHost = recordingHost({}, ['joined the loaded Bus table']);
+  const { run } = entityLongRun(busHost);
+  const bus = await run([drop('b.csv', 'S')], 'bus', BUS_LONG);
+  assert.deepEqual(bus, ['joined the loaded Bus table']);
 });
 
 console.log(`\n${checks} checks passed.`);

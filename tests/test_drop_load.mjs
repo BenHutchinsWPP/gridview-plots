@@ -72,6 +72,7 @@ const plan = (index, kind, shape, caseName, variant) => ({
   slotConflict: false,
   merges: false,
   replacesExisting: false,
+  mode: 'add',
 });
 
 /**
@@ -137,6 +138,9 @@ function fakeHost(over = {}) {
       calls.push(`ingest:${kind}:${shape}`);
       return { failures: [], warnings: [{ files: [], note: `${kind} ${shape} ${drops.length}` }] };
     },
+    settleSpans: async () => [],
+    prepareTables() {},
+    discardHeld() {},
     setSharedLimits: () => {
       calls.push('setSharedLimits');
       return null;
@@ -397,10 +401,11 @@ await check('batches run in (kind, shape) order and Area is published first', as
       everythingDuringIngest = holder.drop.keepsEverything();
       if (kind === 'area') {
         // Area carries no variant: two halves of a year are one table.
-        assert.deepEqual(Object.keys(drops[0]).sort(), ['caseName', 'file']);
+        assert.deepEqual(Object.keys(drops[0]).sort(), ['caseName', 'file', 'mode']);
       } else {
         assert.equal(drops[0].variant, kind === 'bus' ? 'LMP' : 'Flow');
       }
+      assert.equal(drops[0].mode, 'add');
       return { failures: [], warnings: [{ files: [], note: `${kind} ${shape}` }] };
     },
   });
@@ -440,6 +445,59 @@ await check('the drawer opens once a Case is loaded', async () => {
   assert.ok(at(calls, 'refreshCases') < at(calls, 'revealDrawer'));
   assert.ok(at(calls, 'revealDrawer') < calls.lastIndexOf('render'));
 });
+
+await check(
+  'held spans settle after every batch, report their outcome, and clear on exit',
+  async () => {
+    const file = csv('bus.csv', HEADER);
+    const { host, calls, said, logOf } = fakeHost({
+      askImport: async () => ({
+        plans: [{ ...plan(0, 'bus', 'W', 'A', 'LMP'), mode: 'replace' }],
+        limits: [],
+        everything: false,
+      }),
+      ingest: async (_kind, _shape, drops) => {
+        calls.push('ingest');
+        assert.equal(drops[0].mode, 'replace');
+        return { failures: [], warnings: [{ files: [], note: 'parsed' }] };
+      },
+      settleSpans: async () => {
+        calls.push('settle');
+        return [
+          {
+            kind: 'bus',
+            outcome: {
+              failures: [{ files: [file], note: 'other table still spans 2035' }],
+              warnings: [],
+            },
+          },
+        ];
+      },
+      discardHeld: () => calls.push('discard'),
+    });
+    await createDropLoad(host).load([file]);
+    assert.ok(at(calls, 'ingest') < at(calls, 'settle'));
+    assert.ok(at(calls, 'settle') < at(calls, 'refreshCases'));
+    assert.ok(at(calls, 'discard') < at(calls, 'inventory.endDrop'));
+    assert.deepEqual(said.get('bus'), ['parsed', 'other table still spans 2035']);
+    assert.ok(
+      logOf().some((entry) => entry.event === 'refused' && entry.files[0].name === 'bus.csv'),
+    );
+
+    let discarded = false;
+    const stopped = fakeHost({
+      askImport: async () => ({ plans: [plan(0, 'bus', 'W', 'A')], limits: [], everything: false }),
+      ingest: async () => {
+        throw new Error('stopped before settle');
+      },
+      discardHeld: () => {
+        discarded = true;
+      },
+    });
+    await createDropLoad(stopped.host).load([file]);
+    assert.equal(discarded, true, 'an interrupted drop releases held cubes too');
+  },
+);
 
 await check('a throw keeps the Area account and refuses what it had not reached', async () => {
   const { host, calls, said, logOf } = fakeHost({

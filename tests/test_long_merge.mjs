@@ -355,4 +355,36 @@ const JUL1 = 182 * 24;
   ok('a member covering 2030-2031 and one covering 2032 make one three-year table');
 }
 
+{
+  const { appendBusTable } = await import('../src/tables/bus/append.ts');
+  const { hasCell } = await import('../src/tables/coverage.ts');
+  const keys = 'Date,Hour,TOU,BusID,BusName,Area';
+  const initial = merge([
+    half(`${keys},LMP ($/MWh)`, ['1/1/2035,1,OffPeak,40001,A,X,']),
+    half(`${keys},Load (MW)`, ['1/1/2035,2,OffPeak,40002,B,X,20']),
+  ]).data;
+  const lmp = initial.find((t) => t.quantity === 'LMP ($/MWh)');
+  const load = initial.find((t) => t.quantity === 'Load (MW)');
+  assert.equal(hasCell(lmp.cellCoverage, 0), true);
+  assert.equal(hasCell(lmp.cellCoverage, YEAR_SLOT_HOURS + 1), false);
+  assert.equal(
+    hasCell(load.cellCoverage, YEAR_SLOT_HOURS + 1),
+    true,
+    'metric slicing moves ownership with its plane',
+  );
+  const fresh = merge([
+    half(`${keys},LMP ($/MWh)`, [
+      '1/1/2035,1,OffPeak,40001,A,X,999',
+      '1/1/2035,2,OffPeak,40001,A,X,30',
+      '1/1/2035,2,OffPeak,40002,B,X,40',
+    ]),
+  ]).data.find((t) => t.quantity === 'LMP ($/MWh)');
+  const result = appendBusTable(lmp, fresh);
+  assert.ok(Number.isNaN(result.table.cube[0]));
+  assert.equal(result.table.cube[1], 30);
+  assert.equal(result.table.cube[YEAR_SLOT_HOURS + 1], 40);
+  assert.equal(result.wrote, 2);
+  ok('a long metric/entity/date merge retains each offered cell through slicing and append');
+}
+
 console.log(`\n${checks} checks passed.`);

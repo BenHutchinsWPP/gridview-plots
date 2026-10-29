@@ -3,6 +3,7 @@
 // Area model types. `AreaQuery` is the frozen object the UI renders from:
 // build a new one per interaction and never mutate it.
 
+import { savedCellCoverage } from '../coverage';
 import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import { allAreas } from './groupings';
 import type { Filters, HoursPresent, TouCodes } from '../../model/types';
@@ -82,6 +83,7 @@ export interface ColumnRule {
  */
 export interface AreaTable {
   cube: Float32Array;
+  cellCoverage?: Uint8Array;
   areas: string[];
   metrics: string[];
   /** One byte per (area, metric) at `area * numMetrics + metric`: 1 = real
@@ -115,6 +117,7 @@ export function serializeAreaTable(table: AreaTable): {
       sourceColumns: table.sourceColumns,
       areas: table.areas,
       presence: table.presence,
+      cellCoverage: table.cellCoverage,
       tou: table.tou,
       hoursPresent: table.hoursPresent,
     },
@@ -134,6 +137,7 @@ export function deserializeAreaTable(
     sourceColumns: string[];
     areas: string[];
     presence: Uint8Array;
+    cellCoverage?: Uint8Array;
     tou: TouCodes;
     hoursPresent?: HoursPresent;
   };
@@ -161,6 +165,7 @@ export function deserializeAreaTable(
 
   return {
     cube: values,
+    cellCoverage: savedCellCoverage(entry.cellCoverage, values.length),
     areas,
     metrics: entry.metrics.slice(),
     presence: entry.presence,

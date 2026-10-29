@@ -474,6 +474,11 @@ export function memberRows(
   });
 }
 
+/** "A, B, C, …": the first three names of a list a note cites. */
+export function fewNames(names: readonly string[]): string {
+  return `${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''}`;
+}
+
 /** The two notes a merge group's overlap earns, worded once for both shapes.
  * `noun` is what a column is: "generator", "metric". */
 export function firstFileNotes(
@@ -482,8 +487,7 @@ export function firstFileNotes(
   columnNames: readonly string[],
   noun: string,
 ): string[] {
-  const few = (names: string[]) =>
-    `${names.slice(0, 3).join(', ')}${names.length > 3 ? ', …' : ''}`;
+  const few = fewNames;
   const notes: string[] = [];
   const clashedColumns = merge.clashed();
   const clashed = columnNames.filter((_, c) => clashedColumns[c]);

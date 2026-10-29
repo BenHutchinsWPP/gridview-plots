@@ -5,6 +5,7 @@
 // only because area-axis reduction commutes with the subtraction (AGENTS.md),
 // and another kind offered them would list metrics nothing fills.
 
+import { hasCell, coverCell } from '../coverage';
 import { realHours, realHoursSeen } from '../../model/calendar';
 import { derivedFor, requiredInputs, ruleFor } from './rules';
 import type { AreaTable } from './types';
@@ -66,6 +67,10 @@ export function applyDerived(accumulator: CaseAccumulator): string[] {
       const a = (area * numMetrics + left) * hours;
       const b = (area * numMetrics + right) * hours;
       for (let hour = 0; hour < hours; hour++) {
+        const coverage = accumulator.cellCoverage;
+        if (coverage && hasCell(coverage, a + hour) && hasCell(coverage, b + hour)) {
+          coverCell(coverage, out + hour);
+        }
         const x = cube[a + hour];
         const y = cube[b + hour];
         // x/0 is absent (NaN), not Infinity, which no NaN guard would catch.
@@ -154,6 +159,7 @@ export function finalizeCase(
   return {
     data: {
       cube,
+      cellCoverage: accumulator.cellCoverage,
       areas,
       metrics: plan.metrics,
       presence,

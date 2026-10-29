@@ -797,10 +797,14 @@ await check('a drop reads as running from the first byte to the last table', () 
 });
 
 await check('one commit site serves every ingest, and it replaces', () => {
-  // Both engines attach through one host, which must replace: a confirmed
-  // `replacesExisting` would otherwise throw and drop every later table.
-  const host = blockOf('const ingestHost: IngestHost = {', '\n};');
-  assert.match(host, /replace: true/, "the ingest host passes the user's confirmed replace");
+  // Both engines attach through one host, whose attach is `src/app/attach.ts`:
+  // the one commit site, which must replace, because a join or a confirmed
+  // replace would otherwise throw on the occupied slot and drop every later table.
+  const host = blockOf('const ingestHost: IngestHost', '\n};');
+  assert.match(host, /attach: tableAttach\.attach,/, "the host's attach is the attach module's");
+  const ATTACH_TS = read('src/app/attach.ts');
+  assert.match(ATTACH_TS, /store\.attachTable\([^;]*replace: true/, 'the attach module replaces');
+  assert.equal(occurrences(ATTACH_TS, 'store.attachTable('), 1, 'attach.ts commits at one site');
 
   // No engine reaches the store itself. An engine that did would be a second
   // commit site this check cannot see.
@@ -824,12 +828,12 @@ await check('one commit site serves every ingest, and it replaces', () => {
     );
   }
 
-  // The other `attachTable` calls: the host, the axis reindex (replaces a
-  // table with itself), and the restore, which must NOT replace (two tables
-  // for one slot in a bundle is a refusal).
+  // The other `attachTable` calls: the axis reindex (replaces a table with
+  // itself), and the restore, which must NOT replace (two tables for one slot
+  // in a bundle is a refusal).
   assert.equal(
     occurrences(MAIN_TS, 'caseStore.attachTable('),
-    2,
+    1,
     'a new attachTable site in main.ts has to state its own replace policy here',
   );
   const restoreAttach = read('src/app/save-restore.ts').match(/cases\.attachTable\([^;]*;/g);
@@ -839,25 +843,21 @@ await check('one commit site serves every ingest, and it replaces', () => {
     'the restore attaches at one site, without replace',
   );
 
-  // The host's attach is where the root learns a table's source files, so it
-  // is the one place ingest is recorded. Axis widening re-attaches every Area
-  // table to the store directly: through the host it would record each table
-  // again as if its files had just been loaded.
+  // The attach module is where the root learns a table's source files, so
+  // it is the one place ingest is recorded. Axis widening re-attaches every
+  // Area table to the store directly: through the host it would record each
+  // table again as if its files had just been loaded.
   assert.match(
-    host,
-    /attach\(caseId, slot, table, sources\)/,
-    'the host is handed the files behind each table',
-  );
-  assert.match(
-    host,
-    /inventory\.recordTable\(caseId, slot, sources\)/,
-    'the host records each attached table in the inventory',
+    ATTACH_TS,
+    /attach\(\s*caseId: string,\s*slot: TableSlotKey,\s*table: unknown,\s*sources: readonly TableSource\[\]/,
+    'the attach is handed the files behind each table',
   );
   assert.equal(
-    occurrences(MAIN_TS, 'inventory.recordTable('),
+    occurrences(ATTACH_TS, 'inventory.recordTable('),
     1,
-    'tables are recorded at the ingest host only',
+    'tables are recorded at the attach module only, in its one commit helper',
   );
+  assert.equal(occurrences(MAIN_TS, 'inventory.recordTable('), 0, 'main records no table');
   // A drop's accepted files are logged as one event when the drop ends, so
   // the drop is closed on every exit, a throw included: behaviour in
   // test_drop_load.mjs, over the inventory the root hands it.

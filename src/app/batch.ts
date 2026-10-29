@@ -12,15 +12,30 @@
 // stale reply land in the wrong cube.
 
 import type { YearSpan } from '../model/calendar';
-import type { TableSlotKey } from '../model/case-model';
-import { spanLabel, type PlanWarning } from '../ingest';
+import { slotKey, type TableSlotKey } from '../model/case-model';
+import { unionSpan } from '../tables/append';
+import type { PlanWarning } from '../ingest';
+import { judgeSpan, resultingSpan } from './extend';
 
-/** One dropped table file as the Import Dialog left it: its Case name and slot
- * variant (possibly undefined). Nothing downstream re-derives either. */
+/** How a table meets a slot that already holds one: join it, or take its
+ * place, years and all. */
+export type AttachMode = 'add' | 'replace';
+
+/** One dropped table file as the Import Dialog left it: its Case name, slot
+ * variant (possibly undefined) and how it meets a loaded table (absent is
+ * `replace`). Nothing downstream re-derives any of them. */
 export interface Drop {
   file: File;
   caseName: string;
   variant?: string;
+  mode?: AttachMode;
+}
+
+/** What the host did with one table: `held` when it keeps an extension of
+ * its Case's years until the drop settles, and the notes the attach earned. */
+export interface AttachResult {
+  held: boolean;
+  notes: string[];
 }
 
 /** What an engine needs from the composition root, passed in at wiring time
@@ -30,17 +45,24 @@ export interface IngestHost {
   setBusy(message: string | null): void;
   /** The Case a dialog-assigned name points at, created on first use. */
   caseIdForName(name: string): string;
-  /** Attach a table to a Case slot, REPLACING any occupant: the dialog already
-   * warned the user, and a throw would silently drop every later table.
+  /** Attach a table to a Case slot. It ADDS to an occupant unless `mode` is
+   * `replace`, which takes the slot whole. A table that extends its Case's
+   * years may be held until the drop settles. A throw costs this table only.
    * `sources` are the files the table was built from: every member of its
    * merge group, in drop order. This is the only place a table's files are
-   * known, so it is where the root records them; axis widening re-attaches
-   * through the Case store directly and must not record again. */
-  attach(caseId: string, slot: TableSlotKey, table: unknown, sources: readonly TableSource[]): void;
-  /** The years the named Case's tables span outside `replacing`, the slots a
-   * table about to attach would take, and which table says so. `null` when
-   * the Case is not loaded or holds no other table. */
-  heldSpan(caseName: string, replacing: readonly TableSlotKey[]): HeldSpan | null;
+   * known, so it is where the root records them, and it records only what it
+   * commits; axis widening re-attaches through the Case store directly and
+   * must not record again. */
+  attach(
+    caseId: string,
+    slot: TableSlotKey,
+    table: unknown,
+    sources: readonly TableSource[],
+    mode: AttachMode,
+  ): Promise<AttachResult>;
+  /** The years each committed table of the named Case spans, by slot key,
+   * and which table says so. Empty when the Case is not loaded. */
+  spansOf(caseName: string): SlotSpan[];
 }
 
 /** A Case's years as one of its loaded tables states them. */
@@ -48,6 +70,11 @@ export interface HeldSpan {
   span: YearSpan;
   /** "SAMPLE_X's Area table". */
   holder: string;
+}
+
+/** One table's years, on the slot it fills (`slotKey`). */
+export interface SlotSpan extends HeldSpan {
+  slot: string;
 }
 
 /** What a file's own header or scan offered, and how much of it the batch
@@ -159,21 +186,22 @@ export function fileNote(name: string, message: string): string {
   return message.startsWith(`${name}:`) ? message : `${name}: ${message}`;
 }
 
-/** Attach every finished table, letting one failure cost only its own file
- * (a bare loop's first throw would drop every later table silently). Returns
- * the index of each table that threw, with its message. */
-export function commitAll<T>(
+/** Attach every finished table in turn, letting one failure cost only its
+ * own table (a bare loop's first throw would drop every later table
+ * silently). Sequential: each attach may read what the one before it
+ * committed. Returns the index of each table that threw, with its message. */
+export async function commitAll<T>(
   tables: readonly T[],
-  attach: (table: T, index: number) => void,
-): { index: number; message: string }[] {
+  attach: (table: T, index: number) => Promise<void>,
+): Promise<{ index: number; message: string }[]> {
   const failures: { index: number; message: string }[] = [];
-  tables.forEach((table, index) => {
+  for (let index = 0; index < tables.length; index++) {
     try {
-      attach(table, index);
+      await attach(tables[index], index);
     } catch (error) {
       failures.push({ index, message: error instanceof Error ? error.message : String(error) });
     }
-  });
+  }
   return failures;
 }
 
@@ -197,16 +225,17 @@ export function groupByCase(drops: readonly Drop[]): number[] {
 }
 
 /**
- * Refuse every merge group whose years differ from its Case's, before its
- * files are parsed or a picker is asked about them. A Case is one run of
- * years: a pane, a download and the date filter all read one span off it.
- * The Case's span is what its tables outside the group's slots state (a
- * replaced table's years go with it), else what an earlier group of this
- * batch for the same Case spans. The refused files fail with the refusal;
- * the survivors come back in order.
+ * Refuse every merge group whose years its Case cannot take, before its files
+ * are parsed or a picker is asked about them. A Case is one run of years: a
+ * pane, a download and the date filter all read one span off it. Each slot
+ * the group would fill is judged by `judgeSpan` against the Case's committed
+ * tables (outside the group's slots when it replaces, since a replaced
+ * table's years go with it), else against what an earlier group of this
+ * batch for the same Case spans. One slot refused refuses the group. The
+ * refused files fail with the refusal; the survivors come back in order.
  */
 export function keepSpans<D extends Drop, P extends YearSpan>(
-  host: Pick<IngestHost, 'heldSpan'>,
+  host: Pick<IngestHost, 'spansOf'>,
   outcome: IngestOutcome,
   kept: readonly D[],
   plans: readonly P[],
@@ -220,24 +249,34 @@ export function keepSpans<D extends Drop, P extends YearSpan>(
     const members = groupOf.flatMap((id, i) => (id === group ? [i] : []));
     const span = spanOfMembers(members.map((i) => plans[i]));
     const drop = kept[members[0]];
-    const held = claimed.get(drop.caseName) ?? host.heldSpan(drop.caseName, slotsOf(drop));
+    const mode = drop.mode ?? 'replace';
     const files = members.map((i) => kept[i].file);
     const names = files.map((file) => file.name);
-    if (held !== null && !sameSpan(held.span, span)) {
+    const committed = host.spansOf(drop.caseName);
+    const slots = slotsOf(drop).map(slotKey);
+    const skip = new Set(mode === 'replace' ? slots : []);
+    const caseSpan =
+      claimed.get(drop.caseName) ?? committed.find((entry) => !skip.has(entry.slot)) ?? null;
+    let note: string | undefined;
+    let result: YearSpan | undefined;
+    for (const slot of slots) {
+      const slotSpan = committed.find((entry) => entry.slot === slot)?.span ?? null;
+      const verdict = judgeSpan(span, slotSpan, caseSpan, mode, names);
+      if (!verdict.accept) {
+        note = verdict.note;
+        break;
+      }
+      const slotResult = resultingSpan(span, slotSpan, mode);
+      result = result === undefined ? slotResult : unionSpan(result, slotResult).span;
+    }
+    if (note !== undefined) {
       refused.add(group);
-      const who = names.length === 1 ? `${names[0]} spans` : `${names.join(' and ')} together span`;
-      outcome.failures.push({
-        files,
-        note:
-          `${who} ${spanLabel(span)}, but ${held.holder} spans ${spanLabel(held.span)}. One ` +
-          `Case holds one run of years; load ${names.length === 1 ? 'it as its' : 'them as their'} ` +
-          `own Case.`,
-      });
+      outcome.failures.push({ files, note });
       continue;
     }
     if (!claimed.has(drop.caseName)) {
       claimed.set(drop.caseName, {
-        span,
+        span: result ?? span,
         holder: `${names.join(' and ')}, in this drop for the same Case,`,
       });
     }
@@ -252,10 +291,6 @@ function spanOfMembers(members: readonly YearSpan[]): YearSpan {
   const first = Math.min(...members.map((span) => span.firstYear));
   const last = Math.max(...members.map((span) => span.firstYear + span.numYears - 1));
   return { firstYear: first, numYears: last - first + 1 };
-}
-
-function sameSpan(a: YearSpan, b: YearSpan): boolean {
-  return a.firstYear === b.firstYear && a.numYears === b.numYears;
 }
 
 /** The years a batch's files span, summed: each file's cube holds one slot

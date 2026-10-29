@@ -132,8 +132,11 @@ function setup({ answers = {}, readers = {}, axis = [] } = {}) {
     attach: {
       setBusy() {},
       caseIdForName: (name) => `case:${name}`,
-      attach: (caseId, slot, table) => attached.push({ caseId, slot, table }),
-      heldSpan: () => null,
+      async attach(caseId, slot, table) {
+        attached.push({ caseId, slot, table });
+        return { held: false, notes: [] };
+      },
+      spansOf: () => [],
     },
     // Read by the long kinds' metric state, which forgets with the last table.
     cases: { tablesOfKind: () => [] },

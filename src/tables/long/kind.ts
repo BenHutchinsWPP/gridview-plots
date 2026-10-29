@@ -69,6 +69,7 @@ export interface CaseAccumulator {
   /** `((entity * metrics + metric) * numYears + yearOffset) * 8784 + slotHour`:
    * one (entity, metric) plane's whole span is contiguous. */
   cube: Float32Array;
+  cellCoverage?: Uint8Array;
   /** Per span hour TOU code, 0xFF until a row covers the hour. */
   tou: Uint8Array;
   entitySeen: Uint8Array;

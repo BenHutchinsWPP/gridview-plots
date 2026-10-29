@@ -9,6 +9,7 @@
 // so a column's identity is the `Int32` bus number; the name is a label that
 // need not be unique.
 
+import { savedCellCoverage } from '../coverage';
 import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import type { HoursPresent, TouCodes } from '../../model/types';
 
@@ -16,6 +17,7 @@ import type { HoursPresent, TouCodes } from '../../model/types';
  * `bus` indexing `buses`. One bus's span is contiguous. */
 export interface BusTable {
   cube: Float32Array;
+  cellCoverage?: Uint8Array;
   /** The cube's bus axis: BusNumber ids in cube-index order. The IDENTITY. */
   buses: Int32Array;
   /** The label for each id, same order and length. Not an identity: two buses
@@ -64,6 +66,7 @@ export function serializeBusTable(table: BusTable): {
       sourceColumns: table.sourceColumns,
       quantity: table.quantity,
       presence: table.presence,
+      cellCoverage: table.cellCoverage,
       tou: table.tou,
       hoursPresent: table.hoursPresent,
     },
@@ -81,6 +84,7 @@ export function deserializeBusTable(fields: Record<string, unknown>, cube: Array
     sourceColumns: number[];
     quantity: string;
     presence: Uint8Array;
+    cellCoverage?: Uint8Array;
     tou: TouCodes;
     hoursPresent?: HoursPresent;
   };
@@ -108,6 +112,7 @@ export function deserializeBusTable(fields: Record<string, unknown>, cube: Array
   }
   return {
     cube: values,
+    cellCoverage: savedCellCoverage(entry.cellCoverage, values.length),
     buses: Int32Array.from(entry.buses),
     names: entry.names.slice(),
     presence: entry.presence,

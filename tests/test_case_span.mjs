@@ -18,7 +18,7 @@
 //   5. A cube's cost names its years: three years cost three times one.
 //
 // The drop runs through the real `createDropLoad`, `createIngestKinds`, Case
-// store, `heldSpan` and inventory. The wide headers are read by the real
+// store, `spansOf` and inventory. The wide headers are read by the real
 // reader; the long scan and both parses are scripted, because the pools'
 // Workers do not run under Node.
 //
@@ -42,9 +42,27 @@ const { sampleYears } = await import('../src/tables/long/sample-years.ts');
 const { CaseStore, caseForName } = await import('../src/model/case-model.ts');
 const { createInventory } = await import('../src/inventory/store.ts');
 const { cubeCost, megabytes } = await import('../src/ingest.ts');
+const { createTableAttach } = await import('../src/app/attach.ts');
+const { appendTableOf, appendSizeOf } = await import('../src/tables/registry.ts');
 const { classify, DETECT_PROBE_BYTES } = await import('../src/detect.ts');
 const areaWide = await import('../src/tables/area/wide.ts');
 const longPool = await import('../src/tables/long/pool.ts');
+
+/** The real attach over `store`: what a drop's tables land through. */
+function realAttach(store, inventory) {
+  return createTableAttach({
+    store,
+    inventory,
+    append: appendTableOf,
+    appendSize: appendSizeOf,
+    confirmMerge: async () => true,
+    tableLabel(caseId, slot) {
+      const owner = store.listCases().find((entry) => entry.id === caseId);
+      const kind = slot.kind.charAt(0).toUpperCase() + slot.kind.slice(1);
+      return `${owner.name}'s ${slot.variant ? `${kind} ${slot.variant}` : kind} table`;
+    },
+  });
+}
 
 let passed = 0;
 async function check(label, fn) {
@@ -65,22 +83,21 @@ async function yearsOfRows(file) {
 }
 
 /** A session: a real store, views and inventory behind a drop host whose
- * Import Dialog puts every file on `caseName`. */
-function session() {
+ * Import Dialog puts every file on `caseName`, each drop given `mode` when
+ * one is named. */
+function session(mode) {
   const store = new CaseStore();
   const views = createCaseViews(store);
   const inventory = createInventory(() => 0);
   const said = new Map();
+  const tableAttach = realAttach(store, inventory);
   const gate = { resolveRetained: async (_store, batch) => batch.union };
   const kinds = createIngestKinds({
     attach: {
       setBusy() {},
       caseIdForName: (name) => (caseForName(store.listCases(), name) ?? store.createCase(name)).id,
-      attach(caseId, slot, table, sources) {
-        store.attachTable(caseId, slot, table, { replace: true });
-        inventory.recordTable(caseId, slot, sources);
-      },
-      heldSpan: views.heldSpan,
+      attach: tableAttach.attach,
+      spansOf: tableAttach.spansOf,
     },
     cases: store,
     retainGates: { area: gate, bus: gate, generator: gate, interface: gate },
@@ -144,11 +161,19 @@ function session() {
     kindLabel: (kind) => kind,
     attachLookup: () => ({ alreadyKnown: 0, note: '' }),
     askImport: async (tables, cases) => ({
-      plans: planImports(tables, 'one-case', { caseName, existingCases: cases }),
+      plans: planImports(tables, 'one-case', {
+        caseName,
+        existingCases: cases,
+        attachMode: mode ?? 'replace',
+      }),
       limits: [],
       everything: false,
     }),
-    ingest: kinds.ingest,
+    ingest: (kind, shape, drops) =>
+      kinds.ingest(kind, shape, mode ? drops.map((d) => ({ ...d, mode })) : drops),
+    settleSpans: tableAttach.settle,
+    prepareTables: tableAttach.prepare,
+    discardHeld: tableAttach.discard,
     setSharedLimits: () => null,
     setCaseLimits: () => null,
     limitMatchNotes: () => [],
@@ -201,7 +226,7 @@ try {
   });
 
   await check('a file dropped onto a loaded Case is held to its span', async () => {
-    const s = session();
+    const s = session('replace');
     await s.load('SAMPLE_MIX', [fileOf('case-mixedrange-area-wide.csv')]);
     await s.load('SAMPLE_MIX', [fileOf('case-mixedrange-bus-long.csv')]);
     assert.deepEqual(s.slotsOf('SAMPLE_MIX'), ['area ']);
@@ -224,7 +249,7 @@ try {
   });
 
   await check("a replace of a Case's only table takes the new span", async () => {
-    const s = session();
+    const s = session('replace');
     await s.load('SAMPLE_SOLO', [fileOf('area-wide-multiyear.csv')]);
     assert.deepEqual(s.spanOf('SAMPLE_SOLO'), { firstYear: 2034, numYears: 3 });
     await s.load('SAMPLE_SOLO', [fileOf('area-wide.csv')]);
@@ -370,7 +395,7 @@ try {
 // ------------------------------------------------------- 3. inside one batch
 
 /** A wide reader whose plans state the spans in `spans`, by file name. */
-function spanReader(spans) {
+function spanReader(spans, tables = {}) {
   return {
     hasSimd: () => true,
     NO_SIMD_MESSAGE: 'no simd',
@@ -379,7 +404,11 @@ function spanReader(spans) {
     },
     async ingest(plans) {
       return {
-        cases: plans.map((plan) => ({ name: plan.file.name })),
+        cases: plans.map((plan) => ({
+          name: plan.file.name,
+          // A merge group's table states its members' years together.
+          ...(tables[plan.file.name] ?? { firstYear: plan.firstYear, numYears: plan.numYears }),
+        })),
         ok: plans.map((_, i) => i),
         warnings: [],
         failures: [],
@@ -388,27 +417,57 @@ function spanReader(spans) {
   };
 }
 
-function wideRun(spans, held = null) {
+/** A Case "S" in a real store whose committed Area table states `held`
+ * (null: no table), and the real attach, so a refusal that arrives at the
+ * drop's settle is the real one. */
+function sessionOf(held) {
+  const store = new CaseStore();
+  const id = store.createCase('S').id;
+  if (held !== null) store.attachTable(id, { kind: 'area' }, { ...held.span });
+  const views = createCaseViews(store);
+  const inventory = createInventory(() => 0);
+  const tableAttach = realAttach(store, inventory);
+  return { store, views, tableAttach };
+}
+
+function wideRun(spans, held = null, tables = {}) {
   const attached = [];
   const asked = [];
+  const { store, views, tableAttach } = sessionOf(held);
   const run = createWideIngest({
     setBusy() {},
-    caseIdForName: (name) => name,
-    attach: (caseId, slot, table) => attached.push(table.name),
-    heldSpan(caseName, replacing) {
-      asked.push(replacing);
-      return held;
+    caseIdForName: () => store.listCases()[0].id,
+    async attach(caseId, slot, table, sources, mode) {
+      const result = await tableAttach.attach(caseId, slot, table, sources, mode);
+      if (!result.held) attached.push(table.name);
+      return result;
+    },
+    spansOf(caseName) {
+      asked.push(caseName);
+      return views.spansOf(caseName);
     },
   });
   const batch = {
-    reader: spanReader(spans),
+    reader: spanReader(spans, tables),
     noun: 'bus',
     plural: 'buses',
     entities: async () => ({ entities: ['E1'] }),
     slot: (drop) => ({ kind: 'bus', variant: drop.variant }),
     refresh() {},
   };
-  return { attached, asked, run: (drops) => run(batch, drops) };
+  return {
+    attached,
+    asked,
+    store,
+    async run(drops) {
+      const outcome = await run(batch, drops);
+      for (const { outcome: settled } of await tableAttach.settle()) {
+        outcome.failures.push(...settled.failures);
+        outcome.warnings.push(...settled.warnings);
+      }
+      return outcome;
+    },
+  };
 }
 
 const file = (name) => ({ name });
@@ -434,10 +493,14 @@ await check("a second table for one Case in one batch is held to the first's spa
 });
 
 await check('a merge group spans its members together', async () => {
-  const held = { span: { firstYear: 2034, numYears: 2 }, holder: "S's Area table" };
+  const held = { span: { firstYear: 2034, numYears: 2 } };
   const { attached, asked, run } = wideRun(
     { 'h1.csv': { firstYear: 2034, numYears: 1 }, 'h2.csv': { firstYear: 2035, numYears: 1 } },
     held,
+    {
+      'h1.csv': { firstYear: 2034, numYears: 2 },
+      'h2.csv': { firstYear: 2034, numYears: 2 },
+    },
   );
   const outcome = await run([
     { file: file('h1.csv'), caseName: 'S', variant: 'LMP' },
@@ -445,18 +508,15 @@ await check('a merge group spans its members together', async () => {
   ]);
   assert.deepEqual(outcome.failures, [], '2034 and 2035 together are 2034-2035');
   assert.deepEqual(attached, ['h1.csv', 'h2.csv'], 'both reach the parse');
-  assert.deepEqual(
-    asked,
-    [[{ kind: 'bus', variant: 'LMP' }]],
-    'asked once for the group, excusing the slot it replaces',
-  );
+  assert.deepEqual(asked, ['S'], 'asked once for the group');
 
   const other = wideRun({ 'x.csv': { firstYear: 2034, numYears: 3 } }, held);
   const refused = await other.run([{ file: file('x.csv'), caseName: 'S', variant: 'LMP' }]);
-  assert.deepEqual(other.attached, []);
+  assert.deepEqual(other.attached, [], 'the extension is held, then refused at the settle');
+  assert.deepEqual([...other.store.listCases()[0].tables.keys()], ['area '], 'nothing attached');
   assert.match(
     refused.failures[0].note,
-    /^x\.csv spans 2034-2036, but S's Area table spans 2034-2035\./,
+    /^x\.csv would make this Case 2034-2036, but S's Area table spans 2034-2035\./,
   );
 });
 
@@ -464,18 +524,26 @@ await check('a long file may move the span only over the metric tables it replac
   // The Case holds one Bus table, LMP, over 2034-2035. A 2034-2036 file that
   // offers LMP and Load passes before the picker; after it, only a pick that
   // replaces LMP may take the Case's years.
-  const heldLmp = (replacing) =>
-    replacing.some((slot) => slot.variant === 'LMP')
-      ? null
-      : { span: { firstYear: 2034, numYears: 2 }, holder: "S's Bus LMP table" };
   const runWith = async (picked) => {
     const attached = [];
+    const store = new CaseStore();
+    const id = store.createCase('S').id;
+    store.attachTable(id, { kind: 'bus', variant: 'LMP' }, { firstYear: 2034, numYears: 2 });
+    const views = createCaseViews(store);
+    const tableAttach = realAttach(
+      store,
+      createInventory(() => 0),
+    );
     const engine = createEntityLongIngest(
       {
         setBusy() {},
-        caseIdForName: (name) => name,
-        attach: (caseId, slot) => attached.push(slot.variant),
-        heldSpan: (caseName, replacing) => heldLmp(replacing),
+        caseIdForName: () => id,
+        async attach(caseId, slot, table, sources, mode) {
+          const result = await tableAttach.attach(caseId, slot, table, sources, mode);
+          if (!result.held) attached.push(slot.variant);
+          return result;
+        },
+        spansOf: views.spansOf,
       },
       {
         reader: {
@@ -495,7 +563,9 @@ await check('a long file may move the span only over the metric tables it replac
         pickMetrics: async () => picked,
         async parse(plans, retained) {
           return {
-            cases: plans.map(() => retained.map((quantity) => ({ quantity }))),
+            cases: plans.map(() =>
+              retained.map((quantity) => ({ quantity, firstYear: 2034, numYears: 3 })),
+            ),
             ok: plans.map((_, i) => i),
             warnings: [],
             failures: [],
@@ -507,11 +577,18 @@ await check('a long file may move the span only over the metric tables it replac
     const outcome = await engine([{ file: file('bus.csv'), caseName: 'S' }], 'bus', {
       sig: { noun: { one: 'bus', many: 'buses' } },
     });
-    return { attached, outcome };
+    for (const { outcome: settled } of await tableAttach.settle()) {
+      outcome.failures.push(...settled.failures);
+    }
+    return { attached, outcome, store };
   };
   const narrow = await runWith(['Load']);
   assert.deepEqual(narrow.attached, []);
-  assert.match(narrow.outcome.failures[0].note, /^bus\.csv spans 2034-2036, but S's Bus LMP table/);
+  assert.deepEqual([...narrow.store.listCases()[0].tables.keys()], ['bus LMP']);
+  assert.match(
+    narrow.outcome.failures[0].note,
+    /^bus\.csv would make this Case 2034-2036, but S's Bus LMP table spans 2034-2035/,
+  );
   const whole = await runWith(['LMP', 'Load']);
   assert.deepEqual(whole.outcome.failures, []);
   assert.deepEqual(whole.attached, ['LMP', 'Load']);

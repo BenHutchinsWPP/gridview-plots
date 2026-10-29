@@ -59,6 +59,7 @@ export const finalizeGeneratorLong: Finalize<GeneratorLongResult> = (
   const generators = axis.slice();
   const data = planesByMetric(accumulator, axis.length).map((plane) => ({
     cube: plane.cube,
+    cellCoverage: plane.cellCoverage,
     generators,
     presence: plane.presence,
     tou: accumulator.tou,

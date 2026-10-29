@@ -3,6 +3,7 @@
 // The Interface table type, unit vocabulary, and save-envelope half. Unit
 // meaning is in `rules.ts`; drawing is in `series.ts`.
 
+import { savedCellCoverage } from '../coverage';
 import { savedHoursOnSlot, YEAR_SLOT_HOURS } from '../../model/calendar';
 import type { HoursPresent, TouCodes } from '../../model/types';
 
@@ -28,6 +29,7 @@ export interface UnitRule {
  * indexing `interfaces`; one interface's span is contiguous. */
 export interface InterfaceTable {
   cube: Float32Array;
+  cellCoverage?: Uint8Array;
   /** The cube's interface axis: the retained columns, in cube-index order. */
   interfaces: string[];
   /** One byte per interface: 1 = carried by this file, 0 = NaN-filled. Check
@@ -69,6 +71,7 @@ export function serializeInterfaceTable(table: InterfaceTable): {
       quantity: table.quantity,
       unit: table.unit,
       presence: table.presence,
+      cellCoverage: table.cellCoverage,
       tou: table.tou,
       hoursPresent: table.hoursPresent,
     },
@@ -89,6 +92,7 @@ export function deserializeInterfaceTable(
     quantity: string;
     unit: string;
     presence: Uint8Array;
+    cellCoverage?: Uint8Array;
     tou: TouCodes;
     hoursPresent?: HoursPresent;
   };
@@ -115,6 +119,7 @@ export function deserializeInterfaceTable(
 
   return {
     cube: values,
+    cellCoverage: savedCellCoverage(entry.cellCoverage, values.length),
     interfaces: entry.interfaces.slice(),
     presence: entry.presence,
     tou: slot.tou,

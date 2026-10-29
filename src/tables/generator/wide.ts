@@ -36,6 +36,7 @@ export function readCasePlan(file: File): Promise<CasePlan> {
 const finalizeGenerator: Finalize<GeneratorTable> = (wide: WideCase, plan: CasePlan) => ({
   data: {
     cube: wide.cube,
+    cellCoverage: wide.cellCoverage,
     generators: wide.entities,
     presence: wide.presence,
     tou: wide.tou,

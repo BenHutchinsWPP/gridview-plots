@@ -11,6 +11,9 @@ import type { YearSpan } from '../model/calendar';
 import { caseForName, slotKey, type TableKind } from '../model/case-model';
 import type { SampledYears } from '../tables/long/sample-years';
 import { TABLE_KINDS } from '../tables/registry';
+import { unionSpan } from '../tables/append';
+import type { AttachMode } from './batch';
+import { judgeSpan } from './extend';
 
 /** The table kinds the dialog routes to. Re-exported, never re-declared, so a
  *  new kind cannot be added to one copy and missed in another. */
@@ -66,6 +69,8 @@ export interface SlotCoverage {
 }
 
 export interface ImportModeParams {
+  /** A loaded table keeps its cells by default; replacement is explicit. */
+  attachMode?: AttachMode;
   /** 'one-case' mode (required for that mode): every file's case name. */
   caseName?: string;
   /** 'derive' mode: a filename glob with one `*` capturing the case name.
@@ -79,6 +84,7 @@ export interface ImportModeParams {
 }
 
 export interface ImportPlan {
+  mode: AttachMode;
   file: string;
   fileIndex?: number;
   caseName: string;
@@ -109,6 +115,7 @@ export interface ImportPlan {
    * `slotConflict`, which still blocks.
    */
   replacesExisting: boolean;
+  addsToExisting: boolean;
   replaceReason?: string;
   /** The file's years as the dialog shows them: a wide file's date line, or
    * a long file's sample (`sampled`). */
@@ -186,6 +193,7 @@ export function planImports(
 ): ImportPlan[] {
   const overrides = params.overrides ?? {};
   const existingCases = params.existingCases ?? [];
+  const attachMode = params.attachMode ?? 'add';
   const existingByName = new Map(existingCases.map((c) => [c.name, c]));
 
   const resolved: ResolvedFile[] = files.map((f, index) => {
@@ -247,7 +255,7 @@ export function planImports(
     else groups.set(groupKey, [r]);
   }
 
-  const spans = spanConflicts(resolved, groups, existingByName);
+  const spans = spanConflicts(resolved, groups, existingByName, attachMode);
 
   return resolved.map((r, index) => {
     const slotKeyStr = slotKeyFor(r.kind, r.variant);
@@ -278,20 +286,25 @@ export function planImports(
 
     // A loaded table at this slot is a replace (allowed), not a collision.
     let replacesExisting = false;
+    let addsToExisting = false;
     let replaceReason: string | undefined;
     if (existingCase?.occupiedSlots.includes(slotKeyStr)) {
-      replacesExisting = true;
+      replacesExisting = attachMode === 'replace';
+      addsToExisting = attachMode === 'add';
       const coverage = existingCase.slotHours?.[slotKeyStr];
       // Only a PARTIAL year gets the extra warning; unknown coverage gets none.
       const partial =
         coverage && coverage.covers < coverage.of
           ? ` It covers ${coverage.covers.toLocaleString()} of ${coverage.of.toLocaleString()} hours, ` +
-            `which a replace does not combine — drop date-split halves TOGETHER instead.`
+            `which replacement discards. Choose Add to keep those hours.`
           : '';
-      replaceReason = `Replaces the "${slotLabel(r.kind, r.variant)}" table already in this Case.${partial}`;
+      replaceReason = addsToExisting
+        ? `Adds to the loaded "${slotLabel(r.kind, r.variant)}" table. Loaded cells and TOU keep priority.`
+        : `Replaces the "${slotLabel(r.kind, r.variant)}" table already in this Case.${partial}`;
     }
 
     return {
+      mode: attachMode,
       file: r.file,
       fileIndex: index,
       ...(r.known ? { years: r.known.span, sampled: r.sampled } : {}),
@@ -306,6 +319,7 @@ export function planImports(
       conflictReason,
       merges,
       replacesExisting,
+      addsToExisting,
       replaceReason,
     };
   });
@@ -369,6 +383,7 @@ function spanConflicts(
   resolved: readonly ResolvedFile[],
   groups: ReadonlyMap<string, ResolvedFile[]>,
   existingByName: ReadonlyMap<string, ExistingCase>,
+  mode: AttachMode,
 ): Map<ResolvedFile, Pick<ImportPlan, 'spanConflict' | 'spanReason' | 'spanDetail' | 'splitTo'>> {
   const out = new Map<
     ResolvedFile,
@@ -376,16 +391,54 @@ function spanConflicts(
   >();
   const byCase = new Map<string, SpanUnit[]>();
   for (const members of groups.values()) {
-    const units = byCase.get(members[0].caseName) ?? [];
-    units.push(...runsOf(slotKeyFor(members[0].kind, members[0].variant), members));
-    byCase.set(members[0].caseName, units);
+    const first = members[0];
+    const units = byCase.get(first.caseName) ?? [];
+    const slot = slotKeyFor(first.kind, first.variant);
+    const loadedSpans = existingByName.get(first.caseName)?.slotSpans ?? {};
+    const loaded =
+      loadedSpans[slot] ??
+      (first.shape === 'L' && first.variant === undefined
+        ? Object.entries(loadedSpans).find(([key]) => key.startsWith(`${first.kind} `))?.[1]
+        : undefined);
+    for (const unit of runsOf(slot, members)) {
+      if (mode === 'add' && loaded && unit.known) {
+        const verdict = unit.known.whole
+          ? judgeSpan(
+              unit.known.span,
+              loaded,
+              null,
+              mode,
+              unit.members.map((m) => m.file),
+            )
+          : { accept: true as const };
+        if (!verdict.accept) {
+          for (const member of unit.members) {
+            out.set(member, {
+              spanConflict: true,
+              spanReason: 'These years cannot join the loaded table.',
+              spanDetail: verdict.note,
+              splitTo: `${first.caseName}_${spanLabel(unit.known.span)}`,
+            });
+          }
+        }
+        unit.known = { ...unit.known, span: unionSpan(loaded, unit.known.span).span };
+      }
+      units.push(unit);
+    }
+    byCase.set(first.caseName, units);
   }
   for (const [caseName, units] of byCase) {
     units.sort((a, b) => resolved.indexOf(a.members[0]) - resolved.indexOf(b.members[0]));
     const filled = new Set(units.map((unit) => unit.slot));
     let reference: { span: YearSpan; name: string; unit?: SpanUnit } | undefined;
     for (const [slot, span] of Object.entries(existingByName.get(caseName)?.slotSpans ?? {})) {
-      if (span && !filled.has(slot)) {
+      // A long entity file's metric picker decides its slots only at ingest.
+      const mayFill = units.some((unit) =>
+        unit.members.some(
+          (m) => m.shape === 'L' && m.variant === undefined && slot.startsWith(`${m.kind} `),
+        ),
+      );
+      if (span && !filled.has(slot) && !mayFill) {
         reference = { span, name: `this Case's loaded "${slot.trim()}" table` };
         break;
       }
@@ -417,6 +470,7 @@ function spanConflicts(
         : !inSpan(span.firstYear, reference.span) || !inSpan(last, reference.span);
       if (!differs) continue;
       for (const member of unit.members) {
+        if (out.has(member)) continue;
         const what = member.sampled
           ? `Its ${known.whole ? 'first and last' : 'sampled'} rows are dated ${spanLabel(span)}`
           : `Spans ${spanLabel(span)}`;

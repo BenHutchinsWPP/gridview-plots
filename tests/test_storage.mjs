@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import './test_loader.mjs';
 import { AREAS } from './test_fixtures.mjs';
 
+const coverageRegistry = await import('../src/tables/registry.ts');
 const { restoreBundle, readBundleFile } = await import('../src/storage/store.ts');
 const { buildManifest, casesFromManifest, BUNDLE_VERSION } =
   await import('../src/storage/envelope.ts');
@@ -1850,6 +1851,71 @@ await checkAsync('each kind names the manifest field its group map is saved unde
     assert.ok(field in manifest, `${kind}: ${field} is written`);
   }
   assert.equal(new Set(Object.values(GROUPS_FIELDS)).size, Object.keys(GROUPS_FIELDS).length);
+});
+
+check('per-cell ownership survives the bundle before another drop, for every kind', () => {
+  const sparse = (kind, name, hour, value) => {
+    const cube = new Float32Array(HOURS).fill(NaN);
+    cube[hour] = value;
+    const tou = new Uint8Array(HOURS).fill(0xff);
+    tou[hour] = 1;
+    const hoursPresent = new Uint8Array(HOURS);
+    hoursPresent[hour] = 1;
+    const data = {
+      cube,
+      tou,
+      hoursPresent,
+      presence: new Uint8Array([1]),
+      firstYear: 2035,
+      numYears: 1,
+      sourceColumns: [name],
+    };
+    if (kind === 'area') return { ...data, areas: ['SAMPLE_AREA'], metrics: [name] };
+    if (kind === 'bus')
+      return {
+        ...data,
+        buses: Int32Array.of(name === 'A' ? 1 : 2),
+        names: [name],
+        sourceColumns: [name === 'A' ? 1 : 2],
+        quantity: 'Load (MW)',
+      };
+    if (kind === 'generator') return { ...data, generators: [name], quantity: 'Energy (MWh)' };
+    return { ...data, interfaces: [name], quantity: 'Power Flow (MW)', unit: 'MW' };
+  };
+  for (const kind of ['area', 'bus', 'generator', 'interface']) {
+    const append = coverageRegistry.appendTableOf(kind);
+    const joined = append(sparse(kind, 'A', 0, NaN), sparse(kind, 'B', 1, 20)).table;
+    const store = new CaseStore();
+    const owner = store.createCase(`SAMPLE_${kind}`);
+    const key = { kind };
+    store.attachTable(owner.id, key, joined);
+    const loaded = roundTrip(store.listCases(), GROUPINGS_CSV).restored.cases[0].tables.get(
+      slotKey(key),
+    ).data;
+    assert.deepEqual(loaded.cellCoverage, joined.cellCoverage, `${kind}: packed ownership bytes`);
+    const result = append(loaded, sparse(kind, 'A', 1, 30));
+    assert.equal(result.table.cube[1], 30, `${kind}: later drop supplies the missing cell`);
+    assert.equal(result.table.cube[HOURS + 1], 20);
+    assert.equal(result.wrote, 1);
+    const blank = append(result.table, sparse(kind, 'A', 0, 999));
+    assert.ok(
+      Number.isNaN(blank.table.cube[0]),
+      `${kind}: explicit blank still wins after restore`,
+    );
+    const codec = coverageRegistry.tableKindEntry(kind);
+    const { fields, cube } = codec.serialize(joined);
+    assert.throws(
+      () => codec.deserialize({ ...fields, cellCoverage: new Uint8Array(1) }, cube.buffer.slice(0)),
+      /cell coverage/,
+    );
+    delete fields.cellCoverage;
+    const legacy = codec.deserialize(fields, cube.buffer.slice(0));
+    assert.equal(legacy.cellCoverage, undefined);
+    assert.ok(
+      Number.isNaN(append(legacy, sparse(kind, 'A', 1, 30)).table.cube[1]),
+      'unknown legacy blanks remain authoritative',
+    );
+  }
 });
 
 console.log(`\n${passed} checks passed.`);

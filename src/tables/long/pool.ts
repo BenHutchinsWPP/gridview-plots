@@ -9,6 +9,7 @@
 // The unit of work is a BYTE RANGE, so one file uses every core. The cube is
 // pre-filled with NaN so "never written" reads as no data, never as zeros.
 
+import { coverCell } from '../coverage';
 import { YEAR_SLOT_HOURS, TOU_LABELS, type YearSpan } from '../../model/calendar';
 import {
   dispatch,
@@ -263,6 +264,7 @@ export function createAccumulator(
     firstYear: span.firstYear,
     numYears: span.numYears,
     cube,
+    cellCoverage: new Uint8Array(Math.ceil(cube.length / 8)),
     tou: new Uint8Array(hours).fill(0xff),
     entitySeen: new Uint8Array(entityCount),
     hourSeen: new Uint8Array(hours),
@@ -378,7 +380,10 @@ export function blitBlock(
       const out = area * numMetrics * span + hour;
       for (let p = 0; p < planes; p++) {
         const metric = plan.slabPlan[plan.activePlanes[p]];
-        if (decision[groupOf[metric]]) cube[out + offsets[p]] = values[src + p];
+        if (decision[groupOf[metric]]) {
+          cube[out + offsets[p]] = values[src + p];
+          coverCell(accumulator.cellCoverage!, out + offsets[p]);
+        }
       }
       continue;
     }
@@ -389,10 +394,14 @@ export function blitBlock(
       out += offsets[0];
       for (let p = 0; p < planes; p++) {
         cube[out] = values[src + p];
+        coverCell(accumulator.cellCoverage!, out);
         out += step;
       }
     } else {
-      for (let p = 0; p < planes; p++) cube[out + offsets[p]] = values[src + p];
+      for (let p = 0; p < planes; p++) {
+        cube[out + offsets[p]] = values[src + p];
+        coverCell(accumulator.cellCoverage!, out + offsets[p]);
+      }
     }
   }
 }

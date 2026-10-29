@@ -16,14 +16,12 @@ import {
   caseForName,
   caseLabel,
   rowsOfKind,
-  slotKey,
   slotLabel,
   type CaseStore,
   type TableRow,
-  type TableSlotKey,
 } from '../model/case-model';
 import { spanOfTable, type YearSpan } from '../model/calendar';
-import type { HeldSpan } from './batch';
+import type { SlotSpan } from './batch';
 import { NO_YEAR } from './boxes';
 
 /** One loaded Area table together with the Case that owns it. */
@@ -63,7 +61,7 @@ export function createCaseViews(store: CaseStore) {
   /** The first table's span that states one. Every table of a Case spans
    * the same years: an ingest batch refuses a file whose span differs from
    * its Case's before it attaches (`keepSpans` in `./batch.ts`, through
-   * `heldSpan` below). */
+   * `spansOf` below). */
   function statedSpan(owner: { tables: Map<string, { data: unknown }> }): YearSpan | null {
     for (const slot of owner.tables.values()) {
       const span = spanOfTable(slot.data);
@@ -72,22 +70,21 @@ export function createCaseViews(store: CaseStore) {
     return null;
   }
 
-  /** The span the named Case's tables state outside `replacing`, and which
-   * table states it. The Case is found as `caseIdForName` in `main.ts` finds
-   * it, so the check reads the Case the table would attach to. */
-  function heldSpan(caseName: string, replacing: readonly TableSlotKey[]): HeldSpan | null {
+  /** Each table of the named Case with the span it states, by slot key, and
+   * which table states it. The Case is found as `caseIdForName` in `main.ts`
+   * finds it, so the check reads the Case the table would attach to. */
+  function spansOf(caseName: string): SlotSpan[] {
     const owner = caseForName(store.listCases(), caseName);
-    if (owner === undefined) return null;
-    const skip = new Set(replacing.map(slotKey));
+    if (owner === undefined) return [];
+    const out: SlotSpan[] = [];
     for (const [key, slot] of owner.tables) {
-      if (skip.has(key)) continue;
       const span = spanOfTable(slot.data);
       if (span === null) continue;
       const kind = slot.key.kind.charAt(0).toUpperCase() + slot.key.kind.slice(1);
       const table = slot.key.variant ? `${kind} ${slot.key.variant}` : kind;
-      return { span, holder: `${caseLabel(owner)}'s ${table} table` };
+      out.push({ slot: key, span, holder: `${caseLabel(owner)}'s ${table} table` });
     }
-    return null;
+    return out;
   }
 
   /** A Case's years, for the box-plot partition and every hour count. */
@@ -152,7 +149,7 @@ export function createCaseViews(store: CaseStore) {
       return names;
     },
     spanOfCase,
-    heldSpan,
+    spansOf,
     loadedYears,
     loadedSpans,
     /** A Case's label by id. A Case already gone (a row outliving it) says so

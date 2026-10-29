@@ -52,23 +52,31 @@ import * as generatorWide from './tables/generator/wide';
 import * as interfacePool from './tables/interface/pool';
 import type { Filters } from './model/types';
 import { BOX_DIMS, type AreaQuery, type BoxDim } from './tables/area/types';
-import { caseForName, CaseStore, type TableKind } from './model/case-model';
+import {
+  caseForName,
+  caseLabel,
+  CaseStore,
+  type TableKind,
+  type TableSlotKey,
+} from './model/case-model';
 import type { EditorApplied } from './ui/membership-editor';
 import { reindexCase, sameAxis } from './tables/area/axis';
+import type { AreaTable } from './tables/area/types';
 import { seriesCapMessage, type SlotType } from './ui/charts';
 import { showGroupEditor } from './tables/area/ui/groups';
 import { readCsvHeader, showGroupingsMapping } from './ui/groupings-mapping';
 import { mountSection } from './ui/section';
 import { createScratchPool, createSeriesPool } from './series/pool';
 import { showImportDialog } from './ui/import-dialog';
-import { createRetainGates } from './tables/registry';
+import { appendSizeOf, appendTableOf, createRetainGates } from './tables/registry';
+import { createTableAttach } from './app/attach';
 import { createInventory, groupsInput } from './inventory/store';
 import { showContentsPanel } from './ui/contents-panel';
 import { createChrome, createSectionHost } from './ui/shell';
 import { createBrowseDrawer, type HourlyDownload } from './ui/browse-drawer';
 import { exportHourly } from './app/hourly-export';
 import { openFigureDialog } from './figure/dialog';
-import { confirmLargeDownload } from './ui/confirm-allocation';
+import { confirmLargeAllocation, confirmLargeDownload } from './ui/confirm-allocation';
 import { within } from './ui/dom';
 import {
   restorePins,
@@ -165,6 +173,7 @@ function adoptAxis(axis: string[]): void {
   for (const entry of areaCases()) {
     caseStore.attachTable(entry.id, AREA_SLOT, reindexCase(entry.data, axis), { replace: true });
   }
+  tableAttach.reindexHeld('area', (table) => reindexCase(table as AreaTable, axis));
   setAxis(axis);
 }
 
@@ -497,17 +506,32 @@ function caseIdForName(name: string): string {
   return (existing ?? caseStore.createCase(name)).id;
 }
 
+/** The table label a refusal names: "SAMPLE_X's Generator LMP table". */
+function tableLabel(caseId: string, slot: TableSlotKey): string {
+  const owner = caseStore.listCases().find((entry) => entry.id === caseId);
+  const kind = slot.kind.charAt(0).toUpperCase() + slot.kind.slice(1);
+  return `${owner ? caseLabel(owner) : 'the Case'}'s ${slot.variant ? `${kind} ${slot.variant}` : kind} table`;
+}
+
+/** Where a table lands on its Case slot, joined or replacing, with a Case's
+ * extensions held until the drop settles. */
+const tableAttach = createTableAttach({
+  store: caseStore,
+  inventory,
+  append: appendTableOf,
+  appendSize: appendSizeOf,
+  confirmMerge: confirmLargeAllocation,
+  tableLabel,
+});
+
 /** The host both ingest engines attach through: the progress line, Case
  * naming, a Case's years, and table attachment, recorded with the files
  * behind the table. */
 const ingestHost: IngestHost = {
   setBusy,
   caseIdForName,
-  attach(caseId, slot, table, sources) {
-    caseStore.attachTable(caseId, slot, table, { replace: true });
-    inventory.recordTable(caseId, slot, sources);
-  },
-  heldSpan: views.heldSpan,
+  attach: tableAttach.attach,
+  spansOf: tableAttach.spansOf,
 };
 
 /** One retain gate per kind, built once. Not on a section: which columns a
@@ -588,6 +612,9 @@ const dropLoad = createDropLoad({
   },
   askImport: showImportDialog,
   ingest: ingestKinds.ingest,
+  prepareTables: tableAttach.prepare,
+  settleSpans: tableAttach.settle,
+  discardHeld: tableAttach.discard,
   setSharedLimits: (table) => limitsStore.setSharedLimits(table),
   setCaseLimits: (caseId, table) => limitsStore.setCaseLimits(caseId, table),
   limitMatchNotes: drawnLimits.limitMatchNotes,

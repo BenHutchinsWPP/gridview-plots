@@ -20,6 +20,7 @@ export interface MetricPlane {
   /** `cube[(entity * numYears + yearOffset) * 8784 + slotHour]`, the shape a
    * one-quantity table wants. */
   cube: Float32Array;
+  cellCoverage?: Uint8Array;
   /** One byte per entity, the same bitmap the wide reader produces. */
   presence: Uint8Array;
 }
@@ -46,12 +47,20 @@ export function planesByMetric(accumulator: CaseAccumulator, entityCount: number
     if (!plan.presence[metric]) continue;
     const values = new Float32Array(entityCount * span);
     const presence = new Uint8Array(entityCount);
+    const cellCoverage = accumulator.cellCoverage
+      ? new Uint8Array(Math.ceil(values.length / 8))
+      : undefined;
     for (let entity = 0; entity < entityCount; entity++) {
       const from = (entity * numMetrics + metric) * span;
       values.set(cube.subarray(from, from + span), entity * span);
+      if (cellCoverage)
+        cellCoverage.set(
+          accumulator.cellCoverage!.subarray(from / 8, (from + span) / 8),
+          (entity * span) / 8,
+        );
       presence[entity] = entitySeen[entity] ? 1 : 0;
     }
-    out.push({ quantity: plan.metrics[metric], cube: values, presence });
+    out.push({ quantity: plan.metrics[metric], cube: values, cellCoverage, presence });
   }
   return out;
 }

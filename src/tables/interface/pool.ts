@@ -69,6 +69,7 @@ export function readCasePlan(file: File): Promise<CasePlan> {
 const finalizeInterface: Finalize<InterfaceTable> = (wide: WideCase, plan: CasePlan) => ({
   data: {
     cube: wide.cube,
+    cellCoverage: wide.cellCoverage,
     interfaces: wide.entities,
     presence: wide.presence,
     tou: wide.tou,
@@ -99,6 +100,7 @@ export function finalizeCase(
   return {
     data: {
       cube: shaped.data.cube,
+      cellCoverage: shaped.data.cellCoverage,
       interfaces: shaped.data.entities,
       presence: shaped.data.presence,
       tou: shaped.data.tou,

@@ -145,7 +145,7 @@ export function createWideIngest(host: IngestHost): RunWideBatch {
       // P2. `result.cases[i]` came from `plans[result.ok[i]]`, the first
       // member of its merge group; the table's sources are the whole group.
       const retained = new Set(entities.map((name) => name.trim()));
-      const commits = commitAll(result.cases, (table, index) => {
+      const commits = await commitAll(result.cases, async (table, index) => {
         const at = result.ok[index];
         const drop = kept[at];
         const sources = groupMembers(kept, at).map((member) => ({
@@ -153,8 +153,16 @@ export function createWideIngest(host: IngestHost): RunWideBatch {
           shape: 'W' as const,
           counts: countKept(plans[member].header.entityNames, retained, 'entities'),
         }));
-        host.attach(host.caseIdForName(drop.caseName), batch.slot(drop), table, sources);
+        const { notes } = await host.attach(
+          host.caseIdForName(drop.caseName),
+          batch.slot(drop),
+          table,
+          sources,
+          drop.mode ?? 'replace',
+        );
         for (const source of sources) attached.add(source.file);
+        const files = sources.map((source) => source.file);
+        for (const note of notes) outcome.warnings.push({ files, note });
       });
       for (const failure of commits) {
         outcome.failures.push({
@@ -163,7 +171,7 @@ export function createWideIngest(host: IngestHost): RunWideBatch {
         });
       }
       batch.refresh();
-      outcome.warnings = warningsOf(result.warnings, (index) => kept[index].file);
+      outcome.warnings.push(...warningsOf(result.warnings, (index) => kept[index].file));
       return outcome;
     } catch (error) {
       outcome.refusal = refusalOf(

@@ -330,6 +330,12 @@ export function createInventory(now: () => number = () => Date.now()) {
     filled: Map<string, number>;
     partial: Map<string, { failed: number; reason?: string; input?: string }>;
     notes: string[];
+    /** Warnings naming files with no record yet. A table recorded later in
+     * the drop moves each onto its records; `endDrop` puts what is left on
+     * the drop's notes. */
+    held: { files: File[]; note: string }[];
+    /** Files this drop logged `refused`. */
+    refused: WeakSet<object>;
     /** Where this drop's own events start in `log`, so a bundle restored
      * mid-drop keeps them when the Log becomes the bundle's. */
     logStart: number;
@@ -445,6 +451,7 @@ export function createInventory(now: () => number = () => Date.now()) {
   /** Files turned away: never recorded, only logged. */
   function logRefused(files: readonly File[], reason: string): void {
     if (files.length > 0) append({ event: 'refused', files: files.map(logFile), reason });
+    for (const file of files) drop?.refused.add(file);
   }
 
   /** Files the user took out of the load (removed, or a dialog cancelled):
@@ -474,6 +481,17 @@ export function createInventory(now: () => number = () => Date.now()) {
   function noteDrop(note: string): void {
     if (drop === null) append({ event: 'loaded', files: [], notes: [note] });
     else if (!drop.notes.includes(note)) drop.notes.push(note);
+  }
+
+  /** Files just recorded take the notes that waited for them. */
+  function placeHeld(recorded: readonly File[]): void {
+    if (drop === null) return;
+    for (const wait of drop.held) {
+      const now = wait.files.filter((file) => recorded.includes(file));
+      noteFiles(now, wait.note);
+      wait.files = wait.files.filter((file) => !now.includes(file));
+    }
+    drop.held = drop.held.filter((wait) => wait.files.length > 0);
   }
 
   const cellFile = (id: string): CellFile => ({ id, name: (records.get(id) as FileRecord).name });
@@ -521,10 +539,17 @@ export function createInventory(now: () => number = () => Date.now()) {
 
     /**
      * A table was attached at (Case, slot), built from `sources`. Replaces
-     * whatever that slot listed before: the slot now holds this table.
+     * whatever that slot listed before: the slot now holds this table. With
+     * `merge` the slot keeps what it listed and adds `sources` after it
+     * (a file already listed counts once), and nothing is logged `replaced`.
      */
-    recordTable(caseId: string, slot: InventorySlot, sources: readonly TableSource[]): void {
-      const ids = sources.map((source) => {
+    recordTable(
+      caseId: string,
+      slot: InventorySlot,
+      sources: readonly TableSource[],
+      opts: { merge?: boolean } = {},
+    ): void {
+      const added = sources.map((source) => {
         const record = recordFor(source.file);
         record.kind = slot.kind;
         record.shape = source.shape;
@@ -534,8 +559,20 @@ export function createInventory(now: () => number = () => Date.now()) {
         }
         return record.id;
       });
+      const before = opts.merge ? (slots.get(caseId)?.get(slotId(slot))?.records ?? []) : [];
+      const ids = [...before];
+      for (const id of added) if (!ids.includes(id)) ids.push(id);
       setSlot(caseId, slot, ids);
-      touch(ids);
+      touch(added);
+      placeHeld(sources.map((source) => source.file));
+    },
+
+    /** The file names behind each slot of a Case, in slot order. */
+    slotFileNames(caseId: string): { slot: InventorySlot; names: string[] }[] {
+      return [...(slots.get(caseId)?.values() ?? [])].map((entry) => ({
+        slot: { ...entry.slot },
+        names: entry.records.map((id) => records.get(id)?.name ?? NOT_RECORDED),
+      }));
     },
 
     /** A per-Case input file that is not an hourly table (a Case's own limits),
@@ -765,6 +802,8 @@ export function createInventory(now: () => number = () => Date.now()) {
         filled: new Map(),
         partial: new Map(),
         notes: [],
+        held: [],
+        refused: new WeakSet(),
         logStart: log.length,
       };
     },
@@ -774,6 +813,9 @@ export function createInventory(now: () => number = () => Date.now()) {
     endDrop(): void {
       if (drop === null) return;
       const ended = drop;
+      for (const wait of ended.held) {
+        if (!wait.files.every((file) => ended.refused.has(file))) noteDrop(wait.note);
+      }
       drop = null;
       writeDrop(ended, ended.notes);
     },
@@ -783,7 +825,9 @@ export function createInventory(now: () => number = () => Date.now()) {
      * accepted makes it `partial`; one naming only files that loaded nothing
      * refuses them with its note (each merge member with the group's). A
      * stop skips its files. A warning goes on the records it names, and one
-     * that names none, or only files that loaded nothing, goes on the drop.
+     * that names none goes on the drop. One naming files with no record yet
+     * waits for a later table in the drop to record them, and at `endDrop`
+     * goes on the drop unless every such file was refused.
      */
     recordOutcome(outcome: IngestOutcome): void {
       const accepted = (file: File): string | undefined => {
@@ -817,7 +861,11 @@ export function createInventory(now: () => number = () => Date.now()) {
       }
       for (const warning of outcome.warnings) {
         const unplaced = noteFiles(warning.files, warning.note);
-        if (warning.files.length === 0 || unplaced.length > 0) noteDrop(warning.note);
+        if (warning.files.length === 0) noteDrop(warning.note);
+        else if (unplaced.length > 0) {
+          if (drop === null) noteDrop(warning.note);
+          else drop.held.push({ files: unplaced, note: warning.note });
+        }
       }
     },
 

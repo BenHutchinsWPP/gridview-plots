@@ -895,4 +895,27 @@ async function runShape(bytes, axis, retained = null, blockBytes = 4096, span = 
   ok(`${RATIO} computed for ${compared} live cells; zero denominators absent and reported`);
 }
 
+{
+  const { hasCell, coverCell } = await import('../src/tables/coverage.ts');
+  const { createAccumulator } = await import('../src/tables/long/pool.ts');
+  const metrics = ['Export Flow (MWh)', 'Import Flow(MWh)', 'Export - Import'];
+  const columnPlan = {
+    metrics,
+    presence: Uint8Array.of(1, 1, 0),
+    activePlanes: Int32Array.of(0, 1),
+    slabPlan: Int32Array.of(0, 1),
+    sourceMetricCount: 2,
+  };
+  const acc = createAccumulator(columnPlan, 1, { firstYear: 2035, numYears: 1 });
+  coverCell(acc.cellCoverage, 0);
+  coverCell(acc.cellCoverage, 1);
+  coverCell(acc.cellCoverage, HOURS);
+  // Both operands at hour 0 are explicit blanks. Only the first operand
+  // was offered at hour 1, so its derived cell is still available later.
+  applyDerived(acc);
+  assert.equal(hasCell(acc.cellCoverage, 2 * HOURS), true);
+  assert.equal(hasCell(acc.cellCoverage, 2 * HOURS + 1), false);
+  ok('a derived Area cell is owned only where both operand cells were offered');
+}
+
 console.log(`\n${checks} checks passed`);

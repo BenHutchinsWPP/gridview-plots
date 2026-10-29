@@ -322,4 +322,27 @@ const JUL1 = 182 * 24;
   ok("coverage counts real hours: a non-leap Feb 29 is no gap, a leap year's missing one is");
 }
 
+{
+  const { appendEntityTable } = await import('../src/tables/append.ts');
+  const { hasCell } = await import('../src/tables/coverage.ts');
+  const initial = merge([
+    half(`${KEYS},P01`, ['1/1/2035,1,OffPeak,']),
+    half(`${KEYS},P02`, ['1/1/2035,2,OffPeak,20']),
+  ]).data;
+  assert.equal(hasCell(initial.cellCoverage, 0), true, 'a blank is an offered cell');
+  assert.equal(hasCell(initial.cellCoverage, 1), false, 'another plane cannot claim this hour');
+  const fresh = merge([
+    half(`${KEYS},P01`, ['1/1/2035,1,OffPeak,999', '1/1/2035,2,OffPeak,30']),
+  ]).data;
+  const result = appendEntityTable(
+    { ...initial, keys: initial.entities },
+    { ...fresh, keys: fresh.entities },
+  );
+  assert.ok(Number.isNaN(result.merged.cube[0]));
+  assert.equal(result.merged.cube[1], 30);
+  assert.equal(result.merged.cube[YEAR_SLOT_HOURS + 1], 20);
+  assert.equal(result.merged.wrote, 1);
+  ok('a wide region/date merge retains blank ownership for a later drop');
+}
+
 console.log(`\n${checks} checks passed.`);

@@ -58,6 +58,7 @@ const finalizeArea: Finalize<AreaTable> = (wide: WideCase) => {
     data: {
       // Adopted, not copied.
       cube: wide.cube,
+      cellCoverage: wide.cellCoverage,
       areas: wide.entities,
       metrics: [metric],
       presence: wide.presence,

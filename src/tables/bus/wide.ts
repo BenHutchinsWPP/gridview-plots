@@ -140,6 +140,7 @@ export async function readCasePlan(file: File): Promise<CasePlan> {
 const finalizeBus: Finalize<BusTable> = (wide: WideCase, plan: CasePlan) => ({
   data: {
     cube: wide.cube,
+    cellCoverage: wide.cellCoverage,
     buses: Int32Array.from(wide.entities, (id) => Number(id)),
     names: namesFor(plan, wide.entities),
     presence: wide.presence,

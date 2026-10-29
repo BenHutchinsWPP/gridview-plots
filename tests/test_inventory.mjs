@@ -343,11 +343,11 @@ check('a drop logs one `loaded` naming its files, with the notes that named none
   assert.equal(log[0].reason, 'SAMPLE_refused.csv: no header');
   assert.equal(log[0].files[0].id, undefined, 'a refused file has no record to open');
   assert.deepEqual(names(log[1]), ['SAMPLE_a.csv', 'SAMPLE_b.csv']);
-  assert.deepEqual(log[1].notes, [
-    'kept 3 of 4 metrics',
-    'about a file that loaded nothing',
-    'said by the root',
-  ]);
+  assert.deepEqual(
+    log[1].notes,
+    ['kept 3 of 4 metrics', 'said by the root'],
+    'a note naming only a refused file is dropped: the refusal says it',
+  );
   const aId = log[1].files[0].id;
   assert.deepEqual(inventory.detail(aId).notes, ['about a'], "a file's own note stays on it");
   assert.match(log[1].at, /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/);
@@ -887,6 +887,70 @@ check('Copy: a value a spreadsheet would read as a formula pastes as text', () =
     [`'=HYPERLINK("x").csv`, `'-5 MW.csv`, `'"quoted.csv`, `''draft.csv`],
   );
   assert.equal(loaded[0]['Size (bytes)'], '10', 'a number stays a number');
+});
+
+// ------------------------------------------------------------------ appending to a slot
+
+const sampleBundle = (slots) => savedWith({ records: ['SAMPLE_old.csv'], slots });
+
+check('a merge records after the old files, once each, and logs no replacement', () => {
+  const inventory = createInventory(() => 0);
+  const slot = { kind: 'alpha', variant: 'Load' };
+  restoreInto(inventory, sampleBundle([{ case: 0, slot, records: ['r1'] }]), [{ id: 'c1' }]);
+  const added = file('SAMPLE_new.csv');
+  inventory.recordTable('c1', slot, [wide(added)], { merge: true });
+  inventory.recordTable('c1', slot, [wide(added)], { merge: true });
+  assert.deepEqual(inventory.slotFileNames('c1'), [
+    { slot, names: ['SAMPLE_old.csv', 'SAMPLE_new.csv'] },
+  ]);
+  assert.ok(!inventory.log(CONTEXT).some((line) => line.event === 'replaced'));
+  inventory.recordTable('c1', slot, [wide(file('SAMPLE_other.csv'))]);
+  assert.deepEqual(inventory.slotFileNames('c1')[0].names, ['SAMPLE_other.csv']);
+  assert.ok(inventory.log(CONTEXT).some((line) => line.event === 'replaced'));
+});
+
+check('a note that waited for a file lands on its record when a table records it', () => {
+  const inventory = createInventory(() => 0);
+  const f = file('SAMPLE_held.csv');
+  inventory.beginDrop();
+  inventory.recordOutcome({ failures: [], warnings: [{ files: [f], note: 'held note' }] });
+  inventory.recordTable('c1', { kind: 'alpha' }, [wide(f)]);
+  inventory.endDrop();
+  const id = inventory.pivot(CASES, COLUMNS).rows[0].cells[0].lines[0].files[0].id;
+  assert.deepEqual(inventory.record(id).notes, ['held note']);
+  assert.deepEqual(inventory.log(CONTEXT).at(-1).notes, []);
+});
+
+check('a held note naming a file never recorded goes on the drop, unless it was refused', () => {
+  const inventory = createInventory(() => 0);
+  const lost = file('SAMPLE_lost.csv');
+  const refused = file('SAMPLE_refused.csv');
+  inventory.beginDrop();
+  inventory.recordOutcome({
+    failures: [],
+    warnings: [
+      { files: [lost], note: 'about lost' },
+      { files: [refused], note: 'about refused' },
+    ],
+  });
+  inventory.logRefused([refused], 'bad');
+  inventory.endDrop();
+  const notes = inventory.log(CONTEXT).flatMap((line) => line.notes);
+  assert.deepEqual(notes, ['about lost']);
+});
+
+check('slotFileNames lists each slot of a Case, and nothing for another', () => {
+  const inventory = createInventory(() => 0);
+  inventory.recordTable('c1', { kind: 'alpha' }, [wide(file('SAMPLE_a.csv'))]);
+  inventory.recordTable('c1', { kind: 'beta', variant: 'Q1' }, [
+    wide(file('SAMPLE_b.csv')),
+    wide(file('SAMPLE_c.csv')),
+  ]);
+  assert.deepEqual(inventory.slotFileNames('c1'), [
+    { slot: { kind: 'alpha' }, names: ['SAMPLE_a.csv'] },
+    { slot: { kind: 'beta', variant: 'Q1' }, names: ['SAMPLE_b.csv', 'SAMPLE_c.csv'] },
+  ]);
+  assert.deepEqual(inventory.slotFileNames('c2'), []);
 });
 
 console.log(`\n${passed} checks passed.`);

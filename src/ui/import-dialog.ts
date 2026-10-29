@@ -204,6 +204,22 @@ export function showImportDialog(
     bulkBar.appendChild(patternWrap);
     modal.appendChild(bulkBar);
 
+    const attachMode = document.createElement('select');
+    attachMode.setAttribute('aria-label', 'Loaded tables');
+    for (const [value, text] of [
+      ['add', 'Add to loaded tables'],
+      ['replace', 'Replace loaded tables'],
+    ]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = text;
+      attachMode.appendChild(option);
+    }
+    const attachWrap = labelled('Loaded tables', attachMode);
+    attachWrap.hidden = !existingCases.some((entry) => entry.occupiedSlots.length > 0);
+    modal.appendChild(attachWrap);
+    attachMode.addEventListener('change', refresh);
+
     // ------------------------------------------------------------ file rows
     //
     // THREE COLUMNS: file, Case, what was detected. A row says nothing else
@@ -540,6 +556,7 @@ export function showImportDialog(
         };
       });
       return {
+        attachMode: attachMode.value === 'replace' ? 'replace' : 'add',
         caseName: oneCaseInput.value.trim() || (activeRows[0]?.seedName ?? ''),
         pattern: patternInput.value === '' ? '*' : patternInput.value,
         overrides,
@@ -569,6 +586,7 @@ export function showImportDialog(
 
       let conflicts = 0;
       let replaces = 0;
+      let adds = 0;
       const caseNames = new Set<string>();
       // A disabled input looks editable until styled, so the caption greys.
       caseHead.classList.toggle('modal-label-computed', mode !== 'individual');
@@ -600,9 +618,10 @@ export function showImportDialog(
         row.spanText.textContent = plan.spanReason ?? '';
         row.splitButton.hidden = plan.splitTo === undefined;
         row.splitButton.textContent = `Move to Case "${plan.splitTo ?? ''}"`;
-        row.replaceLine.textContent = plan.replacesExisting ? (plan.replaceReason ?? '') : '';
+        row.replaceLine.textContent = plan.replaceReason ?? '';
         if (plan.slotConflict || plan.spanConflict) conflicts++;
         if (plan.replacesExisting) replaces++;
+        if (plan.addsToExisting) adds++;
       });
 
       // Cases a limits file may be pinned to: every target in row order, then
@@ -659,6 +678,9 @@ export function showImportDialog(
           : '') +
         (replaces > 0
           ? ` · ${replaces} file${replaces === 1 ? '' : 's'} will REPLACE a table already loaded`
+          : '') +
+        (adds > 0
+          ? ` · ${adds} file${adds === 1 ? '' : 's'} will ADD to a table already loaded`
           : '') +
         (limitFiles.length > 0 ? ` · ${limitFiles.length} limit file(s)` : '') +
         // Not blocking (the store replaces by decision), but said out loud.
