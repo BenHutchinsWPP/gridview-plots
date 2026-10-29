@@ -17,6 +17,7 @@
 // does not need a module.
 
 import { cellValue } from '../../lookups/merge';
+import { reverseMemberships } from '../../lookups/memberships';
 import { splitCsvLine } from '../../lookups/parse';
 import { BUS_LIST } from '../../lookups/schema';
 import type { LookupTable } from '../../lookups/types';
@@ -484,4 +485,8 @@ export function clearBusGroups(): void {
   groupToBuses = new Map();
   unresolvedNameRows = [];
   chosenMapping = undefined;
+}
+
+export function busMemberships() {
+  return reverseMemberships(groupToBuses);
 }

@@ -13,7 +13,13 @@
 //   * **A tick does not rebuild the list**, which would scroll it back to its
 //     top. `setTicked` updates the boxes in place for a write made elsewhere.
 
-import { containsAnyToken, textTokens, valueLabel, type BrowseColumn } from './browse-model';
+import {
+  columnFilterValues,
+  containsAnyToken,
+  textTokens,
+  valueLabel,
+  type BrowseColumn,
+} from './browse-model';
 
 /** Items listed before the rest are counted instead. */
 const LIMIT = 100;
@@ -27,21 +33,35 @@ export function distinctValues(column: BrowseColumn, rowCount: number): string[]
   const values: string[] = [];
   let blank = false;
   for (let row = 0; row < rowCount; row++) {
-    const value = column.value(row);
-    const text = value === null ? '' : String(value).trim();
-    if (text === '') blank = true;
-    else if (!seen.has(text)) {
-      seen.add(text);
-      values.push(text);
+    for (const text of columnFilterValues(column, row)) {
+      if (text === '') blank = true;
+      else if (!seen.has(text)) {
+        seen.add(text);
+        values.push(text);
+      }
     }
   }
   values.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   return blank ? [...values, ''] : values;
 }
 
+/** Retain missing selections so mapping edits cannot strand a filter. */
+export function checklistChoices(
+  column: BrowseColumn,
+  rowCount: number,
+  selected: readonly string[],
+) {
+  const present = distinctValues(column, rowCount);
+  const absent = new Set(
+    column.filterValues ? selected.filter((value) => !present.includes(value)) : [],
+  );
+  return { values: [...present, ...absent], absent };
+}
+
 export interface ValueChecklistOptions {
   readonly values: readonly string[];
   readonly ticked: readonly string[];
+  readonly absent?: ReadonlySet<string>;
   /** The box's starting text: the dropdown's own `contains` filter, or ''. */
   readonly text: string;
   readonly placeholder: string;
@@ -139,7 +159,7 @@ export function mountValueChecklist(
         renderCount();
       });
       const text = document.createElement('span');
-      text.textContent = valueLabel(value);
+      text.textContent = valueLabel(value) + (options.absent?.has(value) ? ' (no matches)' : '');
       if (value === '') item.classList.add('browse-filter-blank');
       // A narrow list clips a long value; the full one is a hover away.
       item.title = valueLabel(value);

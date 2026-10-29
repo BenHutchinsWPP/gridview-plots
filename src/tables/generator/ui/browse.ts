@@ -32,6 +32,7 @@ import { GENERATOR_LIST } from '../../../lookups/schema';
 import type { LookupColumn, LookupTable } from '../../../lookups/types';
 import { rankScopedRows } from '../../../ui/browse-planes';
 import {
+  membershipColumn,
   browseJoinKey,
   CASE_COLUMN_KEY,
   statColumns,
@@ -96,6 +97,8 @@ export interface GeneratorBrowseTable {
 }
 
 export interface GeneratorBrowseInput {
+  areaMemberships?: ReadonlyMap<string, readonly string[]>;
+  ownMemberships?: ReadonlyMap<string, readonly string[]>;
   /** The (case, slot) tables in scope, all of one quantity. */
   tables: readonly GeneratorBrowseTable[];
   /** The session's GeneratorList, or undefined when none is loaded. */
@@ -140,6 +143,8 @@ function membersByLabel(
 
 /** Computed once in `buildGeneratorTab` and passed to whichever body runs. */
 interface GeneratorTabCtx {
+  areaMemberships?: ReadonlyMap<string, readonly string[]>;
+  ownMemberships?: ReadonlyMap<string, readonly string[]>;
   tables: readonly GeneratorBrowseTable[];
   list: LookupTable | undefined;
   areas: ReadonlySet<string> | null;
@@ -229,11 +234,13 @@ export function buildGeneratorTab(input: GeneratorBrowseInput): BrowseTab {
   }
   if (!list) {
     notes.push(
-      'No GeneratorList loaded: names come from the export, and attribute columns are empty.',
+      'No GeneratorList loaded: names come from the export, and attribute columns and Area Groups memberships are blank.',
     );
   }
 
   const ctx: GeneratorTabCtx = {
+    areaMemberships: input.areaMemberships,
+    ownMemberships: input.ownMemberships,
     tables,
     list,
     areas,
@@ -814,6 +821,28 @@ function ungroupedRows(ctx: GeneratorTabCtx): BrowseTab {
     }
   }
 
+  const areaOf = (row: number): string | undefined => {
+    if (!areaColumn || joinedRows[row] < 0) return undefined;
+    const area = cellValue(areaColumn, joinedRows[row]);
+    return typeof area === 'string' && area.trim() !== '' ? area.trim() : undefined;
+  };
+  const unresolved = refs.reduce((count, _, row) => count + Number(areaOf(row) === undefined), 0);
+  if (list && unresolved > 0)
+    notes.push(
+      `Area Groups: ${unresolved} generator rows have no resolved area in GeneratorList Area Name; memberships are blank.`,
+    );
+  columns.push(
+    membershipColumn('membership.areaGroups', 'Area Groups', (row) => {
+      const area = areaOf(row);
+      return area === undefined ? [] : (ctx.areaMemberships?.get(area) ?? []);
+    }),
+    membershipColumn(
+      'membership.generatorGroups',
+      'Generator Groups',
+      (row) => ctx.ownMemberships?.get(String(refs[row].entity)) ?? [],
+    ),
+  );
+
   for (const column of list?.columns ?? []) {
     if (column.name === GENERATOR_LIST.keyColumn) continue;
     // A non-category column gets no group control at all (see `isBucketable`):
@@ -886,6 +915,8 @@ export function declareGeneratorTabs(
   list: LookupTable | undefined,
   scratch: Float32Array | undefined,
   memo?: RankMemo,
+  areaMemberships?: ReadonlyMap<string, readonly string[]>,
+  ownMemberships?: ReadonlyMap<string, readonly string[]>,
 ) {
   return [
     {
@@ -896,6 +927,8 @@ export function declareGeneratorTabs(
       build: (groupBy?: string | null, perUnit?: boolean, keep?: ReadonlySet<string>) =>
         buildGeneratorTab({
           tables: entity.tables,
+          areaMemberships,
+          ownMemberships,
           list,
           areas: null,
           scratch,

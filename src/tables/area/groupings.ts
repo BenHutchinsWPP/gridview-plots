@@ -10,9 +10,10 @@
 //
 // The axis and the membership are two things: the axis is the cube's own
 // index order, while a group may name areas the axis lacks (kept, flagged,
-// never plotted). Code outside the Area kind never reads the map: a drawn
-// group line carries the areas it summed (`CaseSeries.summed`).
+// never plotted). Reverse membership snapshots preserve those authored areas
+// for reference-list joins even when no Area table carries them.
 
+import { reverseMemberships } from '../../lookups/memberships';
 /**
  * Every area, in the order the loaded data lists them. This is the cube's
  * area axis and the order the WASM parser's hash table is filled in, so it is
@@ -136,4 +137,8 @@ export function exportGroupings(): string {
     for (const area of members) lines.push(`${area},${grouping}`);
   }
   return lines.join('\n') + '\n';
+}
+
+export function areaMemberships() {
+  return reverseMemberships(groupToAreas);
 }

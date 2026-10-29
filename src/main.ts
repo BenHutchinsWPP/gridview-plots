@@ -11,6 +11,9 @@
 // `src/kernels.ts`. Buffers are allocated once and reused so render never
 // allocates.
 
+import { areaMemberships } from './tables/area/groupings';
+import { generatorMemberships } from './tables/generator/groups';
+import { busMemberships } from './tables/bus/groups';
 import './styles.css';
 import {
   allAreas,
@@ -777,6 +780,9 @@ const browseWiring = createBrowseWiring({
   // Kept so a drop ranks only its own rows.
   ranks: createRankMemo(),
   query: () => query,
+  areaMemberships,
+  generatorMemberships,
+  busMemberships,
   lookupFor,
   interfaceRange: drawnLimits.interfaceRange,
   drawer: () => browseDrawer,

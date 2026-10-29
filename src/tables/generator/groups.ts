@@ -18,6 +18,7 @@
 // nothing here reports a summed membership.
 
 import { splitCsvLine } from '../../lookups/parse';
+import { reverseMemberships } from '../../lookups/memberships';
 import type { LookupTable } from '../../lookups/types';
 import {
   BUS_ID_COLUMN,
@@ -484,4 +485,8 @@ export function clearGeneratorGroups(): void {
   groupToUnits = new Map();
   unresolvedPairRows = [];
   chosenMapping = undefined;
+}
+
+export function generatorMemberships() {
+  return reverseMemberships(groupToUnits);
 }

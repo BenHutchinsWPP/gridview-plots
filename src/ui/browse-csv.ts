@@ -63,14 +63,21 @@ export function browseDescriptor(tab: BrowseTab, view: ViewState, meta: BrowseCs
 
   // Only filters that constrained something: applied by the row pass (their
   // column is here) or by the grouped build (their label is frozen on rows).
-  const frozen = new Map<string, string>();
-  for (const row of tab.rows)
-    for (const entry of row.filterContext ?? []) frozen.set(entry.key, entry.label);
+  const frozen = new Map<string, { label: string; constraint: string }>();
+  for (const column of tab.columns) {
+    if (column.context && column.key.startsWith('context.')) {
+      frozen.set(column.key.slice(8), {
+        label: column.label.replace(/ \(filter\)$/, ''),
+        constraint: String(column.value(0) ?? ''),
+      });
+    }
+  }
   const applied: string[] = [];
   for (const [key, filter] of view.filters) {
     const column = byKey.get(key);
-    if (column) applied.push(`${column.label}: ${filterConstraint(filter)}`);
-    else if (frozen.has(key)) applied.push(`${frozen.get(key)}: ${filterConstraint(filter)}`);
+    if (column) applied.push(`${column.label}: ${filterConstraint(filter, column)}`);
+    else if (frozen.has(key))
+      applied.push(`${frozen.get(key)!.label}: ${frozen.get(key)!.constraint}`);
   }
   if (applied.length > 0) descriptor.push(`# Column filters: ${applied.join('; ')}`);
 

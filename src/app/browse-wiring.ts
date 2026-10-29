@@ -103,6 +103,9 @@ export interface BrowseWiringHost {
   /** Every tab's ranking, kept per cube while its mask and rows hold still. */
   ranks: RankMemo;
   query(): AreaQuery;
+  areaMemberships(): ReadonlyMap<string, readonly string[]>;
+  generatorMemberships(): ReadonlyMap<string, readonly string[]>;
+  busMemberships(): ReadonlyMap<number, readonly string[]>;
   lookupFor(variant: LookupVariant): LookupTable | undefined;
   interfaceRange(
     caseId: string,
@@ -221,19 +224,31 @@ export function createBrowseWiring(host: BrowseWiringHost) {
     const iface = scope(views.interfaceRows(), 'interface');
     const ifaceGroups = scope(views.interfaceRows(), 'interface-groups', 'interface');
 
+    const areaMemberships = host.areaMemberships();
+
     // Bar order: each kind's entity tab then its groups tab. Empty tabs are
     // hidden but stay in the signature, since a kind losing its last table
     // changes what a rebuild produces.
     return [
-      ...declareAreaTabs(area, areaGroups, browseScratch, browseRanks),
+      ...declareAreaTabs(area, areaGroups, browseScratch, browseRanks, areaMemberships),
       ...declareGeneratorTabs(
         generator,
         generatorGroups,
         host.lookupFor('generatorlist'),
         browseScratch,
         browseRanks,
+        areaMemberships,
+        host.generatorMemberships(),
       ),
-      ...declareBusTabs(bus, busGroups, host.lookupFor('buslist'), browseScratch, browseRanks),
+      ...declareBusTabs(
+        bus,
+        busGroups,
+        host.lookupFor('buslist'),
+        browseScratch,
+        browseRanks,
+        areaMemberships,
+        host.busMemberships(),
+      ),
       ...declareInterfaceTabs(iface, ifaceGroups, browseScratch, browseRanks, host.interfaceRange),
     ];
   }

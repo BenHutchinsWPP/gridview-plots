@@ -609,7 +609,7 @@ const table = (data) => ({
   );
   ok('a NaN-filled plane is no row at all, rather than a row of blanks');
   assert.deepEqual(tab.notes, [
-    'No GeneratorList loaded: names come from the export, and attribute columns are empty.',
+    'No GeneratorList loaded: names come from the export, and attribute columns and Area Groups memberships are blank.',
     '1 unit hidden: no hours loaded for it in the selected case.',
   ]);
   ok('with no list loaded the tab says so, and says how many units it hid');
@@ -893,6 +893,8 @@ const busTableIn = (data) => ({
   const tab = buildBusTab({ tables: [busTableIn(data)], list, areas: null });
   const hidden = tab.columns.filter((column) => column.defaultHidden).map((column) => column.key);
   assert.deepEqual(hidden, [
+    'membership.areaGroups',
+    'membership.busGroups',
     'list.Type',
     'list.VM',
     'list.VA',
@@ -6309,4 +6311,212 @@ console.log(`\n${checks} checks passed.`);
   assert.equal(caseStat('stat.max', 0), 6, 'c1: 2 + 4');
   assert.equal(caseStat('stat.max', 1), 18, 'c2: 6 + 12 in its last year');
   ok('the Area tab ranks and combines each Case over its own span');
+}
+
+// ---------------------------------------------------- authored memberships
+{
+  const { areaMemberships } = await import('../src/tables/area/groupings.ts');
+  const { generatorMemberships, setGeneratorMembership, clearGeneratorGroups } =
+    await import('../src/tables/generator/groups.ts');
+  const { busMemberships, setBusMembership, clearBusGroups } =
+    await import('../src/tables/bus/groups.ts');
+  const { checklistChoices } = await import('../src/ui/value-checklist.ts');
+  const showMemberships = (base, filters) => ({
+    sort: null,
+    filters: new Map(filters),
+    columnOverrides: new Map(base.columns.filter((c) => c.filterValues).map((c) => [c.key, true])),
+  });
+  const tick = (...values) => ({ kind: 'values', values });
+  const col = (tab, key) => tab.columns.find((c) => c.key === `membership.${key}Groups`);
+  setGroupings(
+    'Name,Grouping\nA,West\nB,West\nB,Coastal\nC,Coastal\nA,West\nOutside,Off axis\nA,All areas',
+  );
+  const areaMap = areaMemberships();
+  assert.deepEqual(areaMap.get('B'), ['Coastal', 'West']);
+  assert.deepEqual(areaMap.get('A'), ['All areas', 'West']);
+  assert.deepEqual(areaMap.get('Outside'), ['Off axis']);
+  assert.equal(areaMap.has('D'), false);
+  const areaData = areaTable(['A', 'B', 'C', 'D'], ['Load (MWh)'], (a) => a + 1);
+  const areaInput = {
+    tables: [areaTableIn(areaData)],
+    variable: 'Load (MWh)',
+    areas: null,
+    areaMemberships: areaMap,
+  };
+  const area = buildAreaTab(areaInput);
+  const areaView = showMemberships(area, [['membership.areaGroups', tick('West', 'Coastal')]]);
+  assert.deepEqual([...visibleRows(area, areaView)], [0, 1, 2]);
+  const groupedArea = carryFilterContext(
+    buildAreaTab({ ...areaInput, groupBy: 'case', keep: keptRowKeys(area, areaView) }),
+    area,
+    areaView,
+  );
+  assert.deepEqual(groupedArea.rows[0].members, ['A', 'B', 'C']);
+  assert.equal(groupedArea.columns.find((c) => c.key === 'stat.mean').value(0), 6);
+  setGroupings('Name,Grouping\nD,West');
+  assert.deepEqual(areaMap.get('B'), ['Coastal', 'West'], 'snapshot does not mutate with the map');
+  assert.deepEqual(groupedArea.rows[0].members, ['A', 'B', 'C']);
+  assert.equal(areaMemberships().has('B'), false);
+
+  setGeneratorMembership(
+    new Map([
+      ['West', ['G1', 'G2', 'G2']],
+      ['Coastal', ['G2', 'G3']],
+      ['All areas', ['G4']],
+    ]),
+    [{ group: 'Unresolved', busId: '1', unitId: 'x', reason: 'no identity' }],
+  );
+  setBusMembership(
+    new Map([
+      ['West', [1, 2, 2]],
+      ['Coastal', [2, 3]],
+      ['All areas', [4]],
+    ]),
+    [{ group: 'Unresolved', name: 'No identity', reason: 'ambiguous' }],
+  );
+  assert.deepEqual(generatorMemberships().get('G2'), ['Coastal', 'West']);
+  assert.deepEqual(busMemberships().get(2), ['Coastal', 'West']);
+  assert.equal([...generatorMemberships().values()].flat().includes('Unresolved'), false);
+  assert.equal([...busMemberships().values()].flat().includes('Unresolved'), false);
+  const genData = generatorTable(['G1', 'G2', 'G3', 'G4'], (i) => (i + 1) * 10);
+  const genList = listOf([
+    'G1,99,A,Gas,100',
+    'G2,99,B,Gas,100',
+    'G3,99,C,Wind,100',
+    'G4,99,,Gas,100',
+  ]);
+  const genInput = {
+    tables: [table(genData)],
+    list: genList,
+    areas: null,
+    areaMemberships: areaMap,
+    ownMemberships: generatorMemberships(),
+  };
+  const gen = buildGeneratorTab(genInput);
+  assert.equal(col(gen, 'area').value(0), 'All areas; West');
+  assert.equal(col(gen, 'generator').value(1), 'Coastal; West');
+  assert.equal(col(gen, 'area').value(3), null);
+  assert.ok(gen.notes.some((note) => /Area Groups: 1/.test(note)));
+  const filters = [
+    ['membership.areaGroups', tick('Coastal')],
+    ['membership.generatorGroups', tick('West')],
+  ];
+  const genView = showMemberships(gen, filters);
+  assert.deepEqual(
+    [...visibleRows(gen, genView)].map((i) => gen.rows[i].entity),
+    ['G2'],
+  );
+  const keep = keptRowKeys(gen, genView);
+  for (const groupBy of ['case', 'list.FuelType']) {
+    const grouped = carryFilterContext(
+      buildGeneratorTab({ ...genInput, groupBy, keep }),
+      gen,
+      genView,
+    );
+    assert.deepEqual(grouped.rows[0].members, ['G2']);
+    assert.equal(grouped.columns.find((c) => c.key === 'stat.mean').value(0), 20);
+    assert.deepEqual(
+      grouped.rows[0].filterContext.map((entry) => entry.constraint),
+      ['in any of (Coastal)', 'in any of (West)'],
+    );
+    const wire = JSON.parse(
+      JSON.stringify(savePins([{ ref: grouped.rows[0], color: '#000' }], ['c1'])),
+    );
+    const [restored] = restorePins(wire, [{ id: 'fresh' }]);
+    assert.deepEqual(restored.ref.members, ['G2']);
+    assert.equal(restored.ref.caseId, 'fresh');
+    assert.deepEqual(restored.ref.filterContext, grouped.rows[0].filterContext);
+    setGeneratorMembership(new Map([['West', ['G3']]]));
+    setGroupings('Name,Grouping\nD,Coastal');
+    assert.deepEqual(restored.ref.members, ['G2']);
+  }
+  const absentGen = buildGeneratorTab({ ...genInput, ownMemberships: generatorMemberships() });
+  assert.deepEqual(
+    [...checklistChoices(col(absentGen, 'generator'), 4, ['Coastal']).absent],
+    ['Coastal'],
+  );
+  assert.deepEqual([...checklistChoices(col(absentGen, 'area'), 4, ['Coastal']).absent], []);
+  const noListGen = buildGeneratorTab({ ...genInput, list: undefined });
+  assert.equal(col(noListGen, 'generator').value(1), 'Coastal; West');
+  assert.equal(col(noListGen, 'area').value(1), null);
+  const noAreaGen = buildGeneratorTab({ ...genInput, list: listOf(['G1,99,Outside,Gas,100']) });
+  assert.equal(col(noAreaGen, 'area').value(0), 'Off axis');
+  const missingColumnGen = buildGeneratorTab({
+    ...genInput,
+    list: buildLookup(
+      parseLookupCsv('GENERATORLIST\nName,FuelType\nG1,Gas', 'GeneratorList.csv').rows,
+    ),
+  });
+  assert.equal(col(missingColumnGen, 'area').value(0), null);
+  assert.ok(missingColumnGen.notes.some((note) => /Area Groups/.test(note)));
+
+  const busData = busTable([1, 2, 3, 4], ['Same', 'Same', 'C', 'D'], (i) => i + 10);
+  const busList = buildLookup(
+    parseLookupCsv(
+      'BUS_GENERAL,,,,\nBusID,Name,LoadArea,PSSEArea,BaseKV\n1,Same,A,Wrong,230\n2,Same,B,Wrong,230\n3,C,C,Wrong,230\n4,D,,Wrong,230',
+      'BusList.csv',
+    ).rows,
+  );
+  const busInput = {
+    tables: [busTableIn(busData)],
+    list: busList,
+    areas: null,
+    areaMemberships: areaMap,
+    ownMemberships: busMemberships(),
+  };
+  const bus = buildBusTab(busInput);
+  assert.equal(col(bus, 'area').value(0), 'All areas; West');
+  assert.equal(col(bus, 'bus').value(1), 'Coastal; West');
+  const busView = showMemberships(bus, [
+    ['membership.areaGroups', tick('Coastal')],
+    ['membership.busGroups', tick('West')],
+  ]);
+  assert.deepEqual(
+    [...visibleRows(bus, busView)].map((i) => bus.rows[i].entity),
+    [2],
+  );
+  assert.equal(
+    bus.columns.find((c) => c.key === 'case').groupable,
+    false,
+    'LMP still refuses aggregation',
+  );
+  const busLoadInput = {
+    ...busInput,
+    tables: [{ ...busTableIn(busData), data: { ...busData, quantity: 'Load (MW)' } }],
+  };
+  const load = buildBusTab(busLoadInput);
+  const busGrouped = carryFilterContext(
+    buildBusTab({ ...busLoadInput, groupBy: 'case', keep: keptRowKeys(load, busView) }),
+    load,
+    busView,
+  );
+  assert.deepEqual(busGrouped.rows[0].members, [2]);
+  assert.equal(busGrouped.columns.find((c) => c.key === 'stat.mean').value(0), 11);
+  const noListBus = buildBusTab({ ...busInput, list: undefined });
+  assert.equal(col(noListBus, 'bus').value(0), 'West');
+  assert.equal(col(noListBus, 'area').value(0), null);
+  assert.deepEqual(
+    [
+      ...visibleRows(
+        noListBus,
+        showMemberships(noListBus, [['membership.areaGroups', tick('West')]]),
+      ),
+    ],
+    [],
+  );
+  assert.deepEqual(
+    [...visibleRows(noListBus, showMemberships(noListBus, [['membership.areaGroups', tick('')]]))],
+    [0, 1, 2, 3],
+  );
+  for (const tab of [area, gen, bus])
+    for (const column of tab.columns.filter((c) => c.filterValues)) {
+      assert.equal(column.defaultHidden, true);
+      assert.equal(column.category, true);
+      assert.equal(column.groupable, undefined);
+    }
+  clearGeneratorGroups();
+  clearBusGroups();
+  ok(
+    'authored memberships join in their kinds, intersect before grouping, freeze into pins and survive restore',
+  );
 }

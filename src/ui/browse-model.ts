@@ -184,6 +184,8 @@ export interface BrowseColumn {
    * per row where one column mixes kinds (the Selected tab's per-unit
    * generator ratio beside a bus's MW). */
   readonly cellClass?: CellClass | ((row: number) => CellClass);
+  /** Individual categorical identities, independent of the scalar display. */
+  readonly filterValues?: (row: number) => readonly string[];
   value(row: number): CellValue;
 }
 
@@ -457,6 +459,9 @@ export function withoutEmptyRows(tab: BrowseTab): BrowseTab {
       return {
         ...column,
         value: (row: number) => column.value(from(row)),
+        ...(column.filterValues
+          ? { filterValues: (row: number) => column.filterValues!(from(row)) }
+          : {}),
         ...(typeof hint === 'function' ? { cellClass: (row: number) => hint(from(row)) } : {}),
       };
     }),
@@ -849,6 +854,40 @@ function passes(
   return true;
 }
 
+/** Categorical identities; only scalar cells trim their displayed value. */
+export function columnFilterValues(column: BrowseColumn, row: number): readonly string[] {
+  if (column.filterValues) {
+    const values = column.filterValues(row);
+    return values.length ? values : [''];
+  }
+  return [displayCell(column.value(row), cellClassOf(column, row)).trim()];
+}
+
+function columnPasses(column: BrowseColumn, row: number, filter: ColumnFilter): boolean {
+  if (column.filterValues && filter.kind !== 'range') {
+    return columnFilterValues(column, row).some((value) => passes(filter, value));
+  }
+  return passes(filter, column.value(row), cellClassOf(column, row));
+}
+
+/** Membership is categorical without defining disjoint aggregation buckets. */
+export function membershipColumn(
+  key: string,
+  label: string,
+  values: (row: number) => readonly string[],
+): BrowseColumn {
+  return {
+    key,
+    label,
+    kind: 'text',
+    computed: false,
+    category: true,
+    defaultHidden: true,
+    filterValues: values,
+    value: (row) => values(row).join('; ') || null,
+  };
+}
+
 /**
  * The filters one pass evaluates. Skipped: keys the build consumed (asking
  * them of the aggregate is a different question), keys with no column (a
@@ -897,7 +936,7 @@ export function visibleRows(tab: BrowseTab, view: ViewState): Int32Array {
   const kept: number[] = [];
   outer: for (let row = 0; row < tab.rows.length; row++) {
     for (const { column, filter } of active) {
-      if (!passes(filter, column.value(row), cellClassOf(column, row))) continue outer;
+      if (!columnPasses(column, row, filter)) continue outer;
     }
     kept.push(row);
   }
@@ -988,7 +1027,10 @@ export function pinnedConstraint(
 }
 
 /** The text that states a filter on screen; a range states its bounds. */
-export function filterConstraint(filter: ColumnFilter): string {
+export function filterConstraint(
+  filter: ColumnFilter,
+  column?: Pick<BrowseColumn, 'filterValues'>,
+): string {
   if (filter.kind === 'text') {
     const raw = filter.text.trim();
     const tokens = textPieces(raw);
@@ -1006,6 +1048,7 @@ export function filterConstraint(filter: ColumnFilter): string {
           : a.localeCompare(b, undefined, { numeric: true }),
       )
       .map(valueLabel);
+    if (column?.filterValues) return `in any of (${named.join(', ')})`;
     if (named.length === 1) return `is ${named[0]}`;
     return `is any of (${named.join(', ')})`;
   }
@@ -1092,7 +1135,7 @@ export function keptRowKeys(base: BrowseTab, view: ViewState): ReadonlySet<strin
   const kept = new Set<string>();
   outer: for (let row = 0; row < base.rows.length; row++) {
     for (const { column, filter } of active) {
-      if (!passes(filter, column.value(row), cellClassOf(column, row))) continue outer;
+      if (!columnPasses(column, row, filter)) continue outer;
     }
     kept.add(browseJoinKey(base.rows[row].caseId, base.rows[row].slotKey, base.rows[row].entity));
   }
@@ -1127,7 +1170,7 @@ export function carryFilterContext(tab: BrowseTab, base: BrowseTab, view: ViewSt
   const context: FilterContextEntry[] = consumed.map(({ column, filter }) => ({
     key: column.key,
     label: column.label,
-    constraint: filterConstraint(filter),
+    constraint: filterConstraint(filter, column),
   }));
   const contextColumns: BrowseColumn[] = context.map((entry) => ({
     // Prefixed: grouping BY a filtered column puts that column's key on the

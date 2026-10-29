@@ -15,6 +15,7 @@ import { createScratch, fitScratch, type RankMemo } from '../../../kernels';
 import { rankScopedRows } from '../../../ui/browse-planes';
 import { normalizedCopy } from '../../../series/range';
 import {
+  membershipColumn,
   browseJoinKey,
   CASE_COLUMN_KEY,
   statColumns,
@@ -49,6 +50,7 @@ export interface AreaBrowseTable {
 }
 
 export interface AreaBrowseInput {
+  areaMemberships?: ReadonlyMap<string, readonly string[]>;
   /** The (case, slot) tables the CASE scope kept. */
   tables: readonly AreaBrowseTable[];
   variable: string;
@@ -336,6 +338,13 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
     },
   ];
 
+  columns.push(
+    membershipColumn(
+      'membership.areaGroups',
+      'Area Groups',
+      (row) => input.areaMemberships?.get(String(refs[row].entity)) ?? [],
+    ),
+  );
   columns.push(...statColumns(ranked, statClass));
 
   return { id: 'area', label: 'Area', rows: refs, columns, notes };
@@ -349,6 +358,7 @@ export function declareAreaTabs(
   groups: AreaTabScope,
   scratch: Float32Array | undefined,
   memo?: RankMemo,
+  areaMemberships?: ReadonlyMap<string, readonly string[]>,
 ) {
   return [
     {
@@ -359,6 +369,7 @@ export function declareAreaTabs(
       build: (groupBy?: string | null, perUnit?: boolean, keep?: ReadonlySet<string>) =>
         buildAreaTab({
           tables: entity.tables,
+          areaMemberships,
           variable: entity.variable,
           areas: null,
           scratch,

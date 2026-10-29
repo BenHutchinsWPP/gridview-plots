@@ -35,6 +35,7 @@ import { CASE_GROUP_BY } from '../../../series/model';
 import { normalizedCopy } from '../../../series/range';
 import { rankScopedRows } from '../../../ui/browse-planes';
 import {
+  membershipColumn,
   browseJoinKey,
   CASE_COLUMN_KEY,
   statColumns,
@@ -84,6 +85,8 @@ export interface BusBrowseTable {
 }
 
 export interface BusBrowseInput {
+  areaMemberships?: ReadonlyMap<string, readonly string[]>;
+  ownMemberships?: ReadonlyMap<number, readonly string[]>;
   /** The (case, slot) tables in scope, all of one quantity. */
   tables: readonly BusBrowseTable[];
   /** The session's BusList, or undefined when none is loaded. */
@@ -171,7 +174,9 @@ export function buildBusTab(input: BusBrowseInput): BrowseTab {
     );
   }
   if (!list) {
-    notes.push('No BusList loaded: names come from the export, and attribute columns are empty.');
+    notes.push(
+      'No BusList loaded: names come from the export, and attribute columns and Area Groups memberships are blank.',
+    );
   }
 
   if (input.isGroupTab) {
@@ -308,6 +313,28 @@ export function buildBusTab(input: BusBrowseInput): BrowseTab {
       value: (row) => Number(refs[row].entity),
     },
   ];
+
+  const areaOf = (row: number): string | undefined => {
+    if (!areaColumn || joinedRows[row] < 0) return undefined;
+    const area = cellValue(areaColumn, joinedRows[row]);
+    return typeof area === 'string' && area.trim() !== '' ? area.trim() : undefined;
+  };
+  const unresolved = refs.reduce((count, _, row) => count + Number(areaOf(row) === undefined), 0);
+  if (list && unresolved > 0)
+    notes.push(
+      `Area Groups: ${unresolved} bus rows have no resolved area in BusList LoadArea; memberships are blank.`,
+    );
+  columns.push(
+    membershipColumn('membership.areaGroups', 'Area Groups', (row) => {
+      const area = areaOf(row);
+      return area === undefined ? [] : (input.areaMemberships?.get(area) ?? []);
+    }),
+    membershipColumn(
+      'membership.busGroups',
+      'Bus Groups',
+      (row) => input.ownMemberships?.get(Number(refs[row].entity)) ?? [],
+    ),
+  );
 
   for (const column of list?.columns ?? []) {
     // The key column and `Name` are already shown above.
@@ -690,6 +717,8 @@ export function declareBusTabs(
   list: LookupTable | undefined,
   scratch: Float32Array | undefined,
   memo?: RankMemo,
+  areaMemberships?: ReadonlyMap<string, readonly string[]>,
+  ownMemberships?: ReadonlyMap<number, readonly string[]>,
 ) {
   return [
     {
@@ -700,6 +729,8 @@ export function declareBusTabs(
       build: (groupBy?: string | null, perUnit?: boolean, keep?: ReadonlySet<string>) =>
         buildBusTab({
           tables: entity.tables,
+          areaMemberships,
+          ownMemberships,
           list,
           areas: null,
           scratch,

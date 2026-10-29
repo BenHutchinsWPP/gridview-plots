@@ -11,7 +11,7 @@
 // its signature moves), and a captured column would offer the previous
 // variable's rows.
 
-import { distinctValues, mountValueChecklist } from './value-checklist';
+import { checklistChoices, mountValueChecklist } from './value-checklist';
 import {
   columnVisible,
   orderedColumns,
@@ -147,10 +147,16 @@ export function createBrowsePopovers(deps: BrowsePopoverDeps): BrowsePopovers {
       };
       // The column's distinct values over the rows on screen.
       const checklist = mountValueChecklist(body, {
-        values: distinctValues(column, tab.rows.length),
+        ...checklistChoices(
+          column,
+          tab.rows.length,
+          current?.kind === 'values' ? current.values : [],
+        ),
         ticked: current?.kind === 'values' ? current.values : [],
         text: current?.kind === 'text' ? current.text : '',
-        placeholder: 'Contains or comma-separated list…',
+        placeholder: column.filterValues
+          ? 'In any selected group…'
+          : 'Contains or comma-separated list…',
         onTicks: () => apply(),
       });
       const { input } = checklist;

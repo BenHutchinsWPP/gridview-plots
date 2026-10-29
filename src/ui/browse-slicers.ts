@@ -22,7 +22,7 @@
 // Kind-neutral chrome, handed its mount: only `main.ts` resolves an element,
 // and it finds this one inside the section clone.
 
-import { distinctValues, mountValueChecklist, type ValueChecklist } from './value-checklist';
+import { checklistChoices, mountValueChecklist, type ValueChecklist } from './value-checklist';
 import {
   filterConstraint,
   slicerColumns,
@@ -90,7 +90,13 @@ export function createSlicerPane(mount: HTMLElement): SlicerPane {
   /** The writes of the latest paint: a slicer outlives the paint that built it. */
   let writes: SlicerWrites = { filter() {}, unslice() {} };
 
-  function build(key: string, label: string, values: string[], signature: string): Mounted {
+  function build(
+    key: string,
+    label: string,
+    values: string[],
+    absent: ReadonlySet<string>,
+    signature: string,
+  ): Mounted {
     const element = document.createElement('div');
     element.className = 'slicer';
     const head = document.createElement('div');
@@ -115,6 +121,7 @@ export function createSlicerPane(mount: HTMLElement): SlicerPane {
     // dropdown's, and a slicer is its ticks.
     const checklist = mountValueChecklist(body, {
       values,
+      absent,
       ticked: [],
       text: '',
       placeholder: 'Search…',
@@ -139,14 +146,24 @@ export function createSlicerPane(mount: HTMLElement): SlicerPane {
       for (const column of columns) {
         const id = `${tab!.id}\u0000${column.key}`;
         keep.add(id);
-        const values = distinctValues(column, tab!.rows.length);
-        const signature = `${tab!.id}\u0000${values.join('\u0000')}`;
+        const filter = view.filters.get(column.key);
+        const { values, absent } = checklistChoices(
+          column,
+          tab!.rows.length,
+          filter?.kind === 'values' ? filter.values : [],
+        );
+        const signature = JSON.stringify([tab!.id, values, [...absent]]);
         let held = mounted.get(id);
         if (!held || held.signature !== signature) {
-          held = build(column.key, column.label, values, signature);
+          const search = held?.checklist.input.value ?? '';
+          const scroll = held?.element.querySelector('.browse-filter-checklist')?.scrollTop ?? 0;
+          held = build(column.key, column.label, values, absent, signature);
+          held.checklist.input.value = search;
+          held.checklist.input.dispatchEvent(new Event('input'));
+          const checklist = held.element.querySelector('.browse-filter-checklist');
+          if (checklist) checklist.scrollTop = scroll;
           mounted.set(id, held);
         }
-        const filter = view.filters.get(column.key);
         held.checklist.setTicked(filter?.kind === 'values' ? filter.values : []);
         // A dropdown's `contains` filter has no ticks to show; say it.
         held.note.textContent =
