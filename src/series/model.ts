@@ -11,7 +11,7 @@
 //     kinds imports none of them.
 
 import type { TableKind } from '../model/case-model';
-import { createScratch, quantiles } from '../kernels';
+import { createScratch, quantiles, stats } from '../kernels';
 import type { LookupVariant, LookupTable } from '../lookups/types';
 import { lookupFor } from '../lookups/store';
 import { bucketLabelFor } from '../lookups/reduce';
@@ -241,8 +241,8 @@ export function refusedSeries(
     warnings: [],
     sorted: buffers.gathered,
     n: 0,
-    stats: { n: 0, mean: NaN, min: NaN, max: NaN, sd: NaN, sum: NaN },
-    // The empty-n shape, from the kernel that defines it.
+    // The empty-n shapes, from the kernels that define them.
+    stats: stats(buffers.gathered, 0),
     quantiles: quantiles(buffers.gathered, 0),
     allZero: false,
   };

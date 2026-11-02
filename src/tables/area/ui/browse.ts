@@ -20,6 +20,8 @@ import {
   CASE_COLUMN_KEY,
   statColumns,
   statColumnsFrom,
+  statFields,
+  type StatFields,
 } from '../../../ui/browse-model';
 import {
   groupRowLabel,
@@ -113,15 +115,7 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
   if (input.isGroupTab || byCase || (canGroup && groupBy === 'Group')) {
     const groupedRefs: BrowseRowRef[] = [];
     const groupCounts: number[] = [];
-    const groupStatsList: {
-      n: number;
-      min: number;
-      max: number;
-      mean: number;
-      sd: number;
-      p25: number;
-      p75: number;
-    }[] = [];
+    const groupStatsList: StatFields[] = [];
 
     const caseColumn: BrowseColumn = {
       key: CASE_COLUMN_KEY,
@@ -234,15 +228,7 @@ export function buildAreaTab(input: AreaBrowseInput): BrowseTab {
           }),
         );
         groupCounts.push(scopedMembers.length);
-        groupStatsList.push({
-          n,
-          min: s.min,
-          max: s.max,
-          mean: s.mean,
-          sd: s.sd,
-          p25: q.p25,
-          p75: q.p75,
-        });
+        groupStatsList.push(statFields(s, q));
       }
     }
 

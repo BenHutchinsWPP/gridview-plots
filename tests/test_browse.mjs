@@ -727,10 +727,23 @@ const table = (data) => ({
 {
   // The kernel's slot layout is what the tab reads; a reordered RANKED would
   // silently relabel every column.
-  assert.equal(RANKED_FIELDS, 8);
+  assert.equal(RANKED_FIELDS, 13);
   assert.deepEqual(
     STAT_COLUMNS.map((stat) => stat.key),
-    ['stat.min', 'stat.max', 'stat.mean', 'stat.sd', 'stat.p25', 'stat.p75', 'stat.n'],
+    [
+      'stat.min',
+      'stat.max',
+      'stat.mean',
+      'stat.sd',
+      'stat.p25',
+      'stat.p75',
+      'stat.n',
+      'stat.nPos',
+      'stat.nNeg',
+      'stat.nZero',
+      'stat.meanPos',
+      'stat.meanNeg',
+    ],
   );
   assert.ok(RANKED.mean !== RANKED.min, 'the ranked slots are distinct');
   ok('the fixed stat column set is the expected one');
@@ -901,6 +914,11 @@ const busTableIn = (data) => ({
     'list.Latitude',
     'list.Longitude',
     'stat.n',
+    'stat.nPos',
+    'stat.nNeg',
+    'stat.nZero',
+    'stat.meanPos',
+    'stat.meanNeg',
   ]);
   const grouped = buildBusTab({
     tables: [busTableIn(data)],
@@ -909,7 +927,7 @@ const busTableIn = (data) => ({
     groupBy: 'LoadArea',
   });
   assert.equal(grouped.columns.find((column) => column.key === 'stat.n').defaultHidden, true);
-  ok('the Bus tab opens without Type, VM, VA, Latitude, Longitude and Hours');
+  ok('the Bus tab opens without Type, VM, VA, Latitude, Longitude, Hours and the signed stats');
 }
 
 {
@@ -4233,6 +4251,11 @@ const interfaceTableIn = (data) => ({
   set(0, 'p25', 1);
   set(0, 'p75', 7);
   set(0, 'n', 8760);
+  set(0, 'nPos', 5000);
+  set(0, 'nNeg', 3000);
+  set(0, 'nZero', 760);
+  set(0, 'meanPos', 6);
+  set(0, 'meanNeg', -2);
   for (const field of ['min', 'max', 'mean', 'sd', 'p25', 'p75']) set(1, field, NaN);
 
   const columns = statColumns(ranked);
@@ -4252,6 +4275,11 @@ const interfaceTableIn = (data) => ({
   assert.equal(by.get('stat.p25').value(0), 1);
   assert.equal(by.get('stat.p75').value(0), 7);
   assert.equal(by.get('stat.n').value(0), 8760);
+  assert.equal(by.get('stat.nPos').value(0), 5000);
+  assert.equal(by.get('stat.nNeg').value(0), 3000);
+  assert.equal(by.get('stat.nZero').value(0), 760);
+  assert.equal(by.get('stat.meanPos').value(0), 6);
+  assert.equal(by.get('stat.meanNeg').value(0), -2);
   // NaN is a BLANK, never a zero: an absent hour and a measured zero are
   // different answers.
   assert.equal(by.get('stat.mean').value(1), null);
@@ -4262,6 +4290,15 @@ const interfaceTableIn = (data) => ({
   );
   assert.equal(by.get('stat.n').cellClass, 'count');
   assert.equal(by.get('stat.max').cellClass, 'quantity');
+  for (const key of ['stat.nPos', 'stat.nNeg', 'stat.nZero']) {
+    assert.equal(by.get(key).cellClass, 'count', `${key} is a count`);
+  }
+  assert.equal(by.get('stat.meanNeg').cellClass, 'quantity');
+  assert.deepEqual(
+    columns.filter((column) => !column.defaultHidden).map((column) => column.label),
+    ['Min', 'Max', 'Average', 'StdDev', 'p25', 'p75'],
+    'Hours and the signed counts and means start hidden',
+  );
   ok('statColumns reads each stat from its own slot and blanks NaN');
   ok('the hours stat is a count whatever the quantity, and the rest default to quantity');
 }
@@ -4279,6 +4316,10 @@ const interfaceTableIn = (data) => ({
   assert.equal(asRatio.get('stat.n').label, 'Hours');
   assert.equal(asRatio.get('stat.max').cellClass, 'ratio');
   assert.equal(asRatio.get('stat.n').cellClass, 'count');
+  assert.equal(asRatio.get('stat.nPos').label, 'Count(>0)');
+  assert.equal(asRatio.get('stat.nZero').cellClass, 'count');
+  assert.equal(asRatio.get('stat.meanPos').label, 'Avg(>0) (%)');
+  assert.equal(asRatio.get('stat.meanNeg').cellClass, 'ratio');
   assert.equal(displayCell(asRatio.get('stat.mean').value(0), 'ratio'), '43%');
   ok('a ratio stat column says (%) in its label, renders whole percent, and keeps Hours a count');
 
@@ -4290,13 +4331,32 @@ const interfaceTableIn = (data) => ({
 
 {
   // `statColumnsFrom` over one stats object per row, for a grouped tab.
-  const groups = [{ n: 12, mean: 5, min: 1, max: 9, sd: 2, p25: 3, p75: 7 }, null];
+  const groups = [
+    {
+      n: 12,
+      mean: 5,
+      min: 1,
+      max: 9,
+      sd: 2,
+      p25: 3,
+      p75: 7,
+      nPos: 10,
+      nNeg: 0,
+      nZero: 2,
+      meanPos: 6,
+      meanNeg: NaN,
+    },
+    null,
+  ];
   const columns = new Map(
     statColumnsFrom((row) => groups[row]).map((column) => [column.key, column]),
   );
   assert.equal(columns.get('stat.p25').value(0), 3);
   assert.equal(columns.get('stat.p75').value(0), 7);
   assert.equal(columns.get('stat.mean').value(0), 5);
+  assert.equal(columns.get('stat.nZero').value(0), 2);
+  assert.equal(columns.get('stat.meanPos').value(0), 6);
+  assert.equal(columns.get('stat.meanNeg').value(0), null);
   // A group whose members carried nothing for this variable has no average.
   // Printing 0 would be an answer rather than an absence.
   assert.equal(columns.get('stat.mean').value(1), null);
@@ -4309,9 +4369,10 @@ const interfaceTableIn = (data) => ({
   // one place the hours count's default is decided.
   const hiddenOf = (columns) =>
     columns.filter((column) => column.defaultHidden).map((column) => column.key);
-  assert.deepEqual(hiddenOf(statColumns(new Float64Array(0))), ['stat.n']);
-  assert.deepEqual(hiddenOf(statColumnsFrom(() => null)), ['stat.n']);
-  ok('every tab opens with the hours count hidden and the other stats shown');
+  const hidden = ['stat.n', 'stat.nPos', 'stat.nNeg', 'stat.nZero', 'stat.meanPos', 'stat.meanNeg'];
+  assert.deepEqual(hiddenOf(statColumns(new Float64Array(0))), hidden);
+  assert.deepEqual(hiddenOf(statColumnsFrom(() => null)), hidden);
+  ok('every tab opens with the hours count and the signed stats hidden and the other stats shown');
 }
 
 {
@@ -5949,7 +6010,19 @@ console.log(`\n${checks} checks passed.`);
   const line = (rowId, extra = {}) => ({
     rowId,
     values: new Float32Array(1),
-    stats: { n: 8760, mean: 5, min: 1, max: 9, sd: Number.NaN, sum: 0 },
+    stats: {
+      n: 8760,
+      mean: 5,
+      min: 1,
+      max: 9,
+      sd: Number.NaN,
+      sum: 0,
+      nPos: 8000,
+      nNeg: 0,
+      nZero: 760,
+      meanPos: 5.5,
+      meanNeg: Number.NaN,
+    },
     quantiles: { p25: 2, p75: 8 },
     ...extra,
   });
@@ -5962,7 +6035,7 @@ console.log(`\n${checks} checks passed.`);
   assert.equal(got.get('drawn').drawn, true);
   assert.deepEqual(
     STAT_COLUMNS.map((column) => statValue(got.get('drawn').stats, column.key)),
-    [1, 9, 5, null, 2, 8, 8760],
+    [1, 9, 5, null, 2, 8, 8760, 8000, 0, 760, 5.5, null],
     'the stat columns read the drawn line, NaN blank',
   );
   assert.deepEqual(got.get('refused'), { drawn: false, reason: 'a group LMP is not a sum' });

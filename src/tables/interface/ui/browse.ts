@@ -29,6 +29,8 @@ import {
   CASE_COLUMN_KEY,
   statColumns,
   statColumnsFrom,
+  statFields,
+  type StatFields,
 } from '../../../ui/browse-model';
 import {
   groupRowLabel,
@@ -193,15 +195,7 @@ function groupTabRows(input: InterfaceBrowseInput, notes: string[]): BrowseTab {
   const groupedRefs: BrowseRowRef[] = [];
   const groupCounts: number[] = [];
   const reversedCounts: number[] = [];
-  const groupStatsList: {
-    n: number;
-    min: number;
-    max: number;
-    mean: number;
-    sd: number;
-    p25: number;
-    p75: number;
-  }[] = [];
+  const groupStatsList: StatFields[] = [];
   const columns: BrowseColumn[] = [
     {
       key: CASE_COLUMN_KEY,
@@ -356,15 +350,7 @@ function groupTabRows(input: InterfaceBrowseInput, notes: string[]): BrowseTab {
       );
       groupCounts.push(contributing);
       reversedCounts.push(reversed);
-      groupStatsList.push({
-        n,
-        min: s.min,
-        max: s.max,
-        mean: s.mean,
-        sd: s.sd,
-        p25: q.p25,
-        p75: q.p75,
-      });
+      groupStatsList.push(statFields(s, q));
     }
   }
 

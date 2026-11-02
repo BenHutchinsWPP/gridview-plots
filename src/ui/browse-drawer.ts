@@ -27,6 +27,8 @@ import { PERCENT } from '../series/range';
 import type { CaseSwitch, PercentSwitch, VariableSwitch } from './browse-retarget';
 import {
   STAT_COLUMNS,
+  isCountStat,
+  isSignedStat,
   builtView,
   carryFilterContext,
   declinedGroupBy,
@@ -672,6 +674,7 @@ export function createBrowseDrawer(
         label: stat.label,
         kind: 'number' as const,
         computed: true,
+        defaultHidden: isSignedStat(stat.key) || undefined,
         // Each row's class comes from its own kind tab, so percent and MW can
         // share a column.
         cellClass: (row: number): CellClass => {
@@ -679,7 +682,7 @@ export function createBrowseDrawer(
           const column = at && tabIndex(at.tab).columns.get(stat.key);
           if (column) return cellClassOf(column, at!.row);
           // As a kind tab classes its stats: the hours a count, a % pin a ratio.
-          if (stat.key === 'stat.n') return 'count';
+          if (isCountStat(stat.key)) return 'count';
           return refs[row].perUnit ? 'ratio' : 'quantity';
         },
         value: (row: number) => {
@@ -690,7 +693,7 @@ export function createBrowseDrawer(
           const value = stats ? statValue(stats, stat.key) : null;
           // A drawn % line reads 100 at its divisor; a tab's % stat is the
           // ratio, which is what the cell's ratio class paints.
-          return value !== null && refs[row].perUnit && stat.key !== 'stat.n'
+          return value !== null && refs[row].perUnit && !isCountStat(stat.key)
             ? value / PERCENT
             : value;
         },

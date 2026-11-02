@@ -207,6 +207,14 @@ export interface Stats {
   /** Total over the kept hours, always computed. Whether it means anything
    * (temporal rule SUM) is the kind's stats table's decision. */
   sum: number;
+  /** Hours strictly above, strictly below and exactly at zero, and the mean
+   * of each signed side (NaN when it has none). Strict, so a zero hour drags
+   * neither side's mean toward zero. */
+  nPos: number;
+  nNeg: number;
+  nZero: number;
+  meanPos: number;
+  meanNeg: number;
 }
 
 /**
@@ -222,6 +230,10 @@ export function stats(values: Float32Array, n: number): Stats {
   let max = -Infinity;
   let sum = 0;
   let compensation = 0;
+  let nPos = 0;
+  let nNeg = 0;
+  let meanPos = 0;
+  let meanNeg = 0;
   for (let i = 0; i < n; i++) {
     const value = values[i];
     if (Number.isNaN(value)) continue; // belt and braces; applyMask already drops these
@@ -234,8 +246,24 @@ export function stats(values: Float32Array, n: number): Stats {
     const t = sum + value;
     compensation += Math.abs(sum) >= Math.abs(value) ? sum - t + value : value - t + sum;
     sum = t;
+    if (value > 0) meanPos += (value - meanPos) / ++nPos;
+    else if (value < 0) meanNeg += (value - meanNeg) / ++nNeg;
   }
-  if (count === 0) return { n: 0, mean: NaN, min: NaN, max: NaN, sd: NaN, sum: NaN };
+  if (count === 0) {
+    return {
+      n: 0,
+      mean: NaN,
+      min: NaN,
+      max: NaN,
+      sd: NaN,
+      sum: NaN,
+      nPos: 0,
+      nNeg: 0,
+      nZero: 0,
+      meanPos: NaN,
+      meanNeg: NaN,
+    };
+  }
   return {
     n: count,
     mean,
@@ -243,6 +271,11 @@ export function stats(values: Float32Array, n: number): Stats {
     max,
     sd: count < 2 ? NaN : Math.sqrt(m2 / (count - 1)),
     sum: sum + compensation,
+    nPos,
+    nNeg,
+    nZero: count - nPos - nNeg,
+    meanPos: nPos > 0 ? meanPos : NaN,
+    meanNeg: nNeg > 0 ? meanNeg : NaN,
   };
 }
 
@@ -275,7 +308,7 @@ export function isAllZero(values: Float32Array, n: number): boolean {
 // array, not by moving rows.
 
 /** Fields per row in a ranked-stats result, in slot order. */
-export const RANKED_FIELDS = 8;
+export const RANKED_FIELDS = 13;
 
 /** Slot offsets within one row of a ranked-stats result. */
 export const RANKED = {
@@ -288,6 +321,11 @@ export const RANKED = {
   p75: 6,
   /** Total over the kept hours; meaningful only where the rule is SUM. */
   sum: 7,
+  nPos: 8,
+  nNeg: 9,
+  nZero: 10,
+  meanPos: 11,
+  meanNeg: 12,
 } as const;
 
 export interface RankedRow extends Stats {
@@ -357,6 +395,9 @@ export function rankedStats(
     if (start < 0) {
       result.fill(NaN, base, base + RANKED_FIELDS);
       result[base + RANKED.n] = 0;
+      result[base + RANKED.nPos] = 0;
+      result[base + RANKED.nNeg] = 0;
+      result[base + RANKED.nZero] = 0;
       continue;
     }
     const plane = cube.subarray(start, start + planeLength);
@@ -372,6 +413,11 @@ export function rankedStats(
     result[base + RANKED.p25] = spread.p25;
     result[base + RANKED.p75] = spread.p75;
     result[base + RANKED.sum] = summary.sum;
+    result[base + RANKED.nPos] = summary.nPos;
+    result[base + RANKED.nNeg] = summary.nNeg;
+    result[base + RANKED.nZero] = summary.nZero;
+    result[base + RANKED.meanPos] = summary.meanPos;
+    result[base + RANKED.meanNeg] = summary.meanNeg;
   }
   if (memo) {
     const entries = held ?? [];
@@ -396,5 +442,10 @@ export function rankedRow(result: Float64Array, row: number): RankedRow {
     p25: result[base + RANKED.p25],
     p75: result[base + RANKED.p75],
     sum: result[base + RANKED.sum],
+    nPos: result[base + RANKED.nPos],
+    nNeg: result[base + RANKED.nNeg],
+    nZero: result[base + RANKED.nZero],
+    meanPos: result[base + RANKED.meanPos],
+    meanNeg: result[base + RANKED.meanNeg],
   };
 }

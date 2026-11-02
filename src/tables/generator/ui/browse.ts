@@ -37,6 +37,8 @@ import {
   CASE_COLUMN_KEY,
   statColumns,
   statColumnsFrom,
+  statFields,
+  type StatFields,
 } from '../../../ui/browse-model';
 import {
   groupRowLabel,
@@ -287,15 +289,7 @@ function groupTabRows(ctx: GeneratorTabCtx): BrowseTab {
 
   const groupedRefs: BrowseRowRef[] = [];
   const groupCounts: number[] = [];
-  const groupStatsList: {
-    n: number;
-    min: number;
-    max: number;
-    mean: number;
-    sd: number;
-    p25: number;
-    p75: number;
-  }[] = [];
+  const groupStatsList: StatFields[] = [];
   const columns: BrowseColumn[] = [
     {
       key: CASE_COLUMN_KEY,
@@ -432,15 +426,7 @@ function groupTabRows(ctx: GeneratorTabCtx): BrowseTab {
         }),
       );
       groupCounts.push(contributing);
-      groupStatsList.push({
-        n,
-        min: s.min,
-        max: s.max,
-        mean: s.mean,
-        sd: s.sd,
-        p25: q.p25,
-        p75: q.p75,
-      });
+      groupStatsList.push(statFields(s, q));
     }
   }
 
@@ -501,15 +487,7 @@ function groupByRows(ctx: GeneratorTabCtx, groupBy: string): BrowseTab | undefin
 
     const groupedRefs: BrowseRowRef[] = [];
     const groupCounts: number[] = [];
-    const groupStatsList: {
-      n: number;
-      min: number;
-      max: number;
-      mean: number;
-      sd: number;
-      p25: number;
-      p75: number;
-    }[] = [];
+    const groupStatsList: StatFields[] = [];
     const longest = Math.max(0, ...tables.map((table) => planeLength(table.data)));
     const gatheredScratch = createScratch(longest);
     const rangeScratch = createScratch(longest);
@@ -593,15 +571,7 @@ function groupByRows(ctx: GeneratorTabCtx, groupBy: string): BrowseTab | undefin
           }),
         );
         groupCounts.push(bucket.count);
-        groupStatsList.push({
-          n,
-          min: s.min,
-          max: s.max,
-          mean: s.mean,
-          sd: s.sd,
-          p25: q.p25,
-          p75: q.p75,
-        });
+        groupStatsList.push(statFields(s, q));
       }
     }
 

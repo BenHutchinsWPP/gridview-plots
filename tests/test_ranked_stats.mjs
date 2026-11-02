@@ -168,6 +168,37 @@ function oracle(cube, start, mask) {
   ok('the flat slots and the record accessor read the same row');
 }
 
+// --- 9. Signed tallies are strict ------------------------------------------
+//
+// A zero hour is neither side: it counts as a zero and moves neither mean.
+// -0 is a zero. NaN hours count nowhere.
+{
+  const values = Float32Array.of(4, -2, 0, -0, 2, NaN, -4, 0);
+  const s = stats(values, values.length);
+  assert.equal(s.n, 7);
+  assert.equal(s.nPos, 2);
+  assert.equal(s.nNeg, 2);
+  assert.equal(s.nZero, 3);
+  assert.equal(s.meanPos, 3);
+  assert.equal(s.meanNeg, -3);
+  ok('zeros are counted apart and drag neither signed mean');
+
+  const zeros = stats(new Float32Array(5), 5);
+  assert.deepEqual([zeros.nPos, zeros.nNeg, zeros.nZero], [0, 0, 5]);
+  assert.ok(Number.isNaN(zeros.meanPos) && Number.isNaN(zeros.meanNeg));
+  ok('a side with no hours has no mean: blank, never 0');
+
+  const cube = makeCube(2, (e, h) => (e === 0 ? (h % 3) - 1 : 1), [1]);
+  const result = rankedStats(cube, Int32Array.of(0, -1), HOURS, allHours());
+  const row = rankedRow(result, 0);
+  assert.equal(row.nPos + row.nNeg + row.nZero, row.n);
+  assert.equal(row.meanPos, 1);
+  assert.equal(row.meanNeg, -1);
+  assert.equal(result[RANKED_FIELDS + RANKED.nPos], 0);
+  assert.ok(Number.isNaN(result[RANKED_FIELDS + RANKED.meanPos]));
+  ok('the ranked pass carries the signed tallies, and an absent row is blank');
+}
+
 // ------------------------------------------------ quartiles by selection
 //
 // p25 and p75 are SELECTED, not sorted: the scratch buffer comes back

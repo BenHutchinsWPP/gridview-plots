@@ -35,6 +35,13 @@ export interface Stats {
   max: number;
   sd: number;
   sum?: number;
+  /** Signed tallies for the Selected tab's stats, as `stats` in
+   * `src/kernels.ts` counts them. */
+  nPos: number;
+  nNeg: number;
+  nZero: number;
+  meanPos: number;
+  meanNeg: number;
 }
 
 /** The five-number summary plus Tukey fences. Declared here, not imported, to
