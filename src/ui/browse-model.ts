@@ -18,7 +18,7 @@
 //     a column nobody can see. Order is one list over hidden and shown columns,
 //     reconciled (not reset) when the tab's columns change.
 
-import { RANKED, RANKED_FIELDS, type RankedRow, type Stats } from '../kernels';
+import { RANKED, RANKED_COUNTS, RANKED_FIELDS, type RankedRow, type Stats } from '../kernels';
 import { CASE_GROUP_BY, memberSignature } from '../series/model';
 import { CASE_COLORS } from './palette';
 
@@ -243,71 +243,51 @@ export interface SwitchControl {
   onChange(value: string): void;
 }
 
+/** One fixed stat column. `field` is also its slot in a ranked-stats row. */
+export interface StatColumn {
+  readonly key: string;
+  readonly label: string;
+  readonly field: keyof StatFields;
+  /** `tabs`: hidden on kind and grouped tabs, shown on Selected. `all`:
+   * hidden everywhere. The hours count is a whole year on nearly every row,
+   * and the signed counts and means are a question asked of some variables,
+   * not all; shown, they push the stats that differ off screen. */
+  readonly hidden?: 'tabs' | 'all';
+  /** The column means the same whichever variable is shown. */
+  readonly variableFree?: true;
+}
+
 /**
  * The fixed stat columns, in display order. Kind-neutral because the Selected
  * tab finds them by key for every kind. No user-defined threshold columns: a
  * threshold needs a value, unit and comparison, which is a query language.
  */
-export const STAT_COLUMNS = [
-  { key: 'stat.min', label: 'Min' },
-  { key: 'stat.max', label: 'Max' },
-  { key: 'stat.mean', label: 'Average' },
-  { key: 'stat.sd', label: 'StdDev' },
-  { key: 'stat.p25', label: 'p25' },
-  { key: 'stat.p75', label: 'p75' },
-  { key: 'stat.n', label: 'Hours' },
-  { key: 'stat.nPos', label: 'Count(>0)' },
-  { key: 'stat.nNeg', label: 'Count(<0)' },
-  { key: 'stat.nZero', label: 'Count(Zeros)' },
-  { key: 'stat.meanPos', label: 'Avg(>0)' },
-  { key: 'stat.meanNeg', label: 'Avg(<0)' },
-] as const;
+export const STAT_COLUMNS: readonly StatColumn[] = [
+  { key: 'stat.min', label: 'Min', field: 'min' },
+  { key: 'stat.max', label: 'Max', field: 'max' },
+  { key: 'stat.mean', label: 'Average', field: 'mean' },
+  { key: 'stat.sd', label: 'StdDev', field: 'sd' },
+  { key: 'stat.p25', label: 'p25', field: 'p25' },
+  { key: 'stat.p75', label: 'p75', field: 'p75' },
+  { key: 'stat.n', label: 'Hours', field: 'n', hidden: 'tabs', variableFree: true },
+  { key: 'stat.nPos', label: 'Count(>0)', field: 'nPos', hidden: 'all' },
+  { key: 'stat.nNeg', label: 'Count(<0)', field: 'nNeg', hidden: 'all' },
+  { key: 'stat.nZero', label: 'Count(Zeros)', field: 'nZero', hidden: 'all' },
+  { key: 'stat.meanPos', label: 'Avg(>0)', field: 'meanPos', hidden: 'all' },
+  { key: 'stat.meanNeg', label: 'Avg(<0)', field: 'meanNeg', hidden: 'all' },
+];
 
-type StatKey = (typeof STAT_COLUMNS)[number]['key'];
+const STAT_BY_KEY: ReadonlyMap<string, StatColumn> = new Map(
+  STAT_COLUMNS.map((stat) => [stat.key, stat]),
+);
 
-/** Whether `key` names one of the fixed stat columns. */
-function isStatKey(key: string): key is StatKey {
-  return Object.hasOwn(STAT_FIELDS, key);
-}
-
-/** Which slot of a ranked-stats row each stat column reads. Kept beside
- * `STAT_COLUMNS` because the two are one fact. */
-const STAT_SLOTS: Readonly<Record<StatKey, number>> = {
-  'stat.min': RANKED.min,
-  'stat.max': RANKED.max,
-  'stat.mean': RANKED.mean,
-  'stat.sd': RANKED.sd,
-  'stat.p25': RANKED.p25,
-  'stat.p75': RANKED.p75,
-  'stat.n': RANKED.n,
-  'stat.nPos': RANKED.nPos,
-  'stat.nNeg': RANKED.nNeg,
-  'stat.nZero': RANKED.nZero,
-  'stat.meanPos': RANKED.meanPos,
-  'stat.meanNeg': RANKED.meanNeg,
-};
+const COUNT_FIELDS: ReadonlySet<keyof StatFields> = new Set(RANKED_COUNTS);
 
 /**
- * Which field of a stats object each stat column reads, for grouped tabs,
- * which rank a group per row. A map, so a renamed stat key fails loudly rather
- * than going blank. `StatFields` is exactly the fields shown.
+ * The fields of a stats object the stat columns show, for grouped tabs,
+ * which rank a group per row. `StatFields` is exactly the fields shown.
  */
 export type StatFields = Omit<RankedRow, 'sum'>;
-
-const STAT_FIELDS: Readonly<Record<StatKey, keyof StatFields>> = {
-  'stat.min': 'min',
-  'stat.max': 'max',
-  'stat.mean': 'mean',
-  'stat.sd': 'sd',
-  'stat.p25': 'p25',
-  'stat.p75': 'p75',
-  'stat.n': 'n',
-  'stat.nPos': 'nPos',
-  'stat.nNeg': 'nNeg',
-  'stat.nZero': 'nZero',
-  'stat.meanPos': 'meanPos',
-  'stat.meanNeg': 'meanNeg',
-};
 
 /** The shown fields of one line's stats and quartiles. */
 export function statFields(
@@ -333,7 +313,8 @@ export function statFields(
 /** Whether a stat column counts hours, so it is a count whatever the tab
  * shows: never a ratio, never rescaled by a "% of range". */
 export function isCountStat(key: string): boolean {
-  return key === 'stat.n' || key === 'stat.nPos' || key === 'stat.nNeg' || key === 'stat.nZero';
+  const stat = STAT_BY_KEY.get(key);
+  return stat !== undefined && COUNT_FIELDS.has(stat.field);
 }
 
 /**
@@ -395,37 +376,28 @@ export function pinLines(
 
 /** One stat column's value in a stats object; NaN is blank. */
 export function statValue(stats: StatFields, key: string): number | null {
-  if (!isStatKey(key)) return null;
-  const value = stats[STAT_FIELDS[key]];
+  const stat = STAT_BY_KEY.get(key);
+  if (!stat) return null;
+  const value = stats[stat.field];
   return Number.isNaN(value) ? null : value;
 }
 
 /** An hours count is always a count, whatever the tab's class. */
-function statCellClass(stat: { key: string }, cellClass: CellClass): CellClass {
+function statCellClass(stat: StatColumn, cellClass: CellClass): CellClass {
   return isCountStat(stat.key) ? 'count' : cellClass;
 }
 
-/** Only the first six stats start shown. The hours count is a whole year on
- * nearly every row, and the signed counts and means are a question asked of
- * some variables, not all; shown, they push the stats that differ off screen. */
-function statHidden(stat: { key: string }): true | undefined {
-  return stat.key === 'stat.n' || isSignedStat(stat.key) || undefined;
+function statHidden(stat: StatColumn): true | undefined {
+  return stat.hidden ? true : undefined;
 }
 
-/** The counts and means of one sign, which every tab, Selected too, starts
- * hidden. */
-export function isSignedStat(key: string): boolean {
-  return (
-    key === 'stat.nPos' ||
-    key === 'stat.nNeg' ||
-    key === 'stat.nZero' ||
-    key === 'stat.meanPos' ||
-    key === 'stat.meanNeg'
-  );
+/** Whether a stat column starts hidden on the Selected tab too. */
+export function hiddenOnSelected(key: string): boolean {
+  return STAT_BY_KEY.get(key)?.hidden === 'all';
 }
 
 /** A ratio's label says it is a percent, so 43 in a Max column is not misread. */
-function statLabel(stat: { key: string; label: string }, cellClass: CellClass): string {
+function statLabel(stat: StatColumn, cellClass: CellClass): string {
   return cellClass === 'ratio' && !isCountStat(stat.key) ? `${stat.label} (%)` : stat.label;
 }
 
@@ -461,7 +433,7 @@ export function statColumns(
   cellClass: CellClass = 'quantity',
 ): BrowseColumn[] {
   return STAT_COLUMNS.map((stat) => {
-    const slot = STAT_SLOTS[stat.key];
+    const slot = RANKED[stat.field];
     return {
       key: stat.key,
       label: statLabel(stat, cellClass),
@@ -1045,7 +1017,8 @@ export interface CaseNames {
  * do; a list attribute, a group count and the hour count do not. By key,
  * so pins frozen before `chosenOn` existed are judged the same way. */
 export function dependsOnVariable(key: string): boolean {
-  return key === 'stat.cf' || (isStatKey(key) && key !== 'stat.n');
+  const stat = STAT_BY_KEY.get(key);
+  return key === 'stat.cf' || (stat !== undefined && !stat.variableFree);
 }
 
 /** A frozen constraint as the pin now reads it: with what it was chosen on

@@ -10,6 +10,7 @@
 // Shared by every kind, so it imports nothing from src/tables/.
 
 import 'uplot/dist/uPlot.min.css';
+import type { Quantiles, Stats } from '../kernels';
 import type { SeriesSpec } from '../series/model';
 import type { SeriesFacets } from '../series/label';
 import { within } from './dom';
@@ -26,39 +27,7 @@ import { createHeatmapAdapter } from './panes/heatmap';
 import { createIntervalAdapter, intervalSettings, restoreIntervalSettings } from './panes/interval';
 import { createLegendAdapter } from './panes/legend';
 
-/** The summary the legend renders. `sum` is optional: only units that may be
- * totalled over time have one. */
-export interface Stats {
-  n: number;
-  mean: number;
-  min: number;
-  max: number;
-  sd: number;
-  sum?: number;
-  /** Signed tallies for the Selected tab's stats, as `stats` in
-   * `src/kernels.ts` counts them. */
-  nPos: number;
-  nNeg: number;
-  nZero: number;
-  meanPos: number;
-  meanNeg: number;
-}
-
-/** The five-number summary plus Tukey fences. Declared here, not imported, to
- * keep this module free of src/tables/. */
-export interface Quantiles {
-  n: number;
-  min: number;
-  p25: number;
-  median: number;
-  p75: number;
-  max: number;
-  lowerWhisker: number;
-  upperWhisker: number;
-  outliers: number;
-  /** p25 = median = p75: correct, but reads as a broken chart. */
-  degenerate: boolean;
-}
+export type { Quantiles };
 
 export interface CaseSeries {
   /** The in-plot name: only the facets that vary across the drawn set

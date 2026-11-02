@@ -28,7 +28,7 @@ import type { CaseSwitch, PercentSwitch, VariableSwitch } from './browse-retarge
 import {
   STAT_COLUMNS,
   isCountStat,
-  isSignedStat,
+  hiddenOnSelected,
   builtView,
   carryFilterContext,
   declinedGroupBy,
@@ -674,7 +674,7 @@ export function createBrowseDrawer(
         label: stat.label,
         kind: 'number' as const,
         computed: true,
-        defaultHidden: isSignedStat(stat.key) || undefined,
+        defaultHidden: hiddenOnSelected(stat.key) || undefined,
         // Each row's class comes from its own kind tab, so percent and MW can
         // share a column.
         cellClass: (row: number): CellClass => {

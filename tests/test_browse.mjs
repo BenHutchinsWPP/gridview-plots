@@ -31,6 +31,9 @@ const { RANKED, RANKED_FIELDS } = await import('../src/kernels.ts');
 const { planeStartsFor, rankScopedRows } = await import('../src/ui/browse-planes.ts');
 const {
   STAT_COLUMNS,
+  isCountStat,
+  hiddenOnSelected,
+  dependsOnVariable,
   browseJoinKey,
   builtView,
   headerSignature,
@@ -594,6 +597,26 @@ const table = (data) => ({
     assert.ok(column(stat.key), `the tab carries ${stat.key}`);
   }
   ok('the tab spells its stat columns with the shared keys the Selected tab reads');
+
+  const keysWhere = (test) => STAT_COLUMNS.filter((stat) => test(stat.key)).map((s) => s.key);
+  for (const stat of STAT_COLUMNS)
+    assert.ok(stat.field in RANKED, `${stat.key} reads a ranked slot`);
+  assert.equal(new Set(STAT_COLUMNS.map((stat) => stat.key)).size, STAT_COLUMNS.length);
+  assert.deepEqual(keysWhere(isCountStat), ['stat.n', 'stat.nPos', 'stat.nNeg', 'stat.nZero']);
+  assert.deepEqual(keysWhere(hiddenOnSelected), [
+    'stat.nPos',
+    'stat.nNeg',
+    'stat.nZero',
+    'stat.meanPos',
+    'stat.meanNeg',
+  ]);
+  assert.deepEqual(
+    keysWhere((key) => !dependsOnVariable(key)),
+    ['stat.n'],
+  );
+  ok(
+    'stat keys are unique, each reads a ranked slot, and the counts, the stats Selected hides and the variable-free one are exactly these',
+  );
 
   assert.equal(column('list.Name'), undefined);
   ok('the key column is not repeated under its file spelling beside Generator');

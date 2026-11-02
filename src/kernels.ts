@@ -250,19 +250,21 @@ export function stats(values: Float32Array, n: number): Stats {
     else if (value < 0) meanNeg += (value - meanNeg) / ++nNeg;
   }
   if (count === 0) {
-    return {
-      n: 0,
+    const none: Stats = {
+      n: NaN,
       mean: NaN,
       min: NaN,
       max: NaN,
       sd: NaN,
       sum: NaN,
-      nPos: 0,
-      nNeg: 0,
-      nZero: 0,
+      nPos: NaN,
+      nNeg: NaN,
+      nZero: NaN,
       meanPos: NaN,
       meanNeg: NaN,
     };
+    for (const field of RANKED_COUNTS) none[field] = 0;
+    return none;
   }
   return {
     n: count,
@@ -300,17 +302,15 @@ export function isAllZero(values: Float32Array, n: number): boolean {
 //
 //   1. **The caller passes only the rows the scope KEEPS.** Narrowing before
 //      ranking is what makes bus width affordable.
-//   2. **A plane start of -1 means "no plane here"**: `n = 0` and blank
-//      columns, never a NaN row among real ones.
+//   2. **A plane start of -1 means "no plane here"**: every count 0 and the
+//      other columns blank, never a NaN row among real ones.
 //   3. **Kind-neutral because it is fed offsets, not tables.**
 //
 // Output is one flat Float64Array; the table sorts by permuting an index
 // array, not by moving rows.
 
-/** Fields per row in a ranked-stats result, in slot order. */
-export const RANKED_FIELDS = 13;
-
-/** Slot offsets within one row of a ranked-stats result. */
+/** Slot offsets within one row of a ranked-stats result. Values are exactly
+ * 0..RANKED_FIELDS-1; `satisfies` makes a field missing here a type error. */
 export const RANKED = {
   n: 0,
   mean: 1,
@@ -326,7 +326,21 @@ export const RANKED = {
   nZero: 10,
   meanPos: 11,
   meanNeg: 12,
-} as const;
+} as const satisfies Record<keyof RankedRow, number>;
+
+const RANKED_KEYS = Object.keys(RANKED) as (keyof RankedRow)[];
+
+/** Fields per row in a ranked-stats result. */
+export const RANKED_FIELDS = RANKED_KEYS.length;
+
+/** The fields that are hour counts: 0 for an absent or empty row, where every
+ * other field is NaN. */
+export const RANKED_COUNTS = [
+  'n',
+  'nPos',
+  'nNeg',
+  'nZero',
+] as const satisfies readonly (keyof Stats)[];
 
 export interface RankedRow extends Stats {
   p25: number;
@@ -394,10 +408,7 @@ export function rankedStats(
     const start = planeStarts[row];
     if (start < 0) {
       result.fill(NaN, base, base + RANKED_FIELDS);
-      result[base + RANKED.n] = 0;
-      result[base + RANKED.nPos] = 0;
-      result[base + RANKED.nNeg] = 0;
-      result[base + RANKED.nZero] = 0;
+      for (const field of RANKED_COUNTS) result[base + RANKED[field]] = 0;
       continue;
     }
     const plane = cube.subarray(start, start + planeLength);
@@ -405,19 +416,8 @@ export function rankedStats(
     const summary = stats(scratch, n);
     // `stats` first: `quartiles` reorders `scratch` in place.
     const spread = quartiles(scratch, n);
-    result[base + RANKED.n] = summary.n;
-    result[base + RANKED.mean] = summary.mean;
-    result[base + RANKED.min] = summary.min;
-    result[base + RANKED.max] = summary.max;
-    result[base + RANKED.sd] = summary.sd;
-    result[base + RANKED.p25] = spread.p25;
-    result[base + RANKED.p75] = spread.p75;
-    result[base + RANKED.sum] = summary.sum;
-    result[base + RANKED.nPos] = summary.nPos;
-    result[base + RANKED.nNeg] = summary.nNeg;
-    result[base + RANKED.nZero] = summary.nZero;
-    result[base + RANKED.meanPos] = summary.meanPos;
-    result[base + RANKED.meanNeg] = summary.meanNeg;
+    const ranked: RankedRow = { ...summary, p25: spread.p25, p75: spread.p75 };
+    for (const field of RANKED_KEYS) result[base + RANKED[field]] = ranked[field];
   }
   if (memo) {
     const entries = held ?? [];

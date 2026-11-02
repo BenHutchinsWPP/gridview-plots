@@ -12,6 +12,7 @@ import './test_loader.mjs';
 
 const {
   RANKED,
+  RANKED_COUNTS,
   RANKED_FIELDS,
   applyMask,
   createScratch,
@@ -165,6 +166,10 @@ function oracle(cube, start, mask) {
   assert.equal(result[RANKED.n], row.n);
   assert.equal(result[RANKED.max], row.max);
   assert.equal(RANKED_FIELDS, Object.keys(RANKED).length);
+  assert.deepEqual(
+    Object.values(RANKED).sort((a, b) => a - b),
+    Array.from({ length: RANKED_FIELDS }, (_, slot) => slot),
+  );
   ok('the flat slots and the record accessor read the same row');
 }
 
@@ -197,6 +202,20 @@ function oracle(cube, start, mask) {
   assert.equal(result[RANKED_FIELDS + RANKED.nPos], 0);
   assert.ok(Number.isNaN(result[RANKED_FIELDS + RANKED.meanPos]));
   ok('the ranked pass carries the signed tallies, and an absent row is blank');
+
+  const COUNTS = ['n', 'nPos', 'nNeg', 'nZero'];
+  assert.deepEqual([...RANKED_COUNTS], COUNTS);
+  const absent = rankedRow(result, 1);
+  for (const [field, value] of Object.entries(absent)) {
+    if (COUNTS.includes(field)) assert.equal(value, 0, `${field} of an absent row`);
+    else assert.ok(Number.isNaN(value), `${field} of an absent row`);
+  }
+  const empty = stats(new Float32Array(0), 0);
+  for (const [field, value] of Object.entries(empty)) {
+    if (COUNTS.includes(field)) assert.equal(value, 0, `${field} of an empty set`);
+    else assert.ok(Number.isNaN(value), `${field} of an empty set`);
+  }
+  ok('an absent row and an empty set write 0 to exactly the count fields');
 }
 
 // ------------------------------------------------ quartiles by selection
