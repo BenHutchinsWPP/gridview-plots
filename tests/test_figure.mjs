@@ -1119,7 +1119,7 @@ ok('an X-Y figure colours each point as the pane did, with a key in the legend�
   assert.equal(xyPoints(figure), 0, 'no point keeps the uncoloured grey');
   assert.equal(textOf(figure, 'legend.title'), 'Season');
   assert.equal(textOf(figure, 'legend.key[1]'), 'Summer');
-  assert.match(textOf(figure, 'legend.missing'), /^no colour value \(4,390 h\)$/);
+  assert.equal(textOf(figure, 'legend.missing'), '4,390 h with no colour value');
   const edited = xyFigure(pair, {
     xy: { fit: false, colour: { key, colours } },
     edits: { 'legend.title': 'Seasons' },
@@ -1140,6 +1140,61 @@ ok('an X-Y figure colours each point as the pane did, with a key in the legend�
   assert.equal(textOf(positive, 'legend.from'), '0.00', 'the ramp runs from 0, its black end');
   assert.equal(textOf(signed, 'legend.from'), '-5');
   assert.equal(textOf(signed, 'legend.to'), '10');
+});
+
+ok('an X-Y figure carries the colour series’ unit, warnings, caption and an empty key', () => {
+  const pair = xyPair();
+  const colours = Array.from({ length: H }, () => '#9a9a9a');
+  const plain = xyFigure(pair).caption;
+  const withKey = (colour) => xyFigure(pair, { xy: { fit: false, colour } });
+  const ramp = withKey({
+    key: { kind: 'signed', title: 'LMP', low: -5, high: 10, unit: '$/MWh' },
+    colours,
+    line: {
+      name: 'LMP',
+      facets: { subject: 'ALDER (101)', kind: 'bus', variable: 'LMP', unit: '$/MWh' },
+      warnings: ['LMP is a plain mean: no weight column'],
+    },
+  });
+  assert.equal(textOf(ramp, 'legend.to'), '10', 'the unit is named once, by the title');
+  assert.match(textOf(ramp, 'legend.title'), /\$\/MWh/, 'the key’s title names the unit');
+  // X carries the caveat too: it is footnoted once, as X's.
+  const caveat = 'a caveat X shares';
+  const once = xyFigure(
+    xyPair().map((l, n) => (n === 0 ? { ...l, warnings: [caveat] } : l)),
+    {
+      xy: {
+        fit: false,
+        colour: {
+          key: { kind: 'signed', title: 'LMP', low: -5, high: 10 },
+          colours,
+          line: { name: 'LMP', warnings: [caveat] },
+        },
+      },
+    },
+  );
+  assert.equal(
+    once.texts.filter((t) => /^footnote/.test(t.id) && t.text.includes(caveat)).length,
+    1,
+    'a warning the pair already carries is footnoted once',
+  );
+  assert.ok(
+    ramp.texts.some((t) => /^footnote/.test(t.id) && /plain mean: no weight column/.test(t.text)),
+    'the colour series’ warning is footnoted',
+  );
+  assert.match(ramp.caption, /, coloured by ALDER \(101\)\./, 'the caption names the series');
+  const season = withKey({
+    key: { kind: 'swatches', title: 'Hour ending', by: 'hour of day', items: [] },
+    colours,
+  });
+  assert.match(season.caption, /, coloured by hour of day\./);
+  assert.doesNotMatch(plain, /coloured/, 'an uncoloured caption is unchanged');
+  const empty = withKey({
+    key: { kind: 'signed', title: 'LMP', low: Infinity, high: -Infinity, empty: true },
+    colours,
+  });
+  assert.equal(textOf(empty, 'legend.empty'), 'no values');
+  assert.ok(!empty.texts.some((t) => t.id === 'legend.from'), 'no ramp');
 });
 
 ok('an X-Y figure’s caption names the years it paired, and fits every pair', () => {

@@ -26,6 +26,7 @@ const {
   intervalSettings,
   restoreIntervalSettings,
 } = await import('../src/ui/panes/interval.ts');
+const xyColour = await import('../src/ui/panes/xy-colour.ts');
 const { weekdayOf, weekdaysOver } = await import('../src/model/date-range.ts');
 const { NO_YEAR } = await import('../src/app/boxes.ts');
 
@@ -177,6 +178,15 @@ check('a span’s months are each (year, month), labelled with the year', () => 
   const colour = (i) => periodColour('month', months, i, in2035to2037);
   assert.equal(colour(1), colour(13), 'one February colour in every year');
   assert.notEqual(colour(1), colour(2));
+});
+
+check('the month key has twelve distinct colours, the X-Y pane’s', () => {
+  const { monthColor } = xyColour;
+  const months = cutPeriods(indexes(), 'month', in2035);
+  const colours = months.map((_, i) => periodColour('month', months, i, in2035));
+  assert.equal(new Set(colours).size, 12);
+  colours.forEach((c, i) => assert.equal(c, monthColor(i)));
+  assert.ok(!/export const monthColor/.test(read('src/ui/panes/interval.ts')), 'no second ramp');
 });
 
 check('a span’s days skip each phantom Feb 29 and keep 2036’s', () => {

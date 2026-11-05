@@ -27,6 +27,7 @@ import {
 } from '../../series/interval';
 import { clip, formatNumber } from '../chart-format';
 import { viridisColor } from './heatmap';
+import { monthColor } from './xy-colour';
 import {
   figureShot,
   hasYear,
@@ -88,9 +89,6 @@ export const WEEKDAY_COLORS = [
   '#ff7f0e',
   '#d62728',
 ];
-/** Winter dark, summer yellow, on the heatmap's ramp. */
-export const monthColor = (month: number): string =>
-  viridisColor(0.5 - 0.5 * Math.cos((2 * Math.PI * (month - 0.5)) / 12));
 const MEAN = '#1a1a1a';
 /** Within this many px of a line, the pointer names it. */
 const HIT = 12;

@@ -651,18 +651,54 @@ console.log(
   adapter.draw(frameOf([a, b, c]));
   assert.deepEqual(fills(), ['#1f4eff', NO_COLOUR], 'C left only at -5, its most negative: blue');
   assert.ok(
-    ctx.calls.some((call) => call.op === 'fillText' && call.text === '1 h no colour'),
+    ctx.calls.some((call) => call.op === 'fillText' && call.text === '1 h with no colour value'),
     'the key counts the points with no colour value',
   );
 
   // The Figure takes each point's colour from the pane.
   c.values[JUL_1] = 10;
+  c.warnings = ['plain mean: no weight column'];
   adapter.draw(frameOf([a, b, c]));
   const colour = adapter.figure.capture().capture.xy.colour;
   assert.equal(colour.key.kind, 'signed');
   assert.equal(colour.colours[JAN_1], '#1f4eff');
   assert.equal(colour.colours[JUL_1], '#ff1f1f');
   assert.equal(colour.colours[1], '', 'no pair, no colour');
+  assert.deepEqual(
+    colour.line.warnings,
+    ['plain mean: no weight column'],
+    'the colour series’ warnings reach the Figure',
+  );
+  assert.equal(colour.key.unit, '$/MWh', 'and its unit rides the key');
+
+  // Units: the hover's colour row and the ramp's high label carry the unit.
+  ctx.calls.length = 0;
+  adapter.draw(frameOf([a, b, c]));
+  assert.ok(
+    ctx.calls.some((call) => call.op === 'fillText' && call.text === '10 $/MWh'),
+    'the ramp writes the unit after its high label',
+  );
+  const dot = ctx.calls.find((call) => call.op === 'fillRect' && call.w === 2.5);
+  adapter.hover(dot.x + 1.25, dot.y + 1.25);
+  assert.equal(
+    pane.host.tip.children.at(-1).children[2].textContent,
+    '-5 $/MWh',
+    'the hover’s colour row is the value and its unit',
+  );
+
+  // No finite colour value at any plotted point: no ramp, a plain note.
+  const hollow = seriesOf('H', '$/MWh', '#2ca02c', () => {});
+  hollow.values.fill(NaN);
+  xyColour.dataset.want = 'series:H';
+  ctx.calls.length = 0;
+  adapter.draw(frameOf([a, b, hollow]));
+  const texts = ctx.calls.filter((call) => call.op === 'fillText').map((call) => call.text);
+  assert.ok(texts.includes('no values'), 'a colour series with no value shows no ramp');
+  assert.ok(texts.includes('2 h with no colour value'), 'and the points are counted');
+  assert.deepEqual(fills(), [NO_COLOUR, NO_COLOUR], 'all grey');
+  assert.equal(adapter.figure.capture().capture.xy.colour.key.empty, true);
+  xyColour.dataset.want = 'series:C';
+  adapter.draw(frameOf([a, b, c]));
 
   // A colour series the pair cannot take refuses, naming both.
   xyColour.dataset.want = 'series:D';
@@ -689,6 +725,20 @@ console.log(
     host2.host.controls.xyColour.dataset.want = 'series:row-C';
     pane2.draw(frameOf([a, b, { ...ranged, detail: 'C · % of range (max 7)' }]));
     assert.match(host2.record.notes.at(-1), / \/ colour C$/, 'a relabelled line keeps its colour');
+  }
+
+  // The X choice is kept by the browse row when the line has one.
+  {
+    const host3 = stubHost();
+    const pane3 = createXyAdapter(host3.host);
+    // Q goes on X, then a filter relabels Q: its row id still finds it.
+    const p = { ...a, rowId: 'row-P', detail: 'P' };
+    const q = { ...b, rowId: 'row-Q', detail: 'Q · % of range (max 10)' };
+    pane3.draw(frameOf([p, q]));
+    host3.host.controls.xySwap.fire('click');
+    pane3.draw(frameOf([p, { ...q, detail: 'Q · % of range (max 7)' }]));
+    assert.match(host3.record.notes.at(-1), /^X /, 'the swap holds');
+    assert.ok(host3.record.notes.at(-1).startsWith(`X ${q.name} `), 'Q stays on X');
   }
 
   // Two drawn with a series choice saved: the choice waits, nothing is coloured.

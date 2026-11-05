@@ -274,6 +274,9 @@ function keptValues(values: ArrayLike<number>, kept: readonly KeptSlot[]): Float
 /** A line's full label: what the pane keys the user's choices by, never
  * `name`, which is relative to the other drawn lines and moves with them. */
 const labelOf = (series: CaseSeries): string => series.detail ?? series.name;
+/** What the X ⇄ Y choice is kept by: the browse row when the line has one,
+ * since a "% of range" label moves with the hour filter. */
+const swapKeyOf = (series: CaseSeries): string => series.rowId ?? labelOf(series);
 /** A colour series' key: its browse row, which no filter changes (a "% of
  * range" label names its divisors and moves with the hours shown), else its
  * full label. */
@@ -287,8 +290,23 @@ type Layout =
 
 /** The key a pane draws above its plot, and a figure under its caption. */
 export type XyKey =
-  | { kind: 'swatches'; title: string; items: { color: string; label: string }[] }
-  | { kind: 'signed'; title: string; low: number; high: number };
+  | {
+      kind: 'swatches';
+      title: string;
+      /** What the caption says the points are coloured by. */
+      by?: string;
+      items: { color: string; label: string }[];
+    }
+  | {
+      kind: 'signed';
+      title: string;
+      low: number;
+      high: number;
+      /** The series' unit, written after a value the key or hover names. */
+      unit?: string;
+      /** No plotted point has a value: there is no ramp to show. */
+      empty?: boolean;
+    };
 
 /** A signed key's ramp runs through 0, so its black end is always shown:
  * a series that never goes negative reads from black at 0 to red. */
@@ -301,6 +319,19 @@ const CALENDAR_TITLE: Record<Exclude<XyColourBy, 'none'>, string> = {
   month: 'Month',
   hourOfDay: 'Hour ending',
 };
+const CALENDAR_BY: Record<Exclude<XyColourBy, 'none'>, string> = {
+  season: 'season',
+  month: 'month',
+  hourOfDay: 'hour of day',
+};
+
+/** A value followed by its unit, when it has one. */
+const withUnit = (value: string, unit: string | undefined): string =>
+  unit ? `${value} ${unit}` : value;
+
+/** The points with no colour value, as the pane's key and the Figure's say it. */
+export const missingColourText = (count: number): string =>
+  `${count.toLocaleString('en-US')} h with no colour value`;
 
 export function createXyAdapter(host: PaneHost): PaneAdapter {
   const { body, canvas, tip } = host;
@@ -311,10 +342,10 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
   /** The pair as drawn, X first, for the resize path and the Figure. */
   let pair: [CaseSeries, CaseSeries] | null = null;
   let colouring: Colouring | null = null;
-  /** The series this pane last put on X, by its FULL label, or null for
-   * selection order. A label, not an index, so a changed selection cannot
-   * reassign the user's choice. Kept across types. */
-  let xLabel: string | null = null;
+  /** The series this pane last put on X, by its browse row else its FULL
+   * label, or null for selection order. A key, not an index, so a changed
+   * selection cannot reassign the user's choice. Kept across types. */
+  let xKey: string | null = null;
 
   /** The user's "colour on", kept on the select so a bundle can save and
    * restore it before a draw has offered a series choice. A series no longer
@@ -327,7 +358,7 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
   });
   xySwap.addEventListener('click', () => {
     if (!frame || !pair) return;
-    xLabel = labelOf(pair[1]);
+    xKey = swapKeyOf(pair[1]);
     host.rerender();
   });
   // A series choice moves which lines are the pair: every pane's controls
@@ -340,8 +371,8 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
   /** The ordered pair to draw. A stored X no longer selected falls back to
    * selection order. */
   function xyPair(drawable: CaseSeries[]): [CaseSeries, CaseSeries] {
-    const stored = xLabel;
-    const x = stored == null ? -1 : drawable.findIndex((s) => labelOf(s) === stored);
+    const stored = xKey;
+    const x = stored == null ? -1 : drawable.findIndex((s) => swapKeyOf(s) === stored);
     const xAxis = x >= 0 ? x : 0;
     return [drawable[xAxis], drawable[1 - xAxis]];
   }
@@ -410,9 +441,21 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
     const c = drawn.colouring;
     if (!c) return null;
     if (c.by === 'series') {
-      return { kind: 'signed', title: c.series!.name, low: drawn.low, high: drawn.high };
+      return {
+        kind: 'signed',
+        title: c.series!.name,
+        low: drawn.low,
+        high: drawn.high,
+        unit: c.series!.unit,
+        ...(Number.isFinite(drawn.low) ? {} : { empty: true }),
+      };
     }
-    return { kind: 'swatches', title: CALENDAR_TITLE[c.by], items: calendarKey(c.by) };
+    return {
+      kind: 'swatches',
+      title: CALENDAR_TITLE[c.by],
+      by: CALENDAR_BY[c.by],
+      items: calendarKey(c.by),
+    };
   }
 
   /** The point's colour label for the hover. */
@@ -421,7 +464,9 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
     if (!Number.isFinite(point.v)) {
       return 'no value';
     }
-    return c.by === 'series' ? formatNumber(point.v) : calendarKey(c.by)[point.v].label;
+    return c.by === 'series'
+      ? withUnit(formatNumber(point.v), c.series!.unit)
+      : calendarKey(c.by)[point.v].label;
   }
 
   function clear(): void {
@@ -517,7 +562,9 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
       context.fillText(text, x, baseline);
       x += context.measureText(text).width + 4;
     };
-    if (key.kind === 'signed') {
+    if (key.kind === 'signed' && key.empty) {
+      label('no values');
+    } else if (key.kind === 'signed') {
       const [from, to] = rampEnds(key);
       label(formatNumber(from));
       for (let step = 0; step < 30; step++) {
@@ -526,7 +573,7 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
         swatch(color, x + (step * RAMP_PX) / 30, swatchTop, RAMP_PX / 30 + 0.25, SWATCH);
       }
       x += RAMP_PX + 4;
-      label(formatNumber(to));
+      label(withUnit(formatNumber(to), key.unit));
     } else {
       const widths = key.items.map(
         (item) => SWATCH + 3 + context.measureText(item.label).width + 8,
@@ -553,11 +600,7 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
       swatch(NO_COLOUR, x, swatchTop, SWATCH, SWATCH);
       x += SWATCH + 3;
       context.fillStyle = '#444';
-      context.fillText(
-        clip(context, `${missing.toLocaleString('en-US')} h no colour`, left + width - x),
-        x,
-        baseline,
-      );
+      context.fillText(clip(context, missingColourText(missing), left + width - x), x, baseline);
     }
   }
 
@@ -878,7 +921,13 @@ export function createXyAdapter(host: PaneHost): PaneAdapter {
                     key,
                     colours,
                     ...(colourSeries
-                      ? { line: { name: colourSeries.name, facets: colourSeries.facets } }
+                      ? {
+                          line: {
+                            name: colourSeries.name,
+                            facets: colourSeries.facets,
+                            warnings: colourSeries.warnings,
+                          },
+                        }
                       : {}),
                   },
                 }

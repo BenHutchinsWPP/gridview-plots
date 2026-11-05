@@ -3,8 +3,10 @@
 // What an X-Y point's colour means: a calendar field of its hour, or a third
 // series' value at that hour. One rule for the pane and its print figure,
 // which takes each point's colour from the capture rather than deciding
-// again. Months run round the season colours, each season's middle month on its season's colour, so a
-// month reads as its season and still as itself. Hours run round the day
+// again. Months run round the season colours, Jan, Apr, Jul and Oct on
+// their season's colour, so a month reads as its season and still as
+// itself. The interval pane shares these month colours, so one month is one
+// colour wherever the app draws it. Hours run round the day
 // on four colours, the morning and evening load peaks on opposite hues.
 // Rejected: a rainbow wheel, whose many hues hide which hours are near; and
 // a ramp folded about midsummer or midday, which gives April and October,

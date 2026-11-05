@@ -13,10 +13,10 @@
 import { DAY_NAMES, MONTH_NAMES } from '../model/calendar';
 import { axisHours, cutPeriods, periodSummary, type IntervalLength } from '../series/interval';
 import { viridisColor } from '../ui/panes/heatmap';
+import { monthColor } from '../ui/panes/xy-colour';
 import {
   PERIOD_COLORS,
   WEEKDAY_COLORS,
-  monthColor,
   namesPeriods,
   periodColour,
   type IntervalColour,

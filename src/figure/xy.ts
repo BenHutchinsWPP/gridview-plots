@@ -17,12 +17,19 @@
 // it, tinted as the pane's alpha draws it over white, and a key of swatches
 // or a ramp takes the legend's place, as the interval figure's does.
 
-import { fitCaption, fitLine, rampEnds, yearsText, type XyKey } from '../ui/panes/xy';
+import {
+  fitCaption,
+  fitLine,
+  missingColourText,
+  rampEnds,
+  yearsText,
+  type XyKey,
+} from '../ui/panes/xy';
 import { NO_COLOUR, signedColor } from '../ui/panes/xy-colour';
 import { formatNumber } from '../ui/chart-format';
 import { hex } from './heatmap';
 import { MEASURE_SLACK } from './legend';
-import { fullLabel, type SeriesFacets } from '../series/label';
+import { fullLabel, subjectLabel, type SeriesFacets } from '../series/label';
 import { niceScale, type FigureCapture, type FigureLine, type PaneRenderer } from './build';
 import { line as svgLine, rect, text, tint } from './svg';
 import { COLUMNS_PER_PT } from './time';
@@ -73,34 +80,37 @@ function pairsOf(
 
 type KeyEntry =
   | { kind: 'swatch'; id: string; color: string; label: string }
-  | { kind: 'ramp'; from: number; to: number; low: number; high: number };
+  | { kind: 'ramp'; from: number; to: number; low: number; high: number }
+  | { kind: 'plain'; id: string; label: string };
 
 /** The key's title, then its entries: every category, or the ramp, and the
  * points with no colour when there are any. */
 function keyEntries(key: XyKey, missing: number): KeyEntry[] {
   const entries: KeyEntry[] =
-    key.kind === 'signed'
-      ? [
-          {
-            kind: 'ramp',
-            from: rampEnds(key)[0],
-            to: rampEnds(key)[1],
-            low: key.low,
-            high: key.high,
-          },
-        ]
-      : key.items.map((item, i) => ({
-          kind: 'swatch',
-          id: `legend.key[${i}]`,
-          color: tint(hex(item.color), POINT_ALPHA),
-          label: item.label,
-        }));
+    key.kind === 'signed' && key.empty
+      ? [{ kind: 'plain', id: 'legend.empty', label: 'no values' }]
+      : key.kind === 'signed'
+        ? [
+            {
+              kind: 'ramp',
+              from: rampEnds(key)[0],
+              to: rampEnds(key)[1],
+              low: key.low,
+              high: key.high,
+            },
+          ]
+        : key.items.map((item, i) => ({
+            kind: 'swatch',
+            id: `legend.key[${i}]`,
+            color: tint(hex(item.color), POINT_ALPHA),
+            label: item.label,
+          }));
   if (missing > 0) {
     entries.push({
       kind: 'swatch',
       id: 'legend.missing',
       color: tint(NO_COLOUR, POINT_ALPHA),
-      label: `no colour value (${missing.toLocaleString('en-US')} h)`,
+      label: missingColourText(missing),
     });
   }
   return entries;
@@ -149,9 +159,25 @@ export function xyPane(
       ? `paired by hour, ${yearsText(paired.x)}`
       : `paired by hour, ${yearsText(paired.x)} against ${yearsText(paired.y)}`;
 
+  // The colour joins the caption's tail, after the Case and years it follows.
+  const colouredBy = !colour
+    ? null
+    : colour.line
+      ? `coloured by ${colour.line.facets ? (colour.line.facets.figureSubject ?? subjectLabel(colour.line.facets)) : colour.line.name}`
+      : `coloured by ${colour.key.kind === 'swatches' ? (colour.key.by ?? colour.key.title.toLowerCase()) : colour.key.title}`;
+  const tail = [years, colouredBy].filter(Boolean).join(', ') || null;
+
   return {
     lead: (what) => `X-Y scatter of ${what}`,
-    years,
+    years: tail,
+    // A warning the pair already carries is footnoted once, as theirs.
+    notes: () => [
+      ...new Set(
+        (colour?.line?.warnings ?? [])
+          .filter((warning) => ![xLine, yLine].some((l) => l.warnings?.includes(warning)))
+          .map((warning) => `${xyAxisTitle(colour!.line!)}: ${warning}`),
+      ),
+    ],
     xTitle: xyAxisTitle(xLine),
     yAxis: {
       title: xyAxisTitle(yLine),
@@ -173,13 +199,15 @@ export function xyPane(
         if (entry.kind === 'ramp') {
           const texts = [
             say('legend.from', formatNumber(entry.from)),
+            // No unit: the key's title names it, as an axis title does.
             say('legend.to', formatNumber(entry.to)),
           ];
           const w = measure(texts[0], KEY_PT) * MEASURE_SLACK + 8 + RAMP_PT;
           return { entry, texts, width: w + measure(texts[1], KEY_PT) * MEASURE_SLACK };
         }
         const texts = [say(entry.id, entry.label)];
-        return { entry, texts, width: SWATCH_PT + 3 + measure(texts[0], KEY_PT) * MEASURE_SLACK };
+        const swatch = entry.kind === 'swatch' ? SWATCH_PT + 3 : 0;
+        return { entry, texts, width: swatch + measure(texts[0], KEY_PT) * MEASURE_SLACK };
       });
       // The title first on the first row, then entries flowed to the width.
       const titleWidth = measure(title, KEY_PT) * MEASURE_SLACK + 6;
@@ -219,6 +247,8 @@ export function xyPane(
                   );
                 }
                 out.push(text(texts[1], rampLeft + RAMP_PT + 4, baseline, { size: KEY_PT }));
+              } else if (entry.kind === 'plain') {
+                out.push(text(texts[0], x, baseline, { size: KEY_PT }));
               } else {
                 out.push(
                   rect(x, middle - SWATCH_PT / 2, SWATCH_PT, SWATCH_PT, entry.color),

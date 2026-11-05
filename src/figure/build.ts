@@ -145,7 +145,13 @@ export interface FigureCapture {
       readonly key: XyKey;
       readonly colours: readonly string[];
       /** The colour series, named in the key as an axis is. */
-      readonly line?: { readonly name: string; readonly facets?: SeriesFacets };
+      readonly line?: {
+        readonly name: string;
+        readonly facets?: SeriesFacets;
+        /** Caveats the colour series was drawn with: footnoted under its
+         * title, except one the X or Y line already carries. */
+        readonly warnings?: readonly string[];
+      };
     };
   };
   /** The interval pane's settings; required for an interval figure, whose
