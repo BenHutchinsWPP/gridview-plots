@@ -4,9 +4,11 @@
 // series' value at that hour. One rule for the pane and its print figure,
 // which takes each point's colour from the capture rather than deciding
 // again. Months run round the season colours, each season's middle month on its season's colour, so a
-// month reads as its season and still as itself. Hour of day goes round a
-// colour wheel, HE 24 beside HE 1. Rejected for both: a ramp folded about
-// midsummer, which gives April and October one colour.
+// month reads as its season and still as itself. Hours run round the day
+// on four colours, the morning and evening load peaks on opposite hues.
+// Rejected: a rainbow wheel, whose many hues hide which hours are near; and
+// a ramp folded about midsummer or midday, which gives April and October,
+// or 8 AM and 4 PM, one colour.
 //
 // A series colours on blue (its most negative value) through black (0) to
 // red (its most positive), each side scaled to its own extreme, so 0 is
@@ -53,37 +55,40 @@ export function knownColourBy(value: unknown): value is string {
 export function monthColor(index: number): string {
   const anchor = Math.floor(index / 3);
   const t = (index % 3) / 3;
-  const rgb = (color: string) => [1, 3, 5].map((at) => parseInt(color.slice(at, at + 2), 16));
-  const from = rgb(SEASON_COLORS[anchor]);
-  const to = rgb(SEASON_COLORS[(anchor + 1) % 4]);
-  return hexOf(from.map((c, i) => c + (to[i] - c) * t));
+  return mix(SEASON_COLORS[anchor], SEASON_COLORS[(anchor + 1) % 4], t);
 }
 
 function hexOf(rgb: readonly number[]): string {
   return `#${rgb.map((c) => Math.round(c).toString(16).padStart(2, '0')).join('')}`;
 }
 
-/** Category `index` of `count` round a colour wheel. */
-export function wheelColor(index: number, count: number): string {
-  const hue = (index / count) * 360;
-  const s = 0.75;
-  const l = 0.45;
-  const chroma = (1 - Math.abs(2 * l - 1)) * s;
-  const x = chroma * (1 - Math.abs(((hue / 60) % 2) - 1));
-  const m = l - chroma / 2;
-  const [r, g, b] =
-    hue < 60
-      ? [chroma, x, 0]
-      : hue < 120
-        ? [x, chroma, 0]
-        : hue < 180
-          ? [0, chroma, x]
-          : hue < 240
-            ? [0, x, chroma]
-            : hue < 300
-              ? [x, 0, chroma]
-              : [chroma, 0, x];
-  return hexOf([r, g, b].map((c) => (c + m) * 255));
+/** The hour-of-day cycle's anchors, by hour ending: night muted purple,
+ * the morning peak green, midday yellow, the evening peak red, and round to
+ * purple. The two load peaks sit on opposite hues, so 8 AM never reads as
+ * 6 PM, and neighbouring hours blend. No anchor is pale: points are drawn
+ * at 0.4 alpha on white. */
+const HOUR_ANCHORS: readonly (readonly [number, string])[] = [
+  [1, '#5e4b7a'],
+  [7.5, '#2e9e4f'],
+  [13, '#d9b310'],
+  [18.5, '#d03a2f'],
+  [25, '#5e4b7a'],
+];
+
+/** Hour ending 1-24 on the day's cycle, HE 24 beside HE 1. */
+export function hourColor(hourEnding: number): string {
+  const next = HOUR_ANCHORS.findIndex(([at]) => at > hourEnding);
+  const [fromAt, from] = HOUR_ANCHORS[next - 1];
+  const [toAt, to] = HOUR_ANCHORS[next];
+  return mix(from, to, (hourEnding - fromAt) / (toAt - fromAt));
+}
+
+/** `from` toward `to` by `t`, both `#rrggbb`. */
+function mix(from: string, to: string, t: number): string {
+  const rgb = (color: string) => [1, 3, 5].map((at) => parseInt(color.slice(at, at + 2), 16));
+  const a = rgb(from);
+  const b = rgb(to);
+  return hexOf(a.map((c, i) => c + (b[i] - c) * t));
 }
 
 /** A series value's colour: black at 0, blue at `low`, red at `high`. */
@@ -98,7 +103,7 @@ export function signedColor(value: number, low: number, high: number): string {
 export function calendarKey(by: Exclude<XyColourBy, 'none'>): { color: string; label: string }[] {
   if (by === 'season') return SEASON_NAMES.map((label, i) => ({ color: SEASON_COLORS[i], label }));
   if (by === 'month') return MONTH_NAMES.map((label, i) => ({ color: monthColor(i), label }));
-  return Array.from({ length: 24 }, (_, i) => ({ color: wheelColor(i, 24), label: `HE ${i + 1}` }));
+  return Array.from({ length: 24 }, (_, i) => ({ color: hourColor(i + 1), label: `HE ${i + 1}` }));
 }
 
 /** Any leap year: season, month and hour of day are the same at a slot

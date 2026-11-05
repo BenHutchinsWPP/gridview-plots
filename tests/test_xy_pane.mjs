@@ -560,7 +560,7 @@ console.log(
     SEASON_COLORS,
     NO_COLOUR,
     signedColor,
-    wheelColor,
+    hourColor,
     monthColor,
     calendarKey,
     calendarIndex,
@@ -596,7 +596,14 @@ console.log(
     const colours = calendarKey(by).map((item) => item.color);
     assert.equal(new Set(colours).size, colours.length, `every ${by} has its own colour`);
   }
-  assert.notEqual(wheelColor(6, 24), wheelColor(18, 24), 'a morning hour is not an evening one');
+  const rgbOf = (c) => [1, 3, 5].map((at) => parseInt(c.slice(at, at + 2), 16));
+  const [r8, g8, b8] = rgbOf(hourColor(8));
+  const [r18, g18, b18] = rgbOf(hourColor(18));
+  assert.ok(g8 > r8 && g8 > b8, 'the 7-8 AM peak is green');
+  assert.ok(r18 > 2 * g18 && r18 > 2 * b18, 'the 6 PM peak is red, never the morning green');
+  const step = (h) =>
+    rgbOf(hourColor(h)).reduce((d, c, i) => d + Math.abs(c - rgbOf(hourColor((h % 24) + 1))[i]), 0);
+  assert.ok(step(24) < 60, 'HE 24 blends into HE 1');
   assert.deepEqual(
     [0, 3, 6, 9].map(monthColor),
     [...SEASON_COLORS],
