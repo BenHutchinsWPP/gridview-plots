@@ -24,7 +24,7 @@ export function hasYear(year: number | undefined): year is number {
 
 /** A group of header controls a type shows. The pane owns the elements. */
 export type PaneControl =
-  'zoom' | 'download' | 'limits' | 'dates' | 'overlay' | 'box' | 'xy' | 'interval';
+  'zoom' | 'download' | 'limits' | 'dates' | 'overlay' | 'box' | 'xy' | 'xyColour' | 'interval';
 
 /** One render, as every pane sees it. */
 export interface PaneFrame {
@@ -54,6 +54,9 @@ export interface PaneElements {
   readonly boxValues: HTMLInputElement;
   readonly xySwap: HTMLButtonElement;
   readonly xyFit: HTMLInputElement;
+  /** "Colour on": its `dataset.want` holds the choice, which a series option
+   * offered only while drawn cannot. */
+  readonly xyColour: HTMLSelectElement;
   readonly intervalBy: HTMLSelectElement;
   readonly intervalColour: HTMLSelectElement;
   readonly intervalMean: HTMLInputElement;

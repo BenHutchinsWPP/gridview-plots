@@ -14,6 +14,8 @@
 //   (g) the math: points only where both series have values, per-axis
 //       ranges, padded degenerate ranges, hovers naming the hour, and its
 //       year when the pair's Case names one.
+//   (h) "colour on": calendar fields by the hour, a third series on a
+//       blue-black-red ramp around 0, grey where it has none, into the Figure.
 
 import './test_loader.mjs';
 import assert from 'node:assert/strict';
@@ -102,23 +104,32 @@ function drawAgain(frame) {
 }
 
 // ------------------------------------------------------------------- (c)
-drawAgain(frameOf([xs, ys, third]));
+const fourth = seriesOf('Case 2 · LMP', '$/MWh', '#d62728', (v) => v.fill(2, 0, 10));
+drawAgain(frameOf([xs, ys, third, fourth]));
 assert.match(
   record.banners.at(-1).text,
-  /^Select exactly two series to plot one against the other — 3 are drawn\.$/,
-  'the X-Y pane refuses anything but exactly two drawables -- never the first two of five -- ' +
-    'in words the reader can act on',
+  /^Select exactly two series to plot one against the other, or three to colour the points by one — 4 are drawn\.$/,
+  'the X-Y pane refuses anything but two drawables, or three with one as the colour -- never ' +
+    'the first two of five -- in words the reader can act on',
+);
+drawAgain(frameOf([xs, ys, third]));
+assert.equal(
+  record.banners.at(-1).text,
+  'Three series are drawn. Pick one in "colour on" to colour the points by, and the other ' +
+    'two go on X and Y.',
+  'three drawn with no colour series picked refuses rather than guessing which is the colour',
 );
 assert.equal(points().length, 0, 'and draws no point');
 assert.equal(canvas.style.display, 'none');
 assert.equal(xyPane.figure.capture(), null, 'a refused scatter has no figure');
 assert.deepEqual(
   xyPane.controls(frameOf([xs, ys, third])),
-  [],
-  'the swap and fit exist only while exactly two series are drawn',
+  ['xyColour'],
+  'the swap and fit exist only while a pair draws; "colour on" shows with three drawn, ' +
+    'since picking the colour series is how three become a pair',
 );
 assert.deepEqual(xyPane.controls(frameOf([xs])), []);
-assert.deepEqual(xyPane.controls(frameOf([xs, ys])), ['xy']);
+assert.deepEqual(xyPane.controls(frameOf([xs, ys])), ['xy', 'xyColour']);
 
 // ------------------------------------------------------------------- (d)
 assert.ok(
@@ -541,3 +552,156 @@ console.log(
   'ok - the fit: OLS of y on x recovered exactly, asymmetric under a swap, vertical and flat ' +
     'clouds answered rather than divided by zero, R² bounded, and a caption in its own band',
 );
+
+// ------------------------------------------------------------------- (h)
+// "Colour on": a calendar field of each point's hour, or a third series.
+{
+  const {
+    SEASON_COLORS,
+    NO_COLOUR,
+    signedColor,
+    wheelColor,
+    monthColor,
+    calendarKey,
+    calendarIndex,
+    knownColourBy,
+  } = await import('../src/ui/panes/xy-colour.ts');
+  const JAN_1 = 0;
+  const JUL_1 = 182 * 24; // the slot's Jul 1, HE 1
+  const pane = stubHost({ size: { width: 600, height: 300 } });
+  const adapter = createXyAdapter(pane.host);
+  const { xyColour } = pane.host.controls;
+  const ctx = pane.host.canvas.context;
+  const fills = () =>
+    ctx.calls.filter((call) => call.op === 'fillRect' && call.w === 2.5).map((call) => call.fill);
+  const at = (hours) => (v) => hours.forEach((h, i) => (v[h] = i + 1));
+  const a = seriesOf('A', 'MW', '#1f77b4', at([JAN_1, JUL_1]));
+  const b = seriesOf('B', 'MW', '#ff7f0e', at([JAN_1, JUL_1]));
+
+  xyColour.dataset.want = 'season';
+  ctx.calls.length = 0;
+  adapter.draw(frameOf([a, b]));
+  assert.deepEqual(
+    fills(),
+    [SEASON_COLORS[0], SEASON_COLORS[2]],
+    'season colours each point by its hour: Jan 1 is Winter, Jul 1 Summer',
+  );
+  assert.ok(
+    ctx.calls.some((call) => call.op === 'fillText' && call.text === 'Season:'),
+    'and a key names what the colours mean',
+  );
+
+  assert.equal(calendarIndex('hourOfDay', JUL_1 + 13), 13, 'HE 14 is index 13');
+  for (const by of ['season', 'month', 'hourOfDay']) {
+    const colours = calendarKey(by).map((item) => item.color);
+    assert.equal(new Set(colours).size, colours.length, `every ${by} has its own colour`);
+  }
+  assert.notEqual(wheelColor(6, 24), wheelColor(18, 24), 'a morning hour is not an evening one');
+  assert.deepEqual(
+    [0, 3, 6, 9].map(monthColor),
+    [...SEASON_COLORS],
+    'Jan, Apr, Jul and Oct wear their seasons’ colours, so a month reads as its season',
+  );
+
+  // A third series as the colour: blue at its most negative, black at 0, red
+  // at its most positive, each side scaled to its own extreme.
+  assert.equal(signedColor(0, -5, 10), '#000000', '0 is black whatever the range');
+  assert.equal(signedColor(10, -5, 10), '#ff1f1f', 'the most positive is red');
+  assert.equal(signedColor(-5, -5, 10), '#1f4eff', 'the most negative is blue');
+  assert.equal(signedColor(5, 0, 10), '#801010', 'half the positive extreme is half red');
+  const c = seriesOf('C', '$/MWh', '#2ca02c', (v) => {
+    v[JAN_1] = -5;
+    v[JUL_1] = 10;
+  });
+  const d = seriesOf('D', 'MW', '#d62728', at([JAN_1]));
+  adapter.controls(frameOf([a, b, c]));
+  const offered = Array.from(xyColour.children).map((option) => option.value);
+  assert.deepEqual(
+    offered,
+    ['series:A', 'series:B', 'series:C'],
+    'with three drawn, "colour on" lists each by its full label',
+  );
+  xyColour.value = 'series:C';
+  xyColour.fire('change');
+  assert.equal(xyColour.dataset.want, 'series:C', 'the choice is kept on the select');
+  ctx.calls.length = 0;
+  pane.record.notes.length = 0;
+  adapter.draw(frameOf([a, b, c]));
+  assert.deepEqual(pane.record.notes, ['X A / Y B / colour C'], 'the other two are the pair');
+  assert.deepEqual(fills(), ['#1f4eff', '#ff1f1f'], 'coloured by C at each hour');
+  ctx.calls.length = 0;
+  adapter.draw(frameOf([c, a, b]));
+  assert.deepEqual(
+    pane.record.notes.at(-1),
+    'X A / Y B / colour C',
+    'the colour series is found by label wherever it sits in the selection',
+  );
+
+  // An hour X and Y pair but the colour series lacks is drawn grey and
+  // counted, so every pair still shows.
+  c.values[JUL_1] = NaN;
+  ctx.calls.length = 0;
+  adapter.draw(frameOf([a, b, c]));
+  assert.deepEqual(fills(), ['#1f4eff', NO_COLOUR], 'C left only at -5, its most negative: blue');
+  assert.ok(
+    ctx.calls.some((call) => call.op === 'fillText' && call.text === '1 h no colour'),
+    'the key counts the points with no colour value',
+  );
+
+  // The Figure takes each point's colour from the pane.
+  c.values[JUL_1] = 10;
+  adapter.draw(frameOf([a, b, c]));
+  const colour = adapter.figure.capture().capture.xy.colour;
+  assert.equal(colour.key.kind, 'signed');
+  assert.equal(colour.colours[JAN_1], '#1f4eff');
+  assert.equal(colour.colours[JUL_1], '#ff1f1f');
+  assert.equal(colour.colours[1], '', 'no pair, no colour');
+
+  // A colour series the pair cannot take refuses, naming both.
+  xyColour.dataset.want = 'series:D';
+  d.values = new Float32Array(2 * HOURS).fill(1);
+  pane.record.banners.length = 0;
+  adapter.draw(
+    frameOf([a, b, d], { spanOf: (s) => ({ firstYear: 2035, numYears: s === d ? 2 : 1 }) }),
+  );
+  assert.match(
+    pane.record.banners.at(-1).text,
+    /^D spans 2035–2036 and A spans 2035, so it cannot colour the pairs hour by hour\./,
+    'a colour series pairs by kept year as the axes do, or refuses',
+  );
+
+  // The choice is kept by the line's browse row when it has one: a "% of
+  // range" label names its divisors and changes with the hour filter.
+  {
+    const host2 = stubHost();
+    const pane2 = createXyAdapter(host2.host);
+    const ranged = { ...c, rowId: 'row-C', detail: 'C · % of range (max 10)' };
+    pane2.controls(frameOf([a, b, ranged]));
+    const values = Array.from(host2.host.controls.xyColour.children).map((o) => o.value);
+    assert.ok(values.includes('series:row-C'), 'the option is keyed by row id');
+    host2.host.controls.xyColour.dataset.want = 'series:row-C';
+    pane2.draw(frameOf([a, b, { ...ranged, detail: 'C · % of range (max 7)' }]));
+    assert.match(host2.record.notes.at(-1), / \/ colour C$/, 'a relabelled line keeps its colour');
+  }
+
+  // Two drawn with a series choice saved: the choice waits, nothing is coloured.
+  xyColour.dataset.want = 'series:C';
+  assert.deepEqual(adapter.controls(frameOf([a, b])), ['xy', 'xyColour']);
+  assert.equal(xyColour.value, 'none', 'the select shows what is drawn');
+  assert.equal(xyColour.dataset.want, 'series:C', 'and keeps the choice for when C returns');
+
+  assert.ok(knownColourBy('season') && knownColourBy('series:X'));
+  assert.ok(!knownColourBy('series:') && !knownColourBy('tou') && !knownColourBy(3));
+  assert.ok(
+    !knownColourBy('dayOfWeek'),
+    'day of week is not offered: a weekday depends on the year',
+  );
+  for (let n = 1; n <= 4; n++) {
+    assert.ok(charts.includes(`'[data-el="xy-colour-${n}"]'`), `charts.ts names xy-colour-${n}`);
+    assert.ok(html.includes(`data-el="xy-colour-${n}"`), `index.html carries xy-colour-${n}`);
+  }
+  console.log(
+    'ok - colour on: calendar fields by the hour, a third series blue-black-red around 0, ' +
+      'grey and counted where it has no value, carried into the Figure',
+  );
+}

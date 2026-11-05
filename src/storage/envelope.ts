@@ -102,6 +102,9 @@ export interface ManifestV3 {
   /** Each chart pane's "overlay years", by pane. Absent in older bundles,
    * whose time panes draw their years end to end. */
   overlayYears?: readonly boolean[];
+  /** Each chart pane's X-Y "colour on", by pane. Absent in older bundles,
+   * whose X-Y panes colour nothing. */
+  xyColours?: readonly string[];
   /** The drawer's dragged height in pixels; absent on a detent. Optional. */
   drawerHeight?: number;
   /** Generator group map, by GeneratorList name, with its column mapping. */
@@ -249,6 +252,8 @@ export interface BundleContents extends Partial<SessionReference> {
   readonly intervals?: readonly SavedInterval[];
   /** Each chart pane's "overlay years". */
   readonly overlayYears?: readonly boolean[];
+  /** Each chart pane's X-Y "colour on". */
+  readonly xyColours?: readonly string[];
   /** The drawer's dragged height in pixels; null when it sits on a detent. */
   readonly drawerHeight?: number | null;
   /** The session's inventory, keyed by live Case id; written by index. */
@@ -276,6 +281,7 @@ export function buildManifest(
     boxDims = [],
     intervals = [],
     overlayYears = [],
+    xyColours = [],
     drawerHeight = null,
     inventory,
   } = contents;
@@ -352,6 +358,9 @@ export function buildManifest(
   }
   if (overlayYears.length > 0) {
     manifest.overlayYears = overlayYears;
+  }
+  if (xyColours.some((by) => by !== 'none')) {
+    manifest.xyColours = xyColours;
   }
   if (drawerHeight !== null) {
     manifest.drawerHeight = drawerHeight;

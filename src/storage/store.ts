@@ -257,6 +257,8 @@ export interface RestoredBundle {
   intervals?: readonly SavedInterval[];
   /** Each chart pane's "overlay years", as saved; checked by the caller. */
   overlayYears?: readonly boolean[];
+  /** Each chart pane's X-Y "colour on", as saved; checked by the caller. */
+  xyColours?: readonly string[];
   /** The drawer's dragged height; undefined when saved on a detent. */
   drawerHeight?: number;
   /** The generator group map, or null. */
@@ -384,6 +386,7 @@ export function restoreBundle(
     boxDims: manifest.boxDims,
     intervals: manifest.intervals,
     overlayYears: manifest.overlayYears,
+    xyColours: manifest.xyColours,
     drawerHeight: manifest.drawerHeight,
     generatorGroups,
     busGroups,

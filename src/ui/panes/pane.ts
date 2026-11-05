@@ -84,6 +84,7 @@ function controlElements(el: PaneElements): Record<PaneControl, (HTMLElement | n
     overlay: [el.overlayYears.parentElement],
     box: [el.boxDim.parentElement, el.boxValues.parentElement],
     xy: [el.xySwap, el.xyFit.parentElement],
+    xyColour: [el.xyColour.parentElement],
     interval: [
       el.intervalBy.parentElement,
       el.intervalColour.parentElement,

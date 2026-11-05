@@ -246,7 +246,11 @@ The Contents inventory's session-input keys (`limits (shared)`,
 replaces a session row only when the bundle carried that input and it was
 adopted, so the strip never names a file whose content was not taken up.
 A manifest's `overlayYears`, one boolean per pane, is wire format: a bundle
-without it restores every pane unticked. Asserted by `tests/test_storage.mjs`.
+without it restores every pane unticked. So is `xyColours`, one X-Y
+"colour on" per pane (`XY_COLOUR_BY`, or `series:` and the line's row id,
+else its full label):
+a value this build does not know colours nothing. Asserted by
+`tests/test_storage.mjs`.
 
 **An hourly download's rows are the 8,784-hour slot**, so the same date is the
 same row in every year and Case. Wide writes one column per series and year

@@ -431,7 +431,8 @@ check('(i) every type draws a multi-year Case over its span, and offers its figu
           refusals(),
           [
             lines.length === 1
-              ? 'Select exactly two series to plot one against the other — 1 is drawn.'
+              ? 'Select exactly two series to plot one against the other, or three to ' +
+                'colour the points by one — 1 is drawn.'
               : 'SAMPLE_CASE1 line spans 2035 and SAMPLE_CASEM line spans 2035–2037, so ' +
                 'there is no hour-by-hour pairing. Filter Years to the years both should ' +
                 'pair on.',

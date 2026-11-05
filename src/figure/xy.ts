@@ -12,11 +12,19 @@
 // output pixel are one mark: more would only lengthen the file. The caption
 // says which years were paired, since two Cases of different years pair by
 // position and their spans alone would not say so.
+//
+// Under the pane's "colour on", each point takes the colour the pane gave
+// it, tinted as the pane's alpha draws it over white, and a key of swatches
+// or a ramp takes the legend's place, as the interval figure's does.
 
-import { fitCaption, fitLine, yearsText } from '../ui/panes/xy';
+import { fitCaption, fitLine, rampEnds, yearsText, type XyKey } from '../ui/panes/xy';
+import { NO_COLOUR, signedColor } from '../ui/panes/xy-colour';
+import { formatNumber } from '../ui/chart-format';
+import { hex } from './heatmap';
+import { MEASURE_SLACK } from './legend';
 import { fullLabel, type SeriesFacets } from '../series/label';
 import { niceScale, type FigureCapture, type FigureLine, type PaneRenderer } from './build';
-import { line as svgLine, rect } from './svg';
+import { line as svgLine, rect, text, tint } from './svg';
 import { COLUMNS_PER_PT } from './time';
 
 /** The pane's dark grey point at 40 % opacity, made opaque over white. */
@@ -24,10 +32,17 @@ const POINT_FILL = '#adadad';
 const POINT_PT = 1.4;
 /** Room one x tick label takes, in points. */
 const X_TICK_ROOM_PT = 56;
+/** The pane's point alpha, as a tint over the white page. */
+const POINT_ALPHA = 0.4;
+const KEY_PT = 8;
+const KEY_ROW_PT = KEY_PT * 1.6;
+const SWATCH_PT = 6;
+const RAMP_PT = 90;
+const RAMP_STEPS = 32;
 
 /** A series' full label as a figure names it: its figure key in place of
  * its subject, so a group states its member count, as its legend key would. */
-function xyAxisTitle(entry: FigureLine): string {
+function xyAxisTitle(entry: Pick<FigureLine, 'name' | 'facets'>): string {
   const facets: SeriesFacets | undefined = entry.facets;
   if (!facets) return entry.name;
   const figured = facets.figureSubject
@@ -41,16 +56,54 @@ function xyAxisTitle(entry: FigureLine): string {
     : `${label} (${facets.unit})`;
 }
 
-/** The hours both series hold, as pairs. */
-function pairsOf(xs: ArrayLike<number>, ys: ArrayLike<number>): { x: number; y: number }[] {
-  const out: { x: number; y: number }[] = [];
+/** The hours both series hold, as pairs, with each one's place. */
+function pairsOf(
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+): { x: number; y: number; at: number }[] {
+  const out: { x: number; y: number; at: number }[] = [];
   const hours = Math.min(xs.length, ys.length);
   for (let hour = 0; hour < hours; hour++) {
     const x = xs[hour];
     const y = ys[hour];
-    if (Number.isFinite(x) && Number.isFinite(y)) out.push({ x, y });
+    if (Number.isFinite(x) && Number.isFinite(y)) out.push({ x, y, at: hour });
   }
   return out;
+}
+
+type KeyEntry =
+  | { kind: 'swatch'; id: string; color: string; label: string }
+  | { kind: 'ramp'; from: number; to: number; low: number; high: number };
+
+/** The key's title, then its entries: every category, or the ramp, and the
+ * points with no colour when there are any. */
+function keyEntries(key: XyKey, missing: number): KeyEntry[] {
+  const entries: KeyEntry[] =
+    key.kind === 'signed'
+      ? [
+          {
+            kind: 'ramp',
+            from: rampEnds(key)[0],
+            to: rampEnds(key)[1],
+            low: key.low,
+            high: key.high,
+          },
+        ]
+      : key.items.map((item, i) => ({
+          kind: 'swatch',
+          id: `legend.key[${i}]`,
+          color: tint(hex(item.color), POINT_ALPHA),
+          label: item.label,
+        }));
+  if (missing > 0) {
+    entries.push({
+      kind: 'swatch',
+      id: 'legend.missing',
+      color: tint(NO_COLOUR, POINT_ALPHA),
+      label: `no colour value (${missing.toLocaleString('en-US')} h)`,
+    });
+  }
+  return entries;
 }
 
 function finiteExtent(values: ArrayLike<number>): [number, number] {
@@ -78,6 +131,12 @@ export function xyPane(
   const xs = pairs.map((p) => p.x);
   const ys = pairs.map((p) => p.y);
   const fit = capture.xy.fit ? fitLine(pairs) : null;
+  const colour = capture.xy.colour;
+  const fillOf = (at: number): string => {
+    const drawn = colour?.colours[at];
+    return drawn ? tint(hex(drawn), POINT_ALPHA) : POINT_FILL;
+  };
+  const missing = colour ? pairs.filter((p) => colour.colours[p.at] === NO_COLOUR).length : 0;
   const xScale = (plotWidth: number) => {
     const [low, high] = finiteExtent(xs);
     return niceScale(low, high, Math.max(3, Math.min(8, Math.round(plotWidth / X_TICK_ROOM_PT))));
@@ -102,7 +161,77 @@ export function xyPane(
       },
     },
     context: () => (fit ? fitCaption(fit).replace(/ {2,}/g, ', ') : ''),
-    legendBlock: () => ({ height: 0, draw: () => [] }),
+    legendBlock({ left, width, measure, say }) {
+      if (!colour) return { height: 0, draw: () => [] };
+      // Each text through `say` now, so an edit resizes its entry.
+      // A colour series is titled as an axis is: its unit and a group's
+      // member count.
+      const named = colour.line ? xyAxisTitle(colour.line) : colour.key.title;
+      const title = `${say('legend.title', named)}:`;
+      type Placed = { entry: KeyEntry; texts: string[]; width: number };
+      const placed: Placed[] = keyEntries(colour.key, missing).map((entry) => {
+        if (entry.kind === 'ramp') {
+          const texts = [
+            say('legend.from', formatNumber(entry.from)),
+            say('legend.to', formatNumber(entry.to)),
+          ];
+          const w = measure(texts[0], KEY_PT) * MEASURE_SLACK + 8 + RAMP_PT;
+          return { entry, texts, width: w + measure(texts[1], KEY_PT) * MEASURE_SLACK };
+        }
+        const texts = [say(entry.id, entry.label)];
+        return { entry, texts, width: SWATCH_PT + 3 + measure(texts[0], KEY_PT) * MEASURE_SLACK };
+      });
+      // The title first on the first row, then entries flowed to the width.
+      const titleWidth = measure(title, KEY_PT) * MEASURE_SLACK + 6;
+      const rows: Placed[][] = [[]];
+      let used = titleWidth;
+      for (const item of placed) {
+        if (rows[rows.length - 1].length > 0 && used + item.width > width) {
+          rows.push([]);
+          used = titleWidth;
+        }
+        rows[rows.length - 1].push(item);
+        used += item.width + 10;
+      }
+      return {
+        height: rows.length * KEY_ROW_PT,
+        draw(top) {
+          const out: string[] = [];
+          rows.forEach((row, r) => {
+            const middle = top + r * KEY_ROW_PT + KEY_PT * 0.6;
+            const baseline = middle + KEY_PT * 0.35;
+            if (r === 0) out.push(text(title, left, baseline, { size: KEY_PT }));
+            let x = left + titleWidth;
+            for (const { entry, texts, width: w } of row) {
+              if (entry.kind === 'ramp') {
+                out.push(text(texts[0], x, baseline, { size: KEY_PT }));
+                const rampLeft = x + measure(texts[0], KEY_PT) * MEASURE_SLACK + 4;
+                for (let k = 0; k < RAMP_STEPS; k++) {
+                  const value = entry.from + ((entry.to - entry.from) * (k + 0.5)) / RAMP_STEPS;
+                  out.push(
+                    rect(
+                      rampLeft + (k * RAMP_PT) / RAMP_STEPS,
+                      middle - 3,
+                      RAMP_PT / RAMP_STEPS + (k < RAMP_STEPS - 1 ? 0.25 : 0),
+                      6,
+                      tint(signedColor(value, entry.low, entry.high), POINT_ALPHA),
+                    ),
+                  );
+                }
+                out.push(text(texts[1], rampLeft + RAMP_PT + 4, baseline, { size: KEY_PT }));
+              } else {
+                out.push(
+                  rect(x, middle - SWATCH_PT / 2, SWATCH_PT, SWATCH_PT, entry.color),
+                  text(texts[0], x + SWATCH_PT + 3, baseline, { size: KEY_PT }),
+                );
+              }
+              x += w + 10;
+            }
+          });
+          return out;
+        },
+      };
+    },
 
     extent: (values) => finiteExtent(values),
 
@@ -123,13 +252,16 @@ export function xyPane(
       const yOf = lines[yAt].y;
       const out: string[] = [];
       const seen = new Set<string>();
-      for (const { x, y } of pairs) {
+      for (const { x, y, at } of pairs) {
         const px = xOf(x);
         const py = yOf(y);
-        const key = `${Math.round(px * COLUMNS_PER_PT)},${Math.round(py * COLUMNS_PER_PT)}`;
+        const fill = fillOf(at);
+        // One mark per output pixel and colour: two colours on one pixel
+        // both show, the later on top, as the pane draws them.
+        const key = `${Math.round(px * COLUMNS_PER_PT)},${Math.round(py * COLUMNS_PER_PT)},${fill}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        out.push(rect(px - POINT_PT / 2, py - POINT_PT / 2, POINT_PT, POINT_PT, POINT_FILL));
+        out.push(rect(px - POINT_PT / 2, py - POINT_PT / 2, POINT_PT, POINT_PT, fill));
       }
       if (fit?.ok) {
         // Across the data's x range, cropped to the plot: y can run far out.

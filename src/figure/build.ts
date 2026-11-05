@@ -29,6 +29,7 @@ import { stackedPane } from './stacked';
 import { timePane } from './time';
 import { heatmapPane } from './heatmap';
 import { xyPane } from './xy';
+import type { XyKey } from '../ui/panes/xy';
 import { intervalPane, type FigureInterval } from './interval';
 
 /** Pane types that export. Grows as each pane type gets a renderer. */
@@ -134,10 +135,18 @@ export interface FigureCapture {
   /** The X-Y pane's state; required for an X-Y figure, whose first two
    * lines are the pair in the pane's order, X then Y, each its kept year
    * slots end to end so position k pairs with position k. `years` is each
-   * side's kept years in that order, absent when a side names none. */
+   * side's kept years in that order, absent when a side names none.
+   * `colour` is the pane's "colour on": each pair's colour by its place in
+   * those values ('' where no pair is), and the key that explains them. */
   readonly xy?: {
     readonly fit: boolean;
     readonly years?: { readonly x: readonly number[]; readonly y: readonly number[] };
+    readonly colour?: {
+      readonly key: XyKey;
+      readonly colours: readonly string[];
+      /** The colour series, named in the key as an axis is. */
+      readonly line?: { readonly name: string; readonly facets?: SeriesFacets };
+    };
   };
   /** The interval pane's settings; required for an interval figure, whose
    * first line is the series it cut. */
@@ -158,7 +167,8 @@ export interface FigureInput extends FigureCapture {
   /** Per-export replacements by text id (`context`, `legend[r][c]`,
    * `legend[r][under]`, an overlay's year `legend[r][year][k]`, `footnote[i]`, `axis.x`, `axis.y[side]`, a heatmap's
    * `axis.color`, an interval key's `legend.from`, `legend.to`,
-   * `legend.key[i]`, `legend.mean`, `legend.band` and `legend.picked`, a
+   * `legend.key[i]`, `legend.mean`, `legend.band` and `legend.picked`, an X-Y
+   * colour key's `legend.title` and `legend.missing` beside those, a
    * heatmap band's `axis.year[i]`, `caption`).
    * Never remembered: the next figure starts from the app's own labels. */
   readonly edits?: Readonly<Record<string, string>>;

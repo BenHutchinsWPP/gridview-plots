@@ -26,6 +26,7 @@ import { createXyAdapter } from './panes/xy';
 import { createHeatmapAdapter } from './panes/heatmap';
 import { createIntervalAdapter, intervalSettings, restoreIntervalSettings } from './panes/interval';
 import { createLegendAdapter } from './panes/legend';
+import { knownColourBy } from './panes/xy-colour';
 
 export type { Quantiles };
 
@@ -163,6 +164,11 @@ export interface Charts {
   overlayYears(): boolean[];
   /** Put back saved "overlay years"; a pane with none saved is unticked. */
   setOverlayYears(saved: readonly boolean[] | undefined): void;
+  /** Each pane's X-Y "colour on", by pane, for a bundle. */
+  xyColours(): string[];
+  /** Put back saved "colour on"; a value this build does not know, or a
+   * pane with none saved, colours nothing. */
+  setXyColours(saved: readonly string[] | undefined): void;
 }
 
 /** One pane's interval settings, as a bundle carries them. */
@@ -276,6 +282,12 @@ const XY_FIT_HOOKS = [
   '[data-el="xy-fit-3"]',
   '[data-el="xy-fit-4"]',
 ];
+const XY_COLOUR_HOOKS = [
+  '[data-el="xy-colour-1"]',
+  '[data-el="xy-colour-2"]',
+  '[data-el="xy-colour-3"]',
+  '[data-el="xy-colour-4"]',
+];
 const INTERVAL_BY_HOOKS = [
   '[data-el="interval-by-1"]',
   '[data-el="interval-by-2"]',
@@ -355,6 +367,7 @@ export function createCharts(
     boxValues: within<HTMLInputElement>(root, BOX_VALUES_CHECK_HOOKS[i]),
     xySwap: within<HTMLButtonElement>(root, XY_SWAP_HOOKS[i]),
     xyFit: within<HTMLInputElement>(root, XY_FIT_HOOKS[i]),
+    xyColour: within<HTMLSelectElement>(root, XY_COLOUR_HOOKS[i]),
     intervalBy: within<HTMLSelectElement>(root, INTERVAL_BY_HOOKS[i]),
     intervalColour: within<HTMLSelectElement>(root, INTERVAL_COLOUR_HOOKS[i]),
     intervalMean: within<HTMLInputElement>(root, INTERVAL_MEAN_HOOKS[i]),
@@ -491,6 +504,16 @@ export function createCharts(
     setOverlayYears(saved) {
       paneElements.forEach((elements, i) => {
         elements.overlayYears.checked = saved?.[i] === true;
+      });
+      if (lastInput) rebuild(lastInput);
+    },
+    xyColours() {
+      return paneElements.map((elements) => elements.xyColour.dataset.want ?? 'none');
+    },
+    setXyColours(saved) {
+      paneElements.forEach((elements, i) => {
+        const value = saved?.[i];
+        elements.xyColour.dataset.want = knownColourBy(value) ? value : 'none';
       });
       if (lastInput) rebuild(lastInput);
     },

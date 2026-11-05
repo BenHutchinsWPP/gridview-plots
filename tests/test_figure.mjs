@@ -1095,6 +1095,53 @@ ok('an X-Y figure merges points on one output pixel and counts only hours both h
   assert.deepEqual(footnotes(kept), ['Hours shown: hours 761-8760 (8,000 of 8,760 hours)']);
 });
 
+ok('an X-Y figure colours each point as the pane did, with a key in the legend’s place', () => {
+  const pair = xyPair();
+  const colours = Array.from({ length: H }, (_, h) => (h % 10 < 5 ? '#0072b2' : '#9a9a9a'));
+  const key = {
+    kind: 'swatches',
+    title: 'Season',
+    items: [
+      { color: '#0072b2', label: 'Winter' },
+      { color: '#e69f00', label: 'Summer' },
+    ],
+  };
+  const figure = xyFigure(pair, { xy: { fit: false, colour: { key, colours } } });
+  const fills = figure.svg.match(/<rect [^>]*fill="#[0-9a-f]{6}"\/>/g) ?? [];
+  assert.ok(
+    fills.some((r) => r.includes('fill="#99c7e0"')),
+    'a coloured point, tinted at 0.4',
+  );
+  assert.ok(
+    fills.some((r) => r.includes('fill="#d7d7d7"')),
+    'a grey point, tinted the same',
+  );
+  assert.equal(xyPoints(figure), 0, 'no point keeps the uncoloured grey');
+  assert.equal(textOf(figure, 'legend.title'), 'Season');
+  assert.equal(textOf(figure, 'legend.key[1]'), 'Summer');
+  assert.match(textOf(figure, 'legend.missing'), /^no colour value \(4,390 h\)$/);
+  const edited = xyFigure(pair, {
+    xy: { fit: false, colour: { key, colours } },
+    edits: { 'legend.title': 'Seasons' },
+  });
+  assert.ok(svgTexts(edited.svg).includes('Seasons:'), 'the key title goes through say');
+  const signed = xyFigure(pair, {
+    xy: {
+      fit: false,
+      colour: { key: { kind: 'signed', title: 'LMP', low: -5, high: 10 }, colours },
+    },
+  });
+  const positive = xyFigure(pair, {
+    xy: {
+      fit: false,
+      colour: { key: { kind: 'signed', title: 'LMP', low: 20, high: 30 }, colours },
+    },
+  });
+  assert.equal(textOf(positive, 'legend.from'), '0.00', 'the ramp runs from 0, its black end');
+  assert.equal(textOf(signed, 'legend.from'), '-5');
+  assert.equal(textOf(signed, 'legend.to'), '10');
+});
+
 ok('an X-Y figure’s caption names the years it paired, and fits every pair', () => {
   const [a, b] = xyPair();
   const caption = (years) => xyFigure([a, b], { xy: { fit: false, years } }).caption;

@@ -1077,6 +1077,31 @@ check('each pane’s "overlay years" round-trips, and an older bundle carries no
   );
 });
 
+check(
+  'each pane’s X-Y "colour on" round-trips, and a bundle colouring nothing carries none',
+  () => {
+    // `xyColours`, one string per pane, is wire format, its values too
+    // (`XY_COLOUR_BY`, and `series:` before a full label): renaming one
+    // uncolours every pane saved on it.
+    const xyColours = ['season', 'none', 'series:Case 1 · LMP', 'hourOfDay'];
+    const { manifest, cubes } = buildManifest([studyCase()], { xyColours });
+    const wire = JSON.parse(JSON.stringify(manifest));
+    assert.deepEqual(wire.xyColours, xyColours);
+    assert.deepEqual(restoreBundle(wire, toCaseBlocks(wire, cubes)).xyColours, xyColours);
+    const none = buildManifest([studyCase()], { xyColours: ['none', 'none', 'none', 'none'] });
+    assert.ok(!('xyColours' in none.manifest), 'no field when no pane colours anything');
+    const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+    assert.match(main, /xyColours: charts\.xyColours\(\)/, 'a save writes them');
+    assert.match(main, /charts\.setXyColours\(loaded\.xyColours\)/, 'a restore adopts them');
+    const charts = readFileSync(new URL('../src/ui/charts.ts', import.meta.url), 'utf8');
+    assert.match(
+      charts,
+      /dataset\.want = knownColourBy\(value\) \? value : 'none';/,
+      'a value this build does not know colours nothing rather than refusing the bundle',
+    );
+  },
+);
+
 check('the drawer’s dragged height round-trips, and a detent bundle carries none', () => {
   const original = studyCase();
   const dragged = roundTrip([original], GROUPINGS_CSV, new Map(), [], undefined, 611);

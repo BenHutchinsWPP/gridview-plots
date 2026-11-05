@@ -717,6 +717,7 @@ const saveRestore = createSaveRestore({
     boxDims: query.boxDims,
     intervals: charts.intervals(),
     overlayYears: charts.overlayYears(),
+    xyColours: charts.xyColours(),
     drawerHeight: browseDrawer.heightPx(),
     inventory: inventory.snapshot(),
   }),
@@ -751,6 +752,7 @@ function restoreView(loaded: RestoredBundle, made: readonly { id: string }[]): v
   if (loaded.layout) charts.setLayout(loaded.layout as SlotType[]);
   charts.setIntervals(loaded.intervals);
   charts.setOverlayYears(loaded.overlayYears);
+  charts.setXyColours(loaded.xyColours);
   // A bundle with no box cut starts every pane by Case, as does a name this
   // build does not know.
   const boxDims = loaded.boxDims;

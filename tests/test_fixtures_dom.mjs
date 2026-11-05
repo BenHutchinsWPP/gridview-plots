@@ -259,6 +259,7 @@ export function paneElements() {
     boxValues: check(false),
     xySwap: new FakeElement('button'),
     xyFit: check(false),
+    xyColour: select('none'),
     intervalBy: select('day'),
     intervalColour: select('time'),
     intervalMean: check(true),
